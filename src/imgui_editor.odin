@@ -63,6 +63,10 @@ ied_selftest_frame: int
 // Self-test only: overrides the hovered word so the docs tooltip can be
 // exercised without mouse input.
 ied_debug_hover_word: string
+// Self-test only: injected mouse position driving the REAL hover path
+// (component capture + dwell) end to end.
+hover_inject:        [2]f32
+hover_inject_active: bool
 // Cmd/Shift tracked from raw SDL key events (io.KeySuper proved unreliable).
 ied_gui_held:   bool
 ied_shift_held: bool
@@ -1065,6 +1069,12 @@ ied_tick :: proc(ed: ^ImGuiEditor) {
 	// Self-test: exercise the deferred goto mechanism without mouse input.
 	if ied_selftest {
 		ied_selftest_frame += 1
+		// Live hover drive: hold the injected mouse where the sweep found
+		// smoothstep so the real capture + dwell path runs (checked at 290).
+		if hover_inject_active && ied_selftest_frame > 250 && ied_selftest_frame < 290 {
+			io := im.GetIO()
+			im.IO_AddMousePosEvent(io, hover_inject.x, hover_inject.y)
+		}
 		switch ied_selftest_frame {
 		case 30:
 			// Cross-file: hash21 lives in common.slang, used by scenes.
@@ -1218,6 +1228,62 @@ ied_tick :: proc(ed: ^ImGuiEditor) {
 		case 160:
 			// Mobile theater visual check (screenshot target).
 			emit(ToggleMobile{})
+		case 248:
+			// The diagnostics case (100) leaves apple loaded; the sweep
+			// needs 03_mouse (the trail's smoothstep user) on screen, and
+			// a clean hover state so case 290 is not contaminated.
+			ied_load_named(ed, ied_scene_rel(ed, "03_mouse"))
+			ied_hover_close(ed)
+		case 249:
+			// Bring smoothstep's occurrence into the visible area.
+			text := string(ite_get_text(ed.handle))
+			if idx := strings.index(text, "smoothstep"); idx >= 0 {
+				line := 0
+				for i := 0; i < idx; i += 1 {
+					if text[i] == '\n' do line += 1
+				}
+				ite_goto_line(ed.handle, c.size_t(line))
+			}
+		case 250:
+			// Sweep the text area until the component's own GetWordAt
+			// returns smoothstep; the injected mouse then dwells there.
+			found := false
+			nonempty := 0
+			last := ""
+			samples: [dynamic]string
+			defer delete(samples)
+			outer: for gy in 0 ..< 120 {
+				for gx in 0 ..< 100 {
+					x := ed.text_pos.x + f32(gx) * 6
+					y := ed.text_pos.y + f32(gy) * 4
+					buf: [128]u8
+					n := ite_get_word_at_mouse(ed.handle, x, y, cstring(&buf[0]), len(buf))
+					w := string(buf[:min(int(n), 127)])
+					if w != "" {
+						nonempty += 1
+						if len(samples) < 8 && w != last {
+							last = strings.clone(w, context.temp_allocator)
+							append(&samples, strings.clone(w, context.temp_allocator))
+						}
+					}
+					if w == "smoothstep" {
+						hover_inject = {x, y}
+						hover_inject_active = true
+						found = true
+						log.infof("[ied-test] sweep: smoothstep capturable at (%.0f, %.0f)", x, y)
+						break outer
+					}
+				}
+			}
+			log.infof(
+				"[ied-test] sweep: %d non-empty captures, samples=%v, text_pos=(%.0f, %.0f)",
+				nonempty, samples, ed.text_pos.x, ed.text_pos.y,
+			)
+			if !found do log.infof("[ied-test] sweep: smoothstep NOT capturable (FAIL)")
+		case 290:
+			ok := ed.hover_sig != "" && strings.contains(ed.hover_sig, "smoothstep")
+			log.infof("[ied-test] live hover smoothstep: sig=%q %s", ed.hover_sig, ok ? "PASS" : "FAIL")
+			hover_inject_active = false
 		case 400:
 			if ied_lsp != nil {
 				diags, has := ied_lsp.diagnostics[ied_scene_rel(ed, "apple")]

@@ -47,11 +47,11 @@ Fx :: struct {
 fx_defaults :: proc() -> Fx {
 	return Fx {
 		intensity = .FULL,
-		develop   = true,
-		particles = true,
+		develop   = false,
+		particles = false,
 		springs   = true,
 		grain     = true,
-		sound     = true,
+		sound     = false,
 		develop_style = .RANDOM,
 	}
 }
