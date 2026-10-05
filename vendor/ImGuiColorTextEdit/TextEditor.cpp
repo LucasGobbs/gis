@@ -151,6 +151,9 @@ bool TextEditor::render(const char* title, const ImVec2& size, ImGuiChildFlags c
 		// handle mouse inputs
 		handleMouseInteractions();
 
+		// cache the text child's scroll for outside-render hit tests
+		textScroll = ImVec2(ImGui::GetScrollX(), ImGui::GetScrollY());
+
 		// determine visible row/column limits
 		firstVisibleRow = static_cast<size_t>(std::floor(ImGui::GetScrollY() / glyphSize.y));
 		lastVisibleRow = std::min(static_cast<size_t>(std::ceil((ImGui::GetScrollY() + textSize.y) / glyphSize.y)), typeSetter.getRowCount() - 1);
@@ -1981,9 +1984,14 @@ bool TextEditor::isMousePosOverTextArea(const ImVec2& mousePos) const {
 		return false;
 
 	} else {
-		// convert mouse position to screen coordinates
+		// convert mouse position to screen coordinates. cursorScreenPos
+		// has -scroll baked in, so local is content-relative; the visible
+		// area is the [scroll, scroll + textSize) window of it. Uses the
+		// scroll cached at Render: called from the app, ImGui::GetScroll*
+		// would return the OUTER window's scroll, not the text child's.
 		const auto local = mousePos - cursorScreenPos;
-		return local.x > textLeftOffset && local.x < textRightOffset && local.y >= 0 && local.y < textSize.y;
+		return local.x - textScroll.x > textLeftOffset && local.x - textScroll.x < textRightOffset &&
+		       local.y >= textScroll.y && local.y < textScroll.y + textSize.y;
 	}
 }
 

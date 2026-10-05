@@ -321,3 +321,15 @@ void ite_enable_completion(void *ed, IteCompletionFn fn, void *user) {
 	};
 	s->editor.SetAutoCompleteConfig(&s->completion_cfg);
 }
+
+void ite_text_metrics(void *ed, float *out) {
+	TextEditor &e = S(ed)->editor;
+	out[0] = e.cursorScreenPos.x;
+	out[1] = e.cursorScreenPos.y;
+	out[2] = e.textLeftOffset;
+	out[3] = e.textRightOffset;
+	out[4] = e.textSize.x;
+	out[5] = e.textSize.y;
+	out[6] = e.glyphSize.x;
+	out[7] = e.glyphSize.y;
+}

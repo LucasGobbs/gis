@@ -32,6 +32,7 @@ foreign ite {
 	ite_get_undo_index :: proc(ed: rawptr) -> c.size_t ---
 	ite_is_mouse_over_text :: proc(ed: rawptr, x: f32, y: f32) -> bool ---
 	ite_get_word_at_mouse :: proc(ed: rawptr, x: f32, y: f32, buf: cstring, cap: c.size_t) -> c.size_t ---
+	ite_text_metrics :: proc(ed: rawptr, out: [^]f32) ---
 	ite_goto_line :: proc(ed: rawptr, line: c.size_t) ---
 	ite_get_cursor_line :: proc(ed: rawptr) -> c.size_t ---
 	ite_get_cursor_col :: proc(ed: rawptr) -> c.size_t ---
@@ -1637,9 +1638,15 @@ ied_panel :: proc(ed: ^ImGuiEditor) {
 			}
 			cword := string(buf[:min(int(n), 127)])
 			sig, doc, found := ied_lookup_symbol(ed, cword)
+			m8: [8]f32
+			ite_text_metrics(ed.handle, &m8[0])
 			log.infof(
 				"[hover] click (%.0f, %.0f) over_text=%v word=%q found=%v sig=%q",
 				m.x, m.y, over_text, cword, found, sig,
+			)
+			log.infof(
+				"[hover] metrics cpos=(%.1f, %.1f) left=%.1f right=%.1f size=(%.1f, %.1f) glyph=(%.2f, %.2f)",
+				m8[0], m8[1], m8[2], m8[3], m8[4], m8[5], m8[6], m8[7],
 			)
 			_ = doc
 		}

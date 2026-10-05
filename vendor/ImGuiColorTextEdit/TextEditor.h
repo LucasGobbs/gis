@@ -2025,6 +2025,10 @@ protected:
 	float miniMapOffset;
 
 	ImVec2 textSize;
+	// The text child window's scroll, cached at Render time so hit-test
+	// helpers called from outside the render pass (ite wrapper) use the
+	// right window's scroll instead of the caller's.
+	ImVec2 textScroll{0.0f, 0.0f};
 	ImVec2 totalSize;
 	size_t firstVisibleRow = 0;
 	size_t lastVisibleRow = 0;

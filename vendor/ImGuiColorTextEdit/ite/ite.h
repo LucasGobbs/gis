@@ -104,6 +104,10 @@ bool ite_take_goto_word(void *ed, char *buf, size_t cap);
 // Same for "Rename symbol".
 bool ite_take_rename_word(void *ed, char *buf, size_t cap);
 
+// Debug: expose the component's layout metrics (cursorScreenPos.xy,
+// textLeftOffset, textRightOffset, textSize.xy, glyphSize.xy) into out[8].
+void ite_text_metrics(void *ed, float *out);
+
 #ifdef __cplusplus
 }
 #endif
