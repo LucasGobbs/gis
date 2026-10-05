@@ -135,6 +135,7 @@ ImGuiEditor :: struct {
 	hover_rect:  [4]f32, // last tooltip rect (min.xy, max.xy), padded
 	hover_grace: f32,    // countdown while crossing from word to tooltip
 	hover_footer: string, // owned; file:line or "slang builtin · see also"
+	hover_doc_scroll: f32, // doc scroll offset (wheel inside the tooltip)
 	// The window docks to the right edge until the user drags its title
 	// bar somewhere else; after that ImGui owns the position. F1 and
 	// theater mode reset this, re-docking the window.
@@ -798,9 +799,13 @@ ied_symbol_in_text :: proc(text: string, word: string) -> (sig, doc: string, fou
 
 // Curated docs for the Slang builtins the trail uses most. Consulted only
 // when no user definition resolves, so project symbols always win.
+IedBuiltinParam :: struct {
+	name, desc: string,
+}
 IedBuiltinDoc :: struct {
 	name, sig, doc: string,
-	also:       string, // related builtins, shown dimmed in the tooltip
+	also:       string, // related builtins, clickable in the tooltip
+	params:     []IedBuiltinParam,
 }
 IED_BUILTIN_DOCS := []IedBuiltinDoc {
 	{
@@ -808,42 +813,63 @@ IED_BUILTIN_DOCS := []IedBuiltinDoc {
 		"T clamp<T>(T x, T minVal, T maxVal)",
 		"Constrains x to `[minVal, maxVal]`: below minVal returns minVal, above maxVal returns maxVal. Works component-wise on vectors. `clamp(uv, 0.0, 1.0)` keeps coordinates inside the unit square.",
 		"lerp, smoothstep",
+		{{"x", "the value to constrain"}, {"minVal", "lower bound"}, {"maxVal", "upper bound"}},
 	},
 	{
 		"lerp",
 		"T lerp<T>(T a, T b, S t)",
 		"Linear interpolation: `a + (b - a) * t`. t = 0 gives a, t = 1 gives b, 0.5 the midpoint; t outside `[0,1]` extrapolates. GLSL calls this `mix`.",
 		"smoothstep, clamp",
+		{{"a", "value at t = 0"}, {"b", "value at t = 1"}, {"t", "interpolant; outside [0,1] extrapolates"}},
 	},
 	{
 		"smoothstep",
 		"T smoothstep<T>(T edge0, T edge1, T x)",
 		"Smooth Hermite transition from 0 to 1 as x goes from edge0 to edge1, with zero slope at both ends. The standard way to soften SDF edges: `smoothstep(-w, w, d)`.",
 		"step, clamp, fwidth",
+		{{"edge0", "where the transition starts (returns 0)"}, {"edge1", "where it ends (returns 1)"}, {"x", "value to remap"}},
 	},
 	{
 		"step",
 		"T step<T>(T edge, T x)",
 		"0.0 when x < edge, 1.0 otherwise. A hard threshold; compare with smoothstep for a soft edge. `step(0.5, uv.x)` splits the image vertically.",
 		"smoothstep, clamp",
+		{{"edge", "threshold"}, {"x", "value to test"}},
 	},
 	{
 		"fract",
 		"T fract<T>(T x)",
 		"Fractional part: `x - floor(x)`, always in `[0,1)`. Tiling and repetition primitive: `fract(uv * 4.0)` repeats the pattern 4x per axis.",
 		"floor, lerp",
+		{{"x", "value; the integer part is discarded"}},
 	},
 	{
 		"ddx",
 		"T ddx<T>(T x)",
 		"Partial derivative of x along screen-space X, estimated from 2x2 pixel quads. Base of anti-aliased edges: `fwidth(d) = abs(ddx(d)) + abs(ddy(d))`.",
 		"ddy, fwidth",
+		{{"x", "value to differentiate"}},
 	},
 	{
 		"ddy",
 		"T ddy<T>(T x)",
 		"Partial derivative of x along screen-space Y, estimated from 2x2 pixel quads. Pair with ddx for fwidth-based filtering.",
 		"ddx, fwidth",
+		{{"x", "value to differentiate"}},
+	},
+	{
+		"fwidth",
+		"T fwidth<T>(T x)",
+		"Sum of absolute derivatives: `abs(ddx(x)) + abs(ddy(x))`. The standard anti-aliasing width for SDF edges: `smoothstep(-w, w, d)` with `w = fwidth(d) * 1.5`.",
+		"ddx, ddy, smoothstep",
+		{{"x", "value to differentiate"}},
+	},
+	{
+		"floor",
+		"T floor<T>(T x)",
+		"Largest integer not greater than x. `floor(uv * 4.0)` picks the tile index while `fract` gives the position inside it.",
+		"fract",
+		{{"x", "value to round down"}},
 	},
 }
 
@@ -862,6 +888,35 @@ ied_symbol_location :: proc(ed: ^ImGuiEditor, word: string) -> (file: string, li
 		}
 	}
 	return "", 0, false
+}
+
+// Swap the pinned tooltip to a related builtin (see-also link click):
+// content and footer change, the tooltip stays put.
+hover_swap_builtin :: proc(ed: ^ImGuiEditor, name: string) {
+	for b in IED_BUILTIN_DOCS {
+		if b.name == name {
+			delete(ed.hover_word)
+			ed.hover_word = strings.clone(b.name)
+			delete(ed.hover_sig)
+			ed.hover_sig = strings.clone(b.sig)
+			delete(ed.hover_doc)
+			ed.hover_doc = strings.clone(b.doc)
+			if ed.hover_footer != "" {
+				delete(ed.hover_footer)
+				ed.hover_footer = ""
+			}
+			if ed.hover_dwell < 25 do ed.hover_dwell = 25
+			return
+		}
+	}
+}
+
+// The builtin entry for the hovered word, or nil for project symbols.
+hover_builtin_of :: proc(ed: ^ImGuiEditor) -> ^IedBuiltinDoc {
+	for &b in IED_BUILTIN_DOCS {
+		if b.name == ed.hover_word do return &b
+	}
+	return nil
 }
 
 // Minimal inline markdown for the docs tooltip: `code` spans render in
@@ -912,6 +967,7 @@ ied_hover_close :: proc(ed: ^ImGuiEditor) {
 		delete(ed.hover_footer)
 		ed.hover_footer = ""
 	}
+	ed.hover_doc_scroll = 0
 }
 
 // Resolve a symbol for hover docs: current file first, then the other
@@ -1749,6 +1805,7 @@ ied_panel :: proc(ed: ^ImGuiEditor) {
 				delete(ed.hover_footer)
 				ed.hover_footer = ""
 			}
+			ed.hover_doc_scroll = 0
 			ed.hover_shown = false
 		} else if !over_tooltip && word != "" {
 			ed.hover_dwell += 1
@@ -1760,17 +1817,10 @@ ied_panel :: proc(ed: ^ImGuiEditor) {
 				if found {
 					ed.hover_sig = strings.clone(sig)
 					ed.hover_doc = strings.clone(doc)
-					// Footer: definition site for project symbols, or the
-					// builtin tag with its see-also list.
+					// Footer: definition site for project symbols (builtins
+					// render their tag and links from the table instead).
 					if file, line, ok := ied_symbol_location(ed, ed.hover_word); ok {
 						ed.hover_footer = strings.clone(fmt.tprintf("%s:%d", file, line + 1))
-					} else {
-						for b in IED_BUILTIN_DOCS {
-							if b.name == ed.hover_word {
-								ed.hover_footer = strings.clone(fmt.tprintf("slang builtin · see also: %s", b.also))
-								break
-							}
-						}
 					}
 				}
 			}
@@ -1802,6 +1852,12 @@ ied_panel :: proc(ed: ^ImGuiEditor) {
 				im.SetNextWindowPos({wp.x - 40, wp.y + 160}, .Always)
 			}
 			if im.BeginTooltip() {
+				// The wheel anywhere inside the tooltip scrolls its doc
+				// region; without this it falls through to the editor.
+				if im.IsWindowHovered() && io.MouseWheel != 0 {
+					ed.hover_doc_scroll = max(0, ed.hover_doc_scroll - io.MouseWheel * 30)
+					io.MouseWheel = 0
+				}
 				// Cap the tooltip: unwrapped docs used to grow right
 				// without limit, and tall doc blocks had no scroll.
 				im.PushTextWrapPos(im.GetCursorPosX() + 440)
@@ -1811,11 +1867,42 @@ ied_panel :: proc(ed: ^ImGuiEditor) {
 					line_h := im.GetTextLineHeightWithSpacing()
 					doc_h := min(f32(strings.count(ed.hover_doc, "\n") + 1) * line_h, 14 * line_h)
 					if im.BeginChild("##hoverdoc", {440, doc_h}, {}) {
+						im.SetScrollY(ed.hover_doc_scroll)
 						hover_render_md(ed.hover_doc)
 					}
 					im.EndChild()
 				}
-				if ed.hover_footer != "" {
+				if b := hover_builtin_of(ed); b != nil {
+					// Parameter table for builtins.
+					if len(b.params) > 0 {
+						im.SeparatorText("params")
+						for p in b.params {
+							im.TextColored({0.91, 0.66, 0.34, 1}, "%s", strings_to_c(p.name))
+							im.SameLine(0, 10)
+							im.TextWrapped(strings_to_c(p.desc))
+						}
+					}
+					// Footer: tag plus clickable see-also links; clicking
+					// swaps the tooltip to that builtin in place.
+					im.Separator()
+					im.TextDisabled("slang builtin · see also:")
+					rest := b.also
+					for len(rest) > 0 {
+						im.SameLine(0, 6)
+						name := rest
+						if idx := strings.index(rest, ","); idx >= 0 {
+							name = rest[:idx]
+							rest = rest[idx + 2:]
+						} else {
+							rest = ""
+						}
+						im.PushID(strings_to_c(name))
+						if im.SmallButton(strings_to_c(name)) {
+							hover_swap_builtin(ed, name)
+						}
+						im.PopID()
+					}
+				} else if ed.hover_footer != "" {
 					im.Separator()
 					im.TextDisabled("%s", strings_to_c(ed.hover_footer))
 				}
