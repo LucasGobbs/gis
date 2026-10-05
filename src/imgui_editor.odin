@@ -65,7 +65,8 @@ ied_selftest_frame: int
 ied_debug_hover_word: string
 // --hover-debug: logs the live hover pipeline (capture, dwell, lookup)
 // to diagnose sessions where docs never appear.
-hover_debug: bool
+hover_debug:    bool
+hover_debug_ts: f64
 // Self-test only: injected mouse position driving the REAL hover path
 // (component capture + dwell) end to end.
 hover_inject:        [2]f32
@@ -1242,9 +1243,9 @@ ied_tick :: proc(ed: ^ImGuiEditor) {
 			ied_load_named(ed, ied_scene_rel(ed, "01_hello_pixel"))
 			ied_hover_close(ed)
 		case 249:
-			// Bring scene_uv's occurrence into the visible area.
+			// Bring smoothstep's occurrence into the visible area.
 			text := string(ite_get_text(ed.handle))
-			if idx := strings.index(text, "scene_uv"); idx >= 0 {
+			if idx := strings.index(text, "smoothstep"); idx >= 0 {
 				line := 0
 				for i := 0; i < idx; i += 1 {
 					if text[i] == '\n' do line += 1
@@ -1279,6 +1280,30 @@ ied_tick :: proc(ed: ^ImGuiEditor) {
 			}
 			if !found_smooth do log.infof("[ied-test] sweep: smoothstep NOT capturable (FAIL)")
 			if !found_uv do log.infof("[ied-test] sweep: scene_uv NOT capturable (FAIL)")
+		case 251:
+			// Capture map: for each pixel row of the text area, the words
+			// the component returns at three x positions. Shows exactly
+			// which screen regions produce captures.
+			sb := strings.builder_make(context.temp_allocator)
+			for gy in 0 ..< 120 {
+				y := ed.text_pos.y + f32(gy) * 4
+				row_words: [dynamic]string
+				for gx in 0 ..< 3 {
+					x := ed.text_pos.x + 80 + f32(gx) * 120
+					buf: [128]u8
+					n := ite_get_word_at_mouse(ed.handle, x, y, cstring(&buf[0]), len(buf))
+					if n > 0 {
+						w := string(buf[:min(int(n), 127)])
+						if len(row_words) == 0 || row_words[len(row_words) - 1] != w {
+							append(&row_words, strings.clone(w, context.temp_allocator))
+						}
+					}
+				}
+				if len(row_words) > 0 {
+					strings.write_string(&sb, fmt.tprintf("y%.0f:%v | ", y, row_words))
+				}
+			}
+			log.infof("[ied-test] capture map: %s", strings.to_string(sb))
 		case 290:
 			ok := ed.hover_sig != "" && strings.contains(ed.hover_sig, "smoothstep")
 			log.infof("[ied-test] live hover smoothstep: sig=%q %s", ed.hover_sig, ok ? "PASS" : "FAIL")
@@ -1601,11 +1626,15 @@ ied_panel :: proc(ed: ^ImGuiEditor) {
 			m.x >= ed.hover_rect[0] && m.x <= ed.hover_rect[2] &&
 			m.y >= ed.hover_rect[1] && m.y <= ed.hover_rect[3]
 		word := ied_debug_hover_word
-		if !over_tooltip && word == "" && !im.IsMouseDown(.Left) &&
-		   ite_is_mouse_over_text(ed.handle, m.x, m.y) {
+		over_text := !over_tooltip && ite_is_mouse_over_text(ed.handle, m.x, m.y)
+		if !over_tooltip && word == "" && !im.IsMouseDown(.Left) && over_text {
 			buf: [128]u8
 			n := ite_get_word_at_mouse(ed.handle, m.x, m.y, cstring(&buf[0]), len(buf))
 			word = string(buf[:min(int(n), 127)])
+			if hover_debug && word == "" && ed.hover_word == "" && im.GetTime() - hover_debug_ts > 1 {
+				hover_debug_ts = im.GetTime()
+				log.infof("[hover] over text but EMPTY capture at (%.0f, %.0f)", m.x, m.y)
+			}
 		}
 		// Grace window: crossing the gap between the word and the pinned
 		// tooltip keeps it open; a different word swaps immediately.
