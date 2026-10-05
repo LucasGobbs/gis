@@ -134,6 +134,7 @@ ImGuiEditor :: struct {
 	hover_pin:   im.Vec2, // pinned tooltip position
 	hover_rect:  [4]f32, // last tooltip rect (min.xy, max.xy), padded
 	hover_grace: f32,    // countdown while crossing from word to tooltip
+	hover_footer: string, // owned; file:line or "slang builtin · see also"
 	// The window docks to the right edge until the user drags its title
 	// bar somewhere else; after that ImGui owns the position. F1 and
 	// theater mode reset this, re-docking the window.
@@ -799,43 +800,102 @@ ied_symbol_in_text :: proc(text: string, word: string) -> (sig, doc: string, fou
 // when no user definition resolves, so project symbols always win.
 IedBuiltinDoc :: struct {
 	name, sig, doc: string,
+	also:       string, // related builtins, shown dimmed in the tooltip
 }
 IED_BUILTIN_DOCS := []IedBuiltinDoc {
 	{
 		"clamp",
 		"T clamp<T>(T x, T minVal, T maxVal)",
-		"Constrains x to [minVal, maxVal]: below minVal returns minVal, above maxVal returns maxVal. Works component-wise on vectors. clamp(uv, 0.0, 1.0) keeps coordinates inside the unit square.",
+		"Constrains x to `[minVal, maxVal]`: below minVal returns minVal, above maxVal returns maxVal. Works component-wise on vectors. `clamp(uv, 0.0, 1.0)` keeps coordinates inside the unit square.",
+		"lerp, smoothstep",
 	},
 	{
 		"lerp",
 		"T lerp<T>(T a, T b, S t)",
-		"Linear interpolation: a + (b - a) * t. t = 0 gives a, t = 1 gives b, 0.5 the midpoint; t outside [0,1] extrapolates. GLSL calls this mix.",
+		"Linear interpolation: `a + (b - a) * t`. t = 0 gives a, t = 1 gives b, 0.5 the midpoint; t outside `[0,1]` extrapolates. GLSL calls this `mix`.",
+		"smoothstep, clamp",
 	},
 	{
 		"smoothstep",
 		"T smoothstep<T>(T edge0, T edge1, T x)",
-		"Smooth Hermite transition from 0 to 1 as x goes from edge0 to edge1, with zero slope at both ends. The standard way to soften SDF edges: smoothstep(-w, w, d).",
+		"Smooth Hermite transition from 0 to 1 as x goes from edge0 to edge1, with zero slope at both ends. The standard way to soften SDF edges: `smoothstep(-w, w, d)`.",
+		"step, clamp, fwidth",
 	},
 	{
 		"step",
 		"T step<T>(T edge, T x)",
-		"0.0 when x < edge, 1.0 otherwise. A hard threshold; compare with smoothstep for a soft edge. step(0.5, uv.x) splits the image vertically.",
+		"0.0 when x < edge, 1.0 otherwise. A hard threshold; compare with smoothstep for a soft edge. `step(0.5, uv.x)` splits the image vertically.",
+		"smoothstep, clamp",
 	},
 	{
 		"fract",
 		"T fract<T>(T x)",
-		"Fractional part: x - floor(x), always in [0,1). Tiling and repetition primitive: fract(uv * 4.0) repeats the pattern 4x per axis.",
+		"Fractional part: `x - floor(x)`, always in `[0,1)`. Tiling and repetition primitive: `fract(uv * 4.0)` repeats the pattern 4x per axis.",
+		"floor, lerp",
 	},
 	{
 		"ddx",
 		"T ddx<T>(T x)",
-		"Partial derivative of x along screen-space X, estimated from 2x2 pixel quads. Base of anti-aliased edges: fwidth(d) = abs(ddx(d)) + abs(ddy(d)).",
+		"Partial derivative of x along screen-space X, estimated from 2x2 pixel quads. Base of anti-aliased edges: `fwidth(d) = abs(ddx(d)) + abs(ddy(d))`.",
+		"ddy, fwidth",
 	},
 	{
 		"ddy",
 		"T ddy<T>(T x)",
 		"Partial derivative of x along screen-space Y, estimated from 2x2 pixel quads. Pair with ddx for fwidth-based filtering.",
+		"ddx, fwidth",
 	},
+}
+
+// Where a word is defined (current file first, then the other shaders):
+// file name and 0-indexed line, for the tooltip footer.
+ied_symbol_location :: proc(ed: ^ImGuiEditor, word: string) -> (file: string, line: int, found: bool) {
+	if def, ok := ied_find_definition(string(ite_get_text(ed.handle)), word); ok {
+		return ed.files[ed.current], def, true
+	}
+	for f, i in ed.files {
+		if i == ed.current do continue
+		data, err := os.read_entire_file(ied_file_path(ed, i), context.temp_allocator)
+		if err != nil do continue
+		if def, ok := ied_find_definition(string(data), word); ok {
+			return f, def, true
+		}
+	}
+	return "", 0, false
+}
+
+// Minimal inline markdown for the docs tooltip: `code` spans render in
+// the accent amber; lines without code spans wrap at the tooltip width.
+hover_render_md :: proc(text: string) {
+	code_col := im.Vec4{0.91, 0.66, 0.34, 1}
+	for line in strings.split_lines(text, context.temp_allocator) {
+		if !strings.contains(line, "`") {
+			im.TextWrapped(strings_to_c(line))
+			continue
+		}
+		rest := line
+		for len(rest) > 0 {
+			idx := strings.index(rest, "`")
+			if idx < 0 {
+				im.TextUnformatted(strings_to_c(rest))
+				break
+			}
+			if idx > 0 {
+				im.TextUnformatted(strings_to_c(rest[:idx]))
+				im.SameLine(0, 0)
+			}
+			after := rest[idx + 1:]
+			end := strings.index(after, "`")
+			if end < 0 {
+				// Unmatched backtick: render the rest literally.
+				im.TextUnformatted(strings_to_c(rest[idx:]))
+				break
+			}
+			im.TextColored(code_col, "%s", strings_to_c(after[:end]))
+			rest = after[end + 1:]
+			if len(rest) > 0 do im.SameLine(0, 0)
+		}
+	}
 }
 
 // Dismiss the hover docs tooltip; ESC maps here before app quit.
@@ -847,6 +907,10 @@ ied_hover_close :: proc(ed: ^ImGuiEditor) {
 		ed.hover_sig = ""
 		delete(ed.hover_doc)
 		ed.hover_doc = ""
+	}
+	if ed.hover_footer != "" {
+		delete(ed.hover_footer)
+		ed.hover_footer = ""
 	}
 }
 
@@ -1681,6 +1745,10 @@ ied_panel :: proc(ed: ^ImGuiEditor) {
 				delete(ed.hover_doc)
 				ed.hover_doc = ""
 			}
+			if ed.hover_footer != "" {
+				delete(ed.hover_footer)
+				ed.hover_footer = ""
+			}
 			ed.hover_shown = false
 		} else if !over_tooltip && word != "" {
 			ed.hover_dwell += 1
@@ -1692,6 +1760,18 @@ ied_panel :: proc(ed: ^ImGuiEditor) {
 				if found {
 					ed.hover_sig = strings.clone(sig)
 					ed.hover_doc = strings.clone(doc)
+					// Footer: definition site for project symbols, or the
+					// builtin tag with its see-also list.
+					if file, line, ok := ied_symbol_location(ed, ed.hover_word); ok {
+						ed.hover_footer = strings.clone(fmt.tprintf("%s:%d", file, line + 1))
+					} else {
+						for b in IED_BUILTIN_DOCS {
+							if b.name == ed.hover_word {
+								ed.hover_footer = strings.clone(fmt.tprintf("slang builtin · see also: %s", b.also))
+								break
+							}
+						}
+					}
 				}
 			}
 		}
@@ -1731,9 +1811,13 @@ ied_panel :: proc(ed: ^ImGuiEditor) {
 					line_h := im.GetTextLineHeightWithSpacing()
 					doc_h := min(f32(strings.count(ed.hover_doc, "\n") + 1) * line_h, 14 * line_h)
 					if im.BeginChild("##hoverdoc", {440, doc_h}, {}) {
-						im.TextWrapped(strings_to_c(ed.hover_doc))
+						hover_render_md(ed.hover_doc)
 					}
 					im.EndChild()
+				}
+				if ed.hover_footer != "" {
+					im.Separator()
+					im.TextDisabled("%s", strings_to_c(ed.hover_footer))
 				}
 				wp := im.GetWindowPos()
 				ws := im.GetWindowSize()
