@@ -1627,6 +1627,22 @@ ied_panel :: proc(ed: ^ImGuiEditor) {
 			m.y >= ed.hover_rect[1] && m.y <= ed.hover_rect[3]
 		word := ied_debug_hover_word
 		over_text := !over_tooltip && ite_is_mouse_over_text(ed.handle, m.x, m.y)
+		// --hover-debug: a left click reports what the component sees at
+		// that exact position, plus the lookup result.
+		if hover_debug && !over_tooltip && im.IsMouseClicked(.Left) {
+			buf: [128]u8
+			n := c.size_t(0)
+			if over_text {
+				n = ite_get_word_at_mouse(ed.handle, m.x, m.y, cstring(&buf[0]), len(buf))
+			}
+			cword := string(buf[:min(int(n), 127)])
+			sig, doc, found := ied_lookup_symbol(ed, cword)
+			log.infof(
+				"[hover] click (%.0f, %.0f) over_text=%v word=%q found=%v sig=%q",
+				m.x, m.y, over_text, cword, found, sig,
+			)
+			_ = doc
+		}
 		if !over_tooltip && word == "" && !im.IsMouseDown(.Left) && over_text {
 			buf: [128]u8
 			n := ite_get_word_at_mouse(ed.handle, m.x, m.y, cstring(&buf[0]), len(buf))
