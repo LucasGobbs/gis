@@ -359,6 +359,9 @@ main :: proc() {
 			ied_debug_clicks = true
 		case "--ied-test":
 			ied_selftest = true
+		case "--hover-debug":
+			// Logs the live hover pipeline (capture, dwell, lookup).
+			hover_debug = true
 		case "--notify-test":
 			// Fires one toast of each kind at startup (visual check of
 			// the notification overlay).
