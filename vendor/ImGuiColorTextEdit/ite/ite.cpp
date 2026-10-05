@@ -333,3 +333,18 @@ void ite_text_metrics(void *ed, float *out) {
 	out[6] = e.glyphSize.x;
 	out[7] = e.glyphSize.y;
 }
+
+bool ite_word_rect_at_mouse(void *ed, float x, float y, float *out) {
+	TextEditor &e = S(ed)->editor;
+	if (!e.IsMousePosOverGlyph(ImVec2(x, y))) return false;
+	const auto docPos = e.GetDocPosAtMousePos(ImVec2(x, y));
+	const auto word = e.document.getWholeWord(docPos, true);
+	if (word.start.line != word.end.line || word.start.index == word.end.index) return false;
+	const auto startVis = e.DocPos2VisPos(word.start);
+	const auto endVis = e.DocPos2VisPos(word.end);
+	out[0] = e.cursorScreenPos.x + e.textLeftOffset + float(startVis.column) * e.glyphSize.x;
+	out[1] = e.cursorScreenPos.y + float(startVis.row) * e.glyphSize.y;
+	out[2] = e.cursorScreenPos.x + e.textLeftOffset + float(endVis.column) * e.glyphSize.x;
+	out[3] = e.cursorScreenPos.y + float(startVis.row) * e.glyphSize.y + e.glyphSize.y;
+	return true;
+}

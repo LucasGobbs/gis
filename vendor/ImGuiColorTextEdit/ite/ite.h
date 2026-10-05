@@ -107,6 +107,9 @@ bool ite_take_rename_word(void *ed, char *buf, size_t cap);
 // Debug: expose the component's layout metrics (cursorScreenPos.xy,
 // textLeftOffset, textRightOffset, textSize.xy, glyphSize.xy) into out[8].
 void ite_text_metrics(void *ed, float *out);
+// Screen rect of the word under (x, y): out = x0, y0, x1, y1 (y1 = bottom).
+// Returns false when the position is not over a word glyph.
+bool ite_word_rect_at_mouse(void *ed, float x, float y, float *out);
 
 #ifdef __cplusplus
 }

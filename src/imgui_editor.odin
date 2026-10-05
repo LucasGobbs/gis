@@ -33,6 +33,7 @@ foreign ite {
 	ite_is_mouse_over_text :: proc(ed: rawptr, x: f32, y: f32) -> bool ---
 	ite_get_word_at_mouse :: proc(ed: rawptr, x: f32, y: f32, buf: cstring, cap: c.size_t) -> c.size_t ---
 	ite_text_metrics :: proc(ed: rawptr, out: [^]f32) ---
+	ite_word_rect_at_mouse :: proc(ed: rawptr, x: f32, y: f32, out: [^]f32) -> bool ---
 	ite_goto_line :: proc(ed: rawptr, line: c.size_t) ---
 	ite_get_cursor_line :: proc(ed: rawptr) -> c.size_t ---
 	ite_get_cursor_col :: proc(ed: rawptr) -> c.size_t ---
@@ -1390,6 +1391,13 @@ ied_tick :: proc(ed: ^ImGuiEditor) {
 						hover_inject_active = true
 						found_smooth = true
 						log.infof("[ied-test] sweep: smoothstep capturable at (%.0f, %.0f)", x, y)
+						r: [4]f32
+						rok := ite_word_rect_at_mouse(ed.handle, x, y, &r[0])
+						log.infof(
+							"[ied-test] word rect: ok=%v (%.0f, %.0f)-(%.0f, %.0f) %s",
+							rok, r[0], r[1], r[2], r[3],
+							rok && r[2] > r[0] && r[3] > r[1] ? "PASS" : "FAIL",
+						)
 					}
 					if w == "scene_uv" && !found_uv {
 						goto_inject_pos = {x, y}
@@ -1449,6 +1457,11 @@ ied_tick :: proc(ed: ^ImGuiEditor) {
 				file, line,
 				file == "common" && int(line) == 77 ? "PASS" : "FAIL",
 			)
+		case 340:
+			// Cmd+hover underline visual check (screenshot target): hold
+			// Cmd over the last swept word.
+			ied_gui_held = true
+			hover_inject_active = true
 		case 400:
 			if ied_lsp != nil {
 				diags, has := ied_lsp.diagnostics[ied_scene_rel(ed, "apple")]
@@ -1656,6 +1669,18 @@ ied_panel :: proc(ed: ^ImGuiEditor) {
 			io.MousePos.y,
 			ite_is_mouse_over_text(ed.handle, io.MousePos.x, io.MousePos.y),
 		)
+	}
+
+	// Cmd+hover hyperlink affordance: underline the word that a click
+	// would jump from (Cmd+click below).
+	if (io.KeySuper || ied_gui_held) && !im.IsMouseDown(.Left) &&
+	   ite_is_mouse_over_text(ed.handle, io.MousePos.x, io.MousePos.y) {
+		r: [4]f32
+		if ite_word_rect_at_mouse(ed.handle, io.MousePos.x, io.MousePos.y, &r[0]) {
+			dl := im.GetForegroundDrawList()
+			col := im.GetColorU32Vec4({0.91, 0.66, 0.34, 0.9})
+			im.DrawList_AddLine(dl, {r[0], r[3] - 1.5}, {r[2], r[3] - 1.5}, col, 1.2)
+		}
 	}
 
 	// Cmd+click: record the word; the jump runs next frame.
