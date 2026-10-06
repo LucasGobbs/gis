@@ -13,3 +13,5 @@ odin_bin
 imgui.ini
 artefacts/
 builds/
+.DS_Store
+imgui.ini*
