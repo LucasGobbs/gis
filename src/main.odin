@@ -332,6 +332,7 @@ benchmark_log :: proc(label: string, samples: []f32) {
 main :: proc() {
 	once := false
 	start_scene := 0
+	fps_initialized := false
 	start_graph := false
 	start_mobile := false
 	force3d := false
@@ -1616,6 +1617,23 @@ main :: proc() {
 				benchmark_log(fmt.tprintf("cpu mode=%s scene=%s", mode, scene_mgr.scenes[current].title), benchmark_cpu_samples[:])
 				benchmark_log(fmt.tprintf("gpu mode=%s scene=%s", mode, scene_mgr.scenes[current].title), benchmark_gpu_samples[:])
 				break main_loop
+			}
+		}
+		// Frame-rate telemetry. Measured over the WHOLE loop iteration (CPU
+		// work + vsync wait inside the previous frame's present), so FPS
+		// reflects the display cadence Metal locks us to; the CPU-side time
+		// (frame_counter_start..now, before present) shows how much of each
+		// frame is real work vs waiting on the vsync gate.
+		{
+			frame_ms := f32(f64(sdl.GetPerformanceCounter() - frame_counter_start) / f64(sdl.GetPerformanceFrequency()) * 1000)
+			fps := frame_ms > 0 ? 1000 / frame_ms : 0
+			if !fps_initialized {
+				ui.fps_ema = fps
+				ui.cpu_ms_ema = frame_ms
+				fps_initialized = true
+			} else {
+				ui.fps_ema = 0.95 * ui.fps_ema + 0.05 * fps
+				ui.cpu_ms_ema = 0.95 * ui.cpu_ms_ema + 0.05 * frame_ms
 			}
 		}
 		if once do break main_loop

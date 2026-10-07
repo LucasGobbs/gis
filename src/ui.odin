@@ -133,6 +133,11 @@ Ui :: struct {
 	debug_provenance_path: [DEBUG_WATCH_MAX_PASSES]bool,
 	debug_provenance_rgba: [DEBUG_WATCH_MAX_PASSES][4]f32,
 	gen_ms:         f32, // average compute texture generation time, fed by main
+	// Frame rate. With vsync on (Metal present mode vsync by default), FPS is
+	// capped at the display refresh; >0 difference from refresh means the CPU
+	// or GPU is the bottleneck, not the display.
+	fps_ema:        f32, // smoothed FPS, fed by main from the full frame time
+	cpu_ms_ema:     f32, // smoothed CPU-side frame time, fed by main
 	// A scene created from a template: selected as soon as the watcher
 	// discovers the new file (next frame's rescan).
 	pending_scene:  string,

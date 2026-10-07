@@ -278,6 +278,7 @@ ui_controls_panel :: proc(ui: ^Ui, sm: ^SceneManager) {
 	im.SameLine()
 	im.Checkbox(trc("grid"), &ui.params.grid)
 	im.TextUnformatted(fmt.ctprintf(tr("gen %.2f ms"), ui.gen_ms))
+	im.TextUnformatted(fmt.ctprintf(tr("fps %.0f · cpu %.1f ms"), ui.fps_ema, ui.cpu_ms_ema))
 
 	if im.CollapsingHeader(trc("debug"), {}) {
 		im.TextDisabled(trc("return debug_* from the shader"))
