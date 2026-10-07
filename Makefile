@@ -8,7 +8,11 @@ SRC       := ./src
 BIN       := main
 BIN_DEBUG := main_debug
 
-RELEASE_FLAGS := -o:aggressive -microarch:native -no-bounds-check -disable-assert
+RELEASE_FLAGS := -o:aggressive -microarch:native -no-bounds-check
+# Perf-checked variant with asserts/bounds compiled out (matches the old
+# release flags) for benchmarking only; the default build keeps them on so
+# an invariant violation crashes/logs instead of corrupting state silently.
+NOASSERT_FLAGS := -o:aggressive -microarch:native -no-bounds-check -disable-assert
 DEBUG_FLAGS   := -debug -o:none
 HOT_FLAGS     := -define:HOT_RELOAD=true
 
@@ -19,7 +23,7 @@ BUNDLE_VERSION ?= 0.1.0
 # The integrated ImGui editor (src/imgui_editor.odin) links the
 # ImGuiColorTextEdit wrapper; every app build needs it. The wrapper MUST use
 # the same IMGUI_DISABLE_OBSOLETE_* defines as the premake-built imgui lib.
-APP_DEPS := vendor/ImGuiColorTextEdit/libite.a vendor/imnodes/libine.a
+APP_DEPS := vendor/ImGuiColorTextEdit/libite.a
 IMGUI_DEFINES := -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_DISABLE_OBSOLETE_KEYIO
 IMGUI_INC := vendor/odin-imgui/build/deps/imgui
 ITE_SRC := vendor/ImGuiColorTextEdit/TextEditor.cpp vendor/ImGuiColorTextEdit/TextEditor.h vendor/ImGuiColorTextEdit/ite/ite.cpp vendor/ImGuiColorTextEdit/ite/ite.h
@@ -31,33 +35,20 @@ vendor/ImGuiColorTextEdit/libite.a: $(ITE_SRC)
 	ar rc $@ /tmp/TextEditor.o /tmp/ite.o
 	ranlib $@
 
-# The node graph panel (src/imgui_nodes.odin) links the imnodes wrapper
-# (vendor/imnodes pinned to eb36902, "Fix AddRect call for ImGui 1.92.8").
-INE_SRC := vendor/imnodes/imnodes.cpp vendor/imnodes/imnodes.h vendor/imnodes/imnodes_internal.h vendor/imnodes/ine/ine.cpp vendor/imnodes/ine/ine.h
-
-vendor/imnodes/libine.a: $(INE_SRC)
-	clang++ -std=c++17 -O2 $(IMGUI_DEFINES) -c vendor/imnodes/imnodes.cpp -I$(IMGUI_INC) -Ivendor/imnodes -o /tmp/imnodes.o
-	clang++ -std=c++17 -O2 $(IMGUI_DEFINES) -c vendor/imnodes/ine/ine.cpp -I$(IMGUI_INC) -Ivendor/imnodes -Ivendor/imnodes/ine -o /tmp/ine.o
-	rm -f $@
-	ar rc $@ /tmp/imnodes.o /tmp/ine.o
-	ranlib $@
 
 all: build
 
 $(GOOSE_BIN): $(GOOSE_SRC)
-	$(ODIN) build $(GOOSE) -out:$(GOOSE_BIN) -o:aggressive -microarch:native -no-bounds-check -disable-assert
+	$(ODIN) build $(GOOSE) -out:$(GOOSE_BIN) -o:aggressive -microarch:native -no-bounds-check
 
 # Baked glue: shader blobs are #load-ed into the binary at compile time.
 shaders: $(GOOSE_BIN)
 	$(GOOSE_BIN) --manifest goose.json --slang $(SLANG)
 
-# Hot-reload glue: procs read shader artifacts from disk per call; the app
-# watches src/shaders and swaps pipelines on edit. Run from the project root.
-shaders-hot: $(GOOSE_BIN)
-	$(GOOSE_BIN) --manifest goose.json --slang $(SLANG) --hot-reload
+# Benchmarking variant: asserts and bounds checks compiled out.
+perf: shaders $(APP_DEPS)
+	$(ODIN) build $(SRC) -out:$(BIN) $(NOASSERT_FLAGS)
 
-build: shaders $(APP_DEPS)
-	$(ODIN) build $(SRC) -out:$(BIN) $(RELEASE_FLAGS)
 
 run: shaders-hot $(APP_DEPS)
 	$(ODIN) run $(SRC) $(HOT_FLAGS) -- $(ARGS)

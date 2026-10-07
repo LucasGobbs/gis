@@ -19,7 +19,7 @@
 package main
 
 import im "../vendor/odin-imgui"
-import "core:c"
+import imnodes "../vendor/imnodes-odin"
 import "core:encoding/json"
 import "core:fmt"
 import "core:log"
@@ -30,47 +30,175 @@ import "core:strings"
 import "core:time"
 import sdl "vendor:sdl3"
 
-foreign import ine "../vendor/imnodes/libine.a"
 
-@(default_calling_convention = "c")
-foreign ine {
-	ine_create :: proc() -> rawptr ---
-	ine_destroy :: proc(ed: rawptr) ---
-	ine_editor_begin :: proc(ed: rawptr) ---
-	ine_editor_end :: proc(ed: rawptr) ---
-	ine_minimap :: proc(ed: rawptr, size_fraction: f32, location: c.int) ---
-	ine_begin_node :: proc(ed: rawptr, id: c.int) ---
-	ine_end_node :: proc(ed: rawptr) ---
-	ine_title_bar_begin :: proc(ed: rawptr) ---
-	ine_title_bar_end :: proc(ed: rawptr) ---
-	ine_input_attr_begin :: proc(ed: rawptr, id: c.int, shape: c.int) ---
-	ine_input_attr_end :: proc(ed: rawptr) ---
-	ine_output_attr_begin :: proc(ed: rawptr, id: c.int, shape: c.int) ---
-	ine_output_attr_end :: proc(ed: rawptr) ---
-	ine_static_attr_begin :: proc(ed: rawptr, id: c.int) ---
-	ine_static_attr_end :: proc(ed: rawptr) ---
-	ine_link :: proc(ed: rawptr, id: c.int, start_attr: c.int, end_attr: c.int) ---
-	ine_is_link_created :: proc(ed: rawptr, start_attr, end_attr: ^c.int) -> bool ---
-	ine_is_link_destroyed :: proc(ed: rawptr, link_id: ^c.int) -> bool ---
-	ine_push_attribute_flag :: proc(ed: rawptr, flag: c.int) ---
-	ine_pop_attribute_flag :: proc(ed: rawptr) ---
-	ine_set_node_grid_pos :: proc(ed: rawptr, id: c.int, x: f32, y: f32) ---
-	ine_get_node_grid_pos :: proc(ed: rawptr, id: c.int, x: ^f32, y: ^f32) ---
-	ine_get_panning :: proc(ed: rawptr, x: ^f32, y: ^f32) ---
-	ine_reset_panning :: proc(ed: rawptr, x: f32, y: f32) ---
-	ine_is_editor_hovered :: proc(ed: rawptr) -> bool ---
-	ine_is_node_hovered :: proc(ed: rawptr, node_id: ^c.int) -> bool ---
-	ine_push_color_style :: proc(ed: rawptr, col: c.int, color: u32) ---
-	ine_pop_color_style :: proc(ed: rawptr) ---
-	ine_screen_to_grid :: proc(ed: rawptr, sx, sy: f32, gx, gy: ^f32) ---
+// The owning ImNodes context: ine_create makes it current and records it;
+// ine_destroy frees the editor context then the context itself. Called from
+// main's teardown so the pool/selection state is not reported as leaks.
+ine_owning_ctx: ^imnodes.Context
+
+ine_create :: proc() -> ^imnodes.Editor_Context {
+	// Dedicated context + editor context, dark style (same shape the ine
+	// wrapper used to mirror).
+	ctx := imnodes.create_context()
+	ine_owning_ctx = ctx
+	imnodes.set_current_context(ctx)
+	editor := imnodes.editor_context_create()
+	imnodes.editor_context_set(editor)
+	imnodes.style_colors_dark()
+	return editor
 }
 
-// ImNodesCol_ slots used below.
-INE_COL_TITLE_BAR          :: 4
-INE_COL_TITLE_BAR_HOVERED  :: 5
-INE_COL_TITLE_BAR_SELECTED :: 6
-INE_COL_PIN                :: 10
-INE_COL_PIN_HOVERED        :: 11
+ine_destroy :: proc(editor: ^imnodes.Editor_Context) {
+	if ine_owning_ctx == nil do return
+	if editor != nil {
+		if current := imnodes.get_current_context(); current == ine_owning_ctx {
+			imnodes.editor_context_free(editor)
+		}
+	}
+	imnodes.destroy_context(ine_owning_ctx)
+	ine_owning_ctx = nil
+}
+
+ine_editor_begin :: proc() {
+	imnodes.begin_node_editor()
+}
+
+ine_editor_end :: proc() {
+	imnodes.end_node_editor()
+}
+
+ine_minimap :: proc(size_fraction: f32, location: imnodes.Mini_Map_Location) {
+	imnodes.mini_map(size_fraction, location)
+}
+
+ine_begin_node :: proc(id: int) {
+	imnodes.begin_node(i32(id))
+}
+
+ine_end_node :: proc() {
+	imnodes.end_node()
+}
+
+ine_title_bar_begin :: proc() {
+	imnodes.begin_node_title_bar()
+}
+
+ine_title_bar_end :: proc() {
+	imnodes.end_node_title_bar()
+}
+
+ine_input_attr_begin :: proc(id: int, shape: imnodes.Pin_Shape) {
+	imnodes.begin_input_attribute(i32(id), shape)
+}
+
+ine_input_attr_end :: proc() {
+	imnodes.end_input_attribute()
+}
+
+ine_output_attr_begin :: proc(id: int, shape: imnodes.Pin_Shape) {
+	imnodes.begin_output_attribute(i32(id), shape)
+}
+
+ine_output_attr_end :: proc() {
+	imnodes.end_output_attribute()
+}
+
+ine_static_attr_begin :: proc(id: int) {
+	imnodes.begin_static_attribute(i32(id))
+}
+
+ine_static_attr_end :: proc() {
+	imnodes.end_static_attribute()
+}
+
+ine_link :: proc(id, start_attr, end_attr: int) {
+	imnodes.link(i32(id), i32(start_attr), i32(end_attr))
+}
+
+ine_is_link_created :: proc(start_attr, end_attr: ^int) -> bool {
+	created, a, b, _ := imnodes.is_link_created()
+	start_attr^, end_attr^ = int(a), int(b)
+	return created
+}
+
+ine_is_link_destroyed :: proc(link_id: ^int) -> bool {
+	destroyed, id := imnodes.is_link_destroyed()
+	link_id^ = int(id)
+	return destroyed
+}
+
+ine_push_attribute_flag :: proc(flags: imnodes.Attribute_Flags) {
+	imnodes.push_attribute_flag(flags)
+}
+
+ine_pop_attribute_flag :: proc() {
+	imnodes.pop_attribute_flag()
+}
+
+ine_set_node_grid_pos :: proc(id: int, pos: im.Vec2) {
+	imnodes.set_node_grid_space_pos(i32(id), pos)
+}
+
+ine_get_node_grid_pos :: proc(id: int) -> im.Vec2 {
+	return imnodes.get_node_grid_space_pos(i32(id))
+}
+
+ine_get_panning :: proc() -> im.Vec2 {
+	return imnodes.editor_context_get_panning()
+}
+
+ine_reset_panning :: proc(pos: im.Vec2) {
+	imnodes.editor_context_reset_panning(pos)
+}
+
+ine_is_editor_hovered :: proc() -> bool {
+	return imnodes.is_editor_hovered()
+}
+
+ine_is_node_hovered :: proc() -> (hovered: bool, node_id: int) {
+	h, id := imnodes.is_node_hovered()
+	return h, int(id)
+}
+
+ine_push_color_style :: proc(col: imnodes.Col, color: u32) {
+	imnodes.push_color_style(col, color)
+}
+
+ine_pop_color_style :: proc() {
+	imnodes.pop_color_style()
+}
+
+ine_screen_to_grid :: proc(screen_pos: im.Vec2) -> im.Vec2 {
+	origin := imnodes.get_canvas_origin_screen_space()
+	panning := imnodes.editor_context_get_panning()
+	zoom := imnodes.editor_context_get_zoom()
+	return im.Vec2{
+		(screen_pos.x - origin.x - panning.x) / zoom,
+		(screen_pos.y - origin.y - panning.y) / zoom,
+	}
+}
+
+ine_get_zoom :: proc() -> f32 {
+	return imnodes.editor_context_get_zoom()
+}
+
+ine_set_zoom :: proc(zoom: f32, pivot: Maybe(im.Vec2) = nil) {
+	imnodes.editor_context_set_zoom(zoom, pivot)
+}
+
+// imnodes color slots (imnodes.Col enum values) used below.
+INE_COL_NODE_BG        :: imnodes.Col.NodeBackground
+INE_COL_NODE_BG_HOVER  :: imnodes.Col.NodeBackgroundHovered
+INE_COL_NODE_BG_SELECT :: imnodes.Col.NodeBackgroundSelected
+INE_COL_NODE_OUTLINE   :: imnodes.Col.NodeOutline
+INE_COL_TITLE_BAR      :: imnodes.Col.TitleBar
+INE_COL_TITLE_BAR_HOVERED  :: imnodes.Col.TitleBarHovered
+INE_COL_TITLE_BAR_SELECTED :: imnodes.Col.TitleBarSelected
+INE_COL_LINK           :: imnodes.Col.Link
+INE_COL_LINK_HOVER     :: imnodes.Col.LinkHovered
+INE_COL_LINK_SELECT    :: imnodes.Col.LinkSelected
+INE_COL_PIN            :: imnodes.Col.Pin
+INE_COL_PIN_HOVERED    :: imnodes.Col.PinHovered
 
 // The node types. Pins distinguish them too: params = circle, graphics =
 // triangle, compute = quad (all filled); show = circle outline,
@@ -101,28 +229,19 @@ SG_KIND_COLORS := [SgPassKind]u32 {
 	.IMAGE    = 0xFF << 24 | 0xA5 << 16 | 0xA3 << 8 | 0x4F, // teal
 }
 
-// imnodes pin shapes: 0 = Circle, 1 = CircleFilled, 2 = Triangle,
-// 3 = TriangleFilled, 4 = Quad, 5 = QuadFilled.
-SG_KIND_PIN_SHAPES := [SgPassKind]c.int {
-	.PARAMS   = 1,
-	.GRAPHICS = 3,
-	.COMPUTE  = 5,
-	.SHOW     = 0,
-	.OBJECT3D = 2,
-	.IMAGE    = 4,
+// imnodes pin shapes per node kind.
+SG_KIND_PIN_SHAPES := [SgPassKind]imnodes.Pin_Shape {
+	.PARAMS   = .CircleFilled,
+	.GRAPHICS = .TriangleFilled,
+	.COMPUTE  = .QuadFilled,
+	.SHOW     = .Circle,
+	.OBJECT3D = .Triangle,
+	.IMAGE    = .Quad,
 }
 
 SG_PIN_IN_COLOR  :: 0xFF << 24 | 0xE0 << 16 | 0xE0 << 8 | 0xE0 // white
 SG_PIN_OUT_COLOR :: 0xFF << 24 | 0x2E << 16 | 0xE2 << 8 | 0xA6 // green
 
-// imnodes color slots for node body/outline (the title trio starts at 4).
-INE_COL_NODE_BG        :: 0
-INE_COL_NODE_BG_HOVER  :: 1
-INE_COL_NODE_BG_SELECT :: 2
-INE_COL_NODE_OUTLINE   :: 3
-INE_COL_LINK           :: 7
-INE_COL_LINK_HOVER     :: 8
-INE_COL_LINK_SELECT    :: 9
 
 // Body tint for a kind: the kind's hue darkened and fully OPAQUE, no
 // canvas bleeding through nodes. `bright` scales the kind color.
@@ -137,45 +256,49 @@ sg_kind_body :: proc(kind: SgPassKind, bright: f32) -> u32 {
 // Type icon in the title bar: a 16px glyph drawn in the 20px slot at the
 // title's left, in dark-on-color (like the traffic-light glyphs). Each
 // kind gets a distinct mark so node types read by shape as well as color.
-sg_draw_kind_icon :: proc(dl: ^im.DrawList, kind: SgPassKind, pos: im.Vec2, col: u32) {
-	cx := pos.x + 10
-	cy := pos.y + 8
+// Kind icon drawn directly into the node's draw list. `zoom` scales every
+// coordinate/length so the icon grows and stays centered in its 20x~16 slot
+// alongside the (zoom-scaled) title text.
+sg_draw_kind_icon :: proc(dl: ^im.DrawList, kind: SgPassKind, pos: im.Vec2, col: u32, zoom: f32) {
+	z := max(zoom, 0.01)
+	cx := pos.x + 10 * z
+	cy := pos.y + 8 * z
 	switch kind {
 	case .PARAMS:
 		// Sliders: three rails with knobs.
 		knobs := [3]f32{-1.5, 2, -3}
 		for k, i in knobs {
-			y := cy - 4 + f32(i) * 4
-			im.DrawList_AddLine(dl, {cx - 5, y}, {cx + 5, y}, col, 1.1)
-			im.DrawList_AddCircleFilled(dl, {cx + k, y}, 1.6, col)
+			y := cy - 4 * z + f32(i) * 4 * z
+			im.DrawList_AddLine(dl, {cx - 5 * z, y}, {cx + 5 * z, y}, col, 1.1 * z)
+			im.DrawList_AddCircleFilled(dl, {cx + k * z, y}, 1.6 * z, col)
 		}
 	case .GRAPHICS:
 		// Triangle.
-		im.DrawList_AddTriangle(dl, {cx, cy - 5}, {cx - 5, cy + 4}, {cx + 5, cy + 4}, col, 1.2)
+		im.DrawList_AddTriangle(dl, {cx, cy - 5 * z}, {cx - 5 * z, cy + 4 * z}, {cx + 5 * z, cy + 4 * z}, col, 1.2 * z)
 	case .COMPUTE:
 		// 3x3 thread grid.
 		for r in 0 ..< 3 {
 			for c in 0 ..< 3 {
-				x := cx - 5 + f32(c) * 5
-				y := cy - 5 + f32(r) * 5
-				im.DrawList_AddRectFilled(dl, {x, y}, {x + 3, y + 3}, col)
+				x := cx - 5 * z + f32(c) * 5 * z
+				y := cy - 5 * z + f32(r) * 5 * z
+				im.DrawList_AddRectFilled(dl, {x, y}, {x + 3 * z, y + 3 * z}, col)
 			}
 		}
 	case .SHOW:
 		// Monitor: screen outline with a stand.
-		im.DrawList_AddRect(dl, {cx - 5, cy - 5}, {cx + 5, cy + 2}, col, 1, 1.2)
-		im.DrawList_AddLine(dl, {cx, cy + 2}, {cx, cy + 5}, col, 1.2)
+		im.DrawList_AddRect(dl, {cx - 5 * z, cy - 5 * z}, {cx + 5 * z, cy + 2 * z}, col, 1 * z, 1.2 * z)
+		im.DrawList_AddLine(dl, {cx, cy + 2 * z}, {cx, cy + 5 * z}, col, 1.2 * z)
 	case .OBJECT3D:
 		// Cube: back square offset from the front one, joined corners.
-		im.DrawList_AddRect(dl, {cx - 5, cy - 1}, {cx + 1, cy + 5}, col, 0, 1.1)
-		im.DrawList_AddRect(dl, {cx - 1, cy - 5}, {cx + 5, cy + 1}, col, 0, 1.1)
-		im.DrawList_AddLine(dl, {cx - 5, cy - 1}, {cx - 1, cy - 5}, col, 1.1)
-		im.DrawList_AddLine(dl, {cx + 1, cy + 5}, {cx + 5, cy + 1}, col, 1.1)
+		im.DrawList_AddRect(dl, {cx - 5 * z, cy - 1 * z}, {cx + 1 * z, cy + 5 * z}, col, 0, 1.1 * z)
+		im.DrawList_AddRect(dl, {cx - 1 * z, cy - 5 * z}, {cx + 5 * z, cy + 1 * z}, col, 0, 1.1 * z)
+		im.DrawList_AddLine(dl, {cx - 5 * z, cy - 1 * z}, {cx - 1 * z, cy - 5 * z}, col, 1.1 * z)
+		im.DrawList_AddLine(dl, {cx + 1 * z, cy + 5 * z}, {cx + 5 * z, cy + 1 * z}, col, 1.1 * z)
 	case .IMAGE:
 		// Picture: frame with a mountain and a sun dot.
-		im.DrawList_AddRect(dl, {cx - 5, cy - 4}, {cx + 5, cy + 5}, col, 1, 1.1)
-		im.DrawList_AddTriangleFilled(dl, {cx - 4, cy + 4}, {cx, cy - 1}, {cx + 4, cy + 4}, col)
-		im.DrawList_AddCircleFilled(dl, {cx + 2.5, cy - 2}, 1, col)
+		im.DrawList_AddRect(dl, {cx - 5 * z, cy - 4 * z}, {cx + 5 * z, cy + 5 * z}, col, 1 * z, 1.1 * z)
+		im.DrawList_AddTriangleFilled(dl, {cx - 4 * z, cy + 4 * z}, {cx, cy - 1 * z}, {cx + 4 * z, cy + 4 * z}, col)
+		im.DrawList_AddCircleFilled(dl, {cx + 2.5 * z, cy - 2 * z}, 1 * z, col)
 	}
 }
 
@@ -368,7 +491,7 @@ sg_draw_link_wire :: proc(dl: ^im.DrawList, l: SgLink, a, b: [2]f32, now: f64) {
 }
 
 NodeGraph :: struct {
-	handle:      rawptr,
+	handle:      ^imnodes.Editor_Context,
 	nodes:       [dynamic]SgNode,
 	links:       [dynamic]SgLink,
 	next_id:     int,
@@ -388,7 +511,7 @@ NodeGraph :: struct {
 	show_previews: bool,
 	// Right-click creation: the new node spawns at the clicked grid point
 	// (consumed by sg_upsert_node when the created pass's node appears).
-	create_pos:     [2]f32,
+	create_pos:     im.Vec2,
 	create_pos_set: bool,
 	// User-authored resource nodes (image/3d object with a chosen file)
 	// and the pending file-pick/create-delete state.
@@ -740,8 +863,8 @@ sg_save :: proc(ng: ^NodeGraph) {
 	strings.write_string(&sb, `","nodes":[`)
 	for &n, i in ng.nodes {
 		if i > 0 do strings.write_byte(&sb, ',')
-		x, y: f32
-		ine_get_node_grid_pos(ng.handle, c.int(n.id), &x, &y)
+		pos := ine_get_node_grid_pos(n.id)
+		x, y := pos.x, pos.y
 		strings.write_string(&sb, `{"key":"`)
 		strings.write_string(&sb, n.key)
 		strings.write_string(&sb, `","kind":"`)
@@ -984,7 +1107,7 @@ sg_upsert_node :: proc(ng: ^NodeGraph, d: SgPassDesc) -> ^SgNode {
 	if !has_layout {
 		if ng.create_pos_set {
 			// Right-click creation: spawn at the clicked grid point.
-			pos = ng.create_pos
+			pos = [2]f32{ng.create_pos.x, ng.create_pos.y}
 			ng.create_pos_set = false
 		} else {
 			// Cascade placeholder; sg_compute_layout replaces it with
@@ -1412,7 +1535,8 @@ sg_compute_layout :: proc(ng: ^NodeGraph) {
 	// ordering below sees where the user actually left things.
 	for &node in ng.nodes {
 		if node.placed {
-			ine_get_node_grid_pos(ng.handle, c.int(node.id), &node.cur.x, &node.cur.y)
+			p := ine_get_node_grid_pos(node.id)
+			node.cur = [2]f32{p.x, p.y}
 		}
 	}
 
@@ -1536,12 +1660,20 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 	}
 	io := im.GetIO()
 	im.Checkbox(trc("previews"), &ng.show_previews)
+	// Zoom: Ctrl+scroll on the canvas zooms around the cursor; clicking the
+	// label resets to 100%.
+	im.SameLine()
+	zoom := ine_get_zoom()
+	zoom_label := fmt.tprintf("zoom: %.0f%%", zoom * 100)
+	if im.SmallButton(strings_to_c(zoom_label)) {
+		ine_set_zoom(1.0)
+	}
 	if ng.pipeline_error != "" || ing_runtime_pipeline_error != "" {
 		message := ng.pipeline_error if ng.pipeline_error != "" else ing_runtime_pipeline_error
 		im.TextColored({0.95, 0.42, 0.36, 1}, "pipeline: %s", strings_to_c(message))
 		im.TextDisabled(trc("last valid pipeline remains active"))
 	}
-	ine_editor_begin(ng.handle)
+	ine_editor_begin()
 	// Injected-pin bolt positions, collected while rendering the nodes and
 	// drawn after ine_editor_end: imnodes paints pin shapes at EndNodeEditor.
 	inject_marks := make([dynamic][2]f32, 0, 16, context.temp_allocator)
@@ -1550,38 +1682,39 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 
 	for &node in ng.nodes {
 		if !node.placed {
-			ine_set_node_grid_pos(ng.handle, c.int(node.id), node.pos.x, node.pos.y)
+			ine_set_node_grid_pos(node.id, im.Vec2{node.pos.x, node.pos.y})
 			node.placed = true
 		}
 		tc := SG_KIND_COLORS[node.kind]
-		ine_push_color_style(ng.handle, INE_COL_TITLE_BAR, tc)
-		ine_push_color_style(ng.handle, INE_COL_TITLE_BAR_HOVERED, tc)
-		ine_push_color_style(ng.handle, INE_COL_TITLE_BAR_SELECTED, tc)
+		ine_push_color_style(INE_COL_TITLE_BAR, tc)
+		ine_push_color_style(INE_COL_TITLE_BAR_HOVERED, tc)
+		ine_push_color_style(INE_COL_TITLE_BAR_SELECTED, tc)
 		// Body tinted with the kind's color at low alpha; the output node
 		// also gets the bright safelight outline so it reads as the sink.
-		ine_push_color_style(ng.handle, INE_COL_NODE_BG, sg_kind_body(node.kind, 0.30))
-		ine_push_color_style(ng.handle, INE_COL_NODE_BG_HOVER, sg_kind_body(node.kind, 0.40))
-		ine_push_color_style(ng.handle, INE_COL_NODE_BG_SELECT, sg_kind_body(node.kind, 0.50))
+		ine_push_color_style(INE_COL_NODE_BG, sg_kind_body(node.kind, 0.30))
+		ine_push_color_style(INE_COL_NODE_BG_HOVER, sg_kind_body(node.kind, 0.40))
+		ine_push_color_style(INE_COL_NODE_BG_SELECT, sg_kind_body(node.kind, 0.50))
 		if node.kind == .SHOW {
-			ine_push_color_style(ng.handle, INE_COL_NODE_OUTLINE, tc)
+			ine_push_color_style(INE_COL_NODE_OUTLINE, tc)
 		}
-		ine_begin_node(ng.handle, c.int(node.id))
-		ine_title_bar_begin(ng.handle)
+		ine_begin_node(node.id)
+		ine_title_bar_begin()
 		icon_col := im.GetColorU32Vec4({0, 0, 0, 0.55})
 		icon_pos := im.GetCursorScreenPos()
-		sg_draw_kind_icon(im.GetWindowDrawList(), node.kind, icon_pos, icon_col)
-		im.SetCursorPosX(icon_pos.x + 20)
+		node_zoom := ine_get_zoom()
+		sg_draw_kind_icon(im.GetWindowDrawList(), node.kind, icon_pos, icon_col, node_zoom)
+		im.SetCursorScreenPos({icon_pos.x + 20 * node_zoom, icon_pos.y})
 		// tr() falls back to the key, so user-file titles pass through
 		// unchanged; only the fixed node names translate. The raw tag
 		// (untranslated) is what graph.json persists.
 		title := fmt.ctprintf("%s · %s", tr(node.title), tr(SG_KIND_TAGS[node.kind]))
 		im.TextUnformatted(title)
-		ine_title_bar_end(ng.handle)
+		ine_title_bar_end()
 		// The title bar takes the node's width (not vice versa), so long
 		// titles clip: reserve the widest text in the node body: title
 		// (plus its icon) OR longest pin name, since pins longer than the
 		// title clip too (inputs on the right edge, outputs on the left).
-		node_w := im.CalcTextSize(title).x + 20
+		node_w := im.CalcTextSize(title).x + 20 * node_zoom
 		for &pin in node.pins {
 			text := pin.label if pin.label != "" else pin.name
 			pin_w := im.CalcTextSize(strings_to_c(text)).x
@@ -1598,85 +1731,81 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 			for &pin in node.pins {
 				if pin.input != want_input do continue
 				pc: u32 = pin.input ? SG_PIN_IN_COLOR : SG_PIN_OUT_COLOR
-				ine_push_color_style(ng.handle, INE_COL_PIN, pc)
-				ine_push_color_style(ng.handle, INE_COL_PIN_HOVERED, pc)
+				ine_push_color_style(INE_COL_PIN, pc)
+				ine_push_color_style(INE_COL_PIN_HOVERED, pc)
 				injected := pin.kind == .CBUFFER && pin.name == "Uniforms"
 				text := pin.label if pin.label != "" else pin.name
 				if pin.input {
-					ine_input_attr_begin(ng.handle, c.int(pin.id), shape)
-					ine_push_attribute_flag(ng.handle, 1)
+					ine_input_attr_begin(pin.id, shape)
+					ine_push_attribute_flag({.EnableLinkDetachWithDragClick})
 					im.TextUnformatted(strings_to_c(text))
-					ine_pop_attribute_flag(ng.handle)
-					ine_input_attr_end(ng.handle)
+					ine_pop_attribute_flag()
+					ine_input_attr_end()
 					rmin := im.GetItemRectMin()
 					rmax := im.GetItemRectMax()
-					pin_pos[pin.id] = {rmin.x - 8, (rmin.y + rmax.y) / 2}
+					pin_pos[pin.id] = {rmin.x - 8 * node_zoom, (rmin.y + rmax.y) / 2}
 					if injected do append(&inject_marks, pin_pos[pin.id])
 				} else {
-					ine_output_attr_begin(ng.handle, c.int(pin.id), shape)
+					ine_output_attr_begin(pin.id, shape)
 					im.TextUnformatted(strings_to_c(text))
-					ine_output_attr_end(ng.handle)
+					ine_output_attr_end()
 					rmin := im.GetItemRectMin()
 					rmax := im.GetItemRectMax()
-					pin_pos[pin.id] = {rmax.x + 8, (rmin.y + rmax.y) / 2}
-					if injected do append(&inject_marks, pin_pos[pin.id])
+					pin_pos[pin.id] = {rmax.x + 8 * node_zoom, (rmin.y + rmax.y) / 2}
 				}
-				ine_pop_color_style(ng.handle)
-				ine_pop_color_style(ng.handle)
+				ine_pop_color_style()
+				ine_pop_color_style()
 			}
 		}
 		// Pass preview: the frame this pass produced (previous frame's
 		// content: the graph renders before this frame's submit).
 		if ng.show_previews && node.pass_idx >= 0 {
 			if tex := sg_preview_tex(node.pass_idx); tex != nil {
-				ine_static_attr_begin(
-					ng.handle,
-					c.int(sg_id(ng, fmt.tprintf("pin:%s:prev", node.key))),
-				)
-				w := f32(128)
+				ine_static_attr_begin(sg_id(ng, fmt.tprintf("pin:%s:prev", node.key)))
+				w := f32(128) * ine_get_zoom()
 				h := w * io.DisplaySize.y / io.DisplaySize.x
 				im.Image(im.TextureRef{_TexID = u64(uintptr(tex))}, {w, h})
-				ine_static_attr_end(ng.handle)
+				ine_static_attr_end()
 			}
 		}
 		if node.pass_idx >= 0 && node.pass_idx < DEBUG_WATCH_MAX_PASSES &&
 		   ing_provenance_valid[node.pass_idx] && ing_provenance_path[node.pass_idx] {
-			ine_static_attr_begin(ng.handle, c.int(sg_id(ng, fmt.tprintf("pin:%s:provenance", node.key))))
+			ine_static_attr_begin(sg_id(ng, fmt.tprintf("pin:%s:provenance", node.key)))
 			value := ing_provenance_rgba[node.pass_idx]
 			im.TextColored(
 				{value[0], value[1], value[2], 1},
 				"pixel  %.3f  %.3f  %.3f  %.3f",
 				value[0], value[1], value[2], value[3],
 			)
-			ine_static_attr_end(ng.handle)
+			ine_static_attr_end()
 		}
 		// "+" appends a pass to the chain (the popup below asks the kind).
-		ine_static_attr_begin(ng.handle, c.int(sg_id(ng, fmt.tprintf("pin:%s:+", node.key))))
+		ine_static_attr_begin(sg_id(ng, fmt.tprintf("pin:%s:+", node.key)))
 		if im.SmallButton("+") {
 			ng.create_open = true
 		}
-		ine_static_attr_end(ng.handle)
-		ine_end_node(ng.handle)
+		ine_static_attr_end()
+		ine_end_node()
 		// Pop title trio + body trio (+ the SHOW outline when pushed).
 		for _ in 0 ..< (node.kind == .SHOW ? 7 : 6) {
-			ine_pop_color_style(ng.handle)
+			ine_pop_color_style()
 		}
 	}
 
 	// The native solid link drops to a faint base; the flavored wire
 	// decorations drawn after ine_editor_end carry the visual weight.
-	ine_push_color_style(ng.handle, INE_COL_LINK, 0x40 << 24 | 0x66 << 16 | 0x66 << 8 | 0x66)
-	ine_push_color_style(ng.handle, INE_COL_LINK_HOVER, 0x60 << 24 | 0x88 << 16 | 0x88 << 8 | 0x88)
-	ine_push_color_style(ng.handle, INE_COL_LINK_SELECT, 0x60 << 24 | 0x88 << 16 | 0x88 << 8 | 0x88)
+	ine_push_color_style(INE_COL_LINK, 0x40 << 24 | 0x66 << 16 | 0x66 << 8 | 0x66)
+	ine_push_color_style(INE_COL_LINK_HOVER, 0x60 << 24 | 0x88 << 16 | 0x88 << 8 | 0x88)
+	ine_push_color_style(INE_COL_LINK_SELECT, 0x60 << 24 | 0x88 << 16 | 0x88 << 8 | 0x88)
 	for l in ng.links {
-		ine_link(ng.handle, c.int(l.id), c.int(l.from), c.int(l.to))
+		ine_link(l.id, l.from, l.to)
 	}
-	ine_pop_color_style(ng.handle)
-	ine_pop_color_style(ng.handle)
-	ine_pop_color_style(ng.handle)
+	ine_pop_color_style()
+	ine_pop_color_style()
+	ine_pop_color_style()
 
-	ine_minimap(ng.handle, 0.15, 1) // bottom right
-	ine_editor_end(ng.handle)
+	ine_minimap(0.15, .BottomRight)
+	ine_editor_end()
 
 	// Wire decorations over the dimmed base links: one styled wire per
 	// link on the same bezier imnodes drew, anchored at the pin socket
@@ -1693,9 +1822,9 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 	}
 
 	// Link gestures are staged. The JSON changes only after confirmation.
-	created_a, created_b: c.int
-	if ine_is_link_created(ng.handle, &created_a, &created_b) {
-		from, to, error_message, ok := sg_validate_connection(ng, int(created_a), int(created_b))
+	created_a, created_b: int
+	if ine_is_link_created(&created_a, &created_b) {
+		from, to, error_message, ok := sg_validate_connection(ng, created_a, created_b)
 		if ok {
 			ng.pending_action = .CONNECT
 			ng.pending_from, ng.pending_to = from, to
@@ -1706,10 +1835,10 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 			notify(.ERROR, "pipeline: %s", error_message)
 		}
 	}
-	destroyed_id: c.int
-	if ng.pending_action == .NONE && ine_is_link_destroyed(ng.handle, &destroyed_id) {
+	destroyed_id: int
+	if ng.pending_action == .NONE && ine_is_link_destroyed(&destroyed_id) {
 		for link in ng.links {
-			if link.id != int(destroyed_id) || !link.editable do continue
+			if link.id != destroyed_id || !link.editable do continue
 			ng.pending_action = .DISCONNECT
 			ng.pending_from, ng.pending_to = link.from, link.to
 			ng.pending_link_id = link.id
@@ -1752,15 +1881,21 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 	// AFTER ine_editor_end: imnodes asserts scope == None on queries.
 	if io.MouseDown[im.MouseButton.Left] {
 		moved := io.MouseDelta.x * io.MouseDelta.x + io.MouseDelta.y * io.MouseDelta.y
-		nid: c.int
-		if moved > 64 && ine_is_node_hovered(ng.handle, &nid) {
-			for &n in ng.nodes {
-				if c.int(n.id) != nid do continue
-				px, py: f32
-				ine_get_panning(ng.handle, &px, &py)
-				kind_col := SG_KIND_COLORS[n.kind]
-				fx_trail(&fx_settings^, {n.pos.x + px, n.pos.y + py}, kind_col)
-				break
+		if moved > 64 {
+			if hovered, nid := ine_is_node_hovered(); hovered {
+				for &n in ng.nodes {
+					if n.id != nid do continue
+					pan := ine_get_panning()
+					// grid -> editor space: pos * zoom + panning
+					trail_zoom := ine_get_zoom()
+					kind_col := SG_KIND_COLORS[n.kind]
+					fx_trail(
+						&fx_settings^,
+						{n.pos.x * trail_zoom + pan.x, n.pos.y * trail_zoom + pan.y},
+						kind_col,
+					)
+					break
+				}
 			}
 		}
 	}
@@ -1774,10 +1909,9 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 	// jumps to the scene's entry shader; resource nodes have no file).
 	// Gated on release-without-drag so moving a node doesn't switch tabs.
 	if im.IsMouseReleased(.Left) && !im.IsMouseDragging(.Left) {
-		nid: c.int
-		if ine_is_node_hovered(ng.handle, &nid) {
+		if hovered, nid := ine_is_node_hovered(); hovered {
 			for &n in ng.nodes {
-				if c.int(n.id) != nid do continue
+				if n.id != nid do continue
 				target := n.file
 				if target == "" && n.kind == .PARAMS {
 					target = fmt.tprintf("scenes/%s/%s", ng.scene, ng.scene)
@@ -1822,11 +1956,10 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 	// Right-click on empty canvas: open the create popup and spawn the new
 	// node at the clicked grid point (consumed by sg_upsert_node).
 	if im.IsWindowHovered({.ChildWindows}) && im.IsMouseClicked(.Right) {
-		nid: c.int
-		if ine_is_node_hovered(ng.handle, &nid) {
+		if hovered, nid := ine_is_node_hovered(); hovered {
 			// Right-click on a user-authored node: context menu (delete).
 			for &n in ng.nodes {
-				if c.int(n.id) != nid do continue
+				if n.id != nid do continue
 				if strings.has_prefix(n.key, "uimg:") || strings.has_prefix(n.key, "uobj:") {
 					if ng.delete_key != "" do delete(ng.delete_key)
 					ng.delete_key = strings.clone(n.key)
@@ -1835,9 +1968,7 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 				break
 			}
 		} else {
-			gx, gy: f32
-			ine_screen_to_grid(ng.handle, io.MousePos.x, io.MousePos.y, &gx, &gy)
-			ng.create_pos = {gx, gy}
+			ng.create_pos = ine_screen_to_grid(io.MousePos)
 			ng.create_pos_set = true
 			ng.create_open = true
 		}
@@ -1911,10 +2042,20 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 	// child popped (current window is the panel again), and reports false
 	// over the canvas: gating on it killed every pan. ChildWindows counts
 	// the canvas child (and the minimap) as part of the panel.
-	if im.IsWindowHovered({.ChildWindows}) && (io.MouseWheel != 0 || io.MouseWheelH != 0) {
+	// Ctrl+scroll zooms the node canvas around the cursor. Takes precedence
+	// over the two-finger pan. Ctrl state comes from SDL (reliable for
+	// wheel-modifier gestures, independent of imgui key routing).
+	ctrl_zoom := sdl.GetModState() & sdl.KMOD_CTRL != {}
+	if im.IsWindowHovered({.ChildWindows}) && ctrl_zoom && io.MouseWheel != 0 {
+		ZOOM_STEP :: 1.125
+		cur_zoom := ine_get_zoom()
+		ine_set_zoom(
+			cur_zoom * math.pow(f32(ZOOM_STEP), io.MouseWheel),
+			im.Vec2{io.MousePos.x, io.MousePos.y},
+		)
+	} else if im.IsWindowHovered({.ChildWindows}) && (io.MouseWheel != 0 || io.MouseWheelH != 0) {
 		d := [2]f32{io.MouseWheelH * 60, io.MouseWheel * 60}
-		cur: [2]f32
-		ine_get_panning(ng.handle, &cur.x, &cur.y)
+		cur := ine_get_panning()
 		// Velocity sample of the gesture (smoothed against jitter, capped
 		// so a hitch can't fling the canvas away).
 		dt := max(io.DeltaTime, 1e-4)
@@ -1924,7 +2065,7 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 			sample *= sg_pan_max_speed / speed
 		}
 		ng.pan_vel = ng.pan_vel * 0.4 + sample * 0.6
-		ine_reset_panning(ng.handle, cur.x + d.x, cur.y + d.y)
+		ine_reset_panning(im.Vec2{cur.x + d.x, cur.y + d.y})
 		if pan_test_debug {
 			log.infof(
 				"[pan-debug] PANNED by (%.0f, %.0f) vel (%.0f, %.0f)",
@@ -1934,9 +2075,8 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 	} else if ng.pan_vel != {} {
 		// Inertia: friction eases the velocity to zero.
 		dt := io.DeltaTime
-		cur: [2]f32
-		ine_get_panning(ng.handle, &cur.x, &cur.y)
-		ine_reset_panning(ng.handle, cur.x + ng.pan_vel.x * dt, cur.y + ng.pan_vel.y * dt)
+		cur := ine_get_panning()
+		ine_reset_panning(im.Vec2{cur.x + ng.pan_vel.x * dt, cur.y + ng.pan_vel.y * dt})
 		ng.pan_vel *= math.exp(-sg_pan_friction * dt)
 		if abs(ng.pan_vel.x) < 1 && abs(ng.pan_vel.y) < 1 do ng.pan_vel = {}
 	}
