@@ -2,7 +2,7 @@
 # package_macos.sh [version] [--render-icon]
 #
 # Builds the release binary and assembles a self-contained
-# builds/apple/Shader Explorer.app plus a distributable zip.
+# builds/apple/gis.app plus a distributable zip.
 #
 # The app resolves assets/, src/shaders and vendor/slang relative to the
 # working directory, so the bundle mirrors the repo layout under
@@ -24,7 +24,7 @@ for arg in "$@"; do
 	esac
 done
 
-APP_NAME="Shader Explorer"
+APP_NAME="gis"
 OUT="builds/apple"
 BUNDLE="$OUT/$APP_NAME.app"
 CONTENTS="$BUNDLE/Contents"
@@ -32,22 +32,22 @@ APP_RSC="$CONTENTS/Resources/app"
 ICON_SRC="assets/icon-1024.png"
 GOOSE_DIR="${GOOSE_DIR:-../goose}"
 ARCH=$(uname -m)
-ZIP="shader-explorer-$VERSION-macos-$ARCH.zip"
+ZIP="gis-$VERSION-macos-$ARCH.zip"
 
 # 1. Shader glue and vendored static libs (no-op when fresh).
-make shaders vendor/ImGuiColorTextEdit/libite.a vendor/imnodes/libine.a
+make shaders vendor/ImGuiColorTextEdit/libite.a
 
 # 2. Release binary (same flags as `make build`).
 mkdir -p "$OUT"
-odin build ./src -out:"$OUT/shader_explorer" \
-	-o:aggressive -microarch:native -no-bounds-check -disable-assert
+odin build ./src -out:"$OUT/gis" \
+	-o:aggressive -microarch:native -no-bounds-check
 
-# 3. Optional: re-render the icon from the app itself. The shot is the
-#    800x600 frame; the center 600x600 crop drops the axes gizmo.
+# 3. Optional: re-render the icon from the app itself: the icon_gis scene
+#    (raymarched chalk stick), square-cropped from the 800x600 frame.
 if [ "$RENDER_ICON" = 1 ]; then
-	"$OUT/shader_explorer" --scene 8 --shot /tmp/se_icon_shot.png
-	sips -c 600 600 /tmp/se_icon_shot.png --out /tmp/se_icon_sq.png >/dev/null
-	sips -z 1024 1024 /tmp/se_icon_sq.png --out "$ICON_SRC" >/dev/null
+	"$OUT/gis" --scene icon_gis --shot /tmp/gis_icon_shot.png
+	sips -c 600 600 /tmp/gis_icon_shot.png --out /tmp/gis_icon_sq.png >/dev/null
+	sips -z 1024 1024 /tmp/gis_icon_sq.png --out "$ICON_SRC" >/dev/null
 	echo "icon: re-rendered $ICON_SRC"
 fi
 
@@ -56,7 +56,7 @@ fi
 rm -rf "$BUNDLE"
 mkdir -p "$CONTENTS/MacOS" "$APP_RSC/src/generated/scenes" "$APP_RSC/exports" \
 	"$APP_RSC/vendor/fonts" "$APP_RSC/vendor/slang"
-cp "$OUT/shader_explorer" "$APP_RSC/"
+cp "$OUT/gis" "$APP_RSC/"
 cp "$GOOSE_DIR/goose-build" "$APP_RSC/"
 rsync -a --exclude image.png --exclude icon-1024.png --exclude .DS_Store \
 	assets "$APP_RSC/"
@@ -70,7 +70,7 @@ cat >"$CONTENTS/MacOS/launch" <<'LAUNCH'
 #!/bin/sh
 cd "$(dirname "$0")/../Resources/app" || exit 1
 export GOOSE="$PWD/goose-build"
-exec ./shader_explorer "$@"
+exec ./gis "$@"
 LAUNCH
 chmod +x "$CONTENTS/MacOS/launch"
 
@@ -91,7 +91,7 @@ cat >"$CONTENTS/Info.plist" <<EOF
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.gobbi.shader-explorer</string>
+	<string>com.gobbi.gis</string>
 	<key>CFBundleVersion</key>
 	<string>$VERSION</string>
 	<key>CFBundleShortVersionString</key>
@@ -108,8 +108,8 @@ EOF
 
 # 7. Icon: full iconset from the tracked 1024px source.
 if [ -f "$ICON_SRC" ]; then
-	rm -rf /tmp/se_appicon.iconset
-	mkdir /tmp/se_appicon.iconset
+	rm -rf /tmp/gis_appicon.iconset
+	mkdir /tmp/gis_appicon.iconset
 	for spec in \
 		"16 icon_16x16" "32 icon_16x16@2x" \
 		"32 icon_32x32" "64 icon_32x32@2x" \
@@ -117,9 +117,9 @@ if [ -f "$ICON_SRC" ]; then
 		"256 icon_256x256" "512 icon_256x256@2x" \
 		"512 icon_512x512" "1024 icon_512x512@2x"; do
 		set -- $spec
-		sips -z "$1" "$1" "$ICON_SRC" --out "/tmp/se_appicon.iconset/$2.png" >/dev/null
+		sips -z "$1" "$1" "$ICON_SRC" --out "/tmp/gis_appicon.iconset/$2.png" >/dev/null
 	done
-	iconutil -c icns /tmp/se_appicon.iconset -o "$CONTENTS/Resources/AppIcon.icns"
+	iconutil -c icns /tmp/gis_appicon.iconset -o "$CONTENTS/Resources/AppIcon.icns"
 else
 	echo "warning: $ICON_SRC missing; bundle will have no icon" >&2
 fi

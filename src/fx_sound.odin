@@ -30,7 +30,7 @@ fx_settings: ^Fx
 sfx_last:  [FxSfx]i64 // unix nano of the last play, per kind
 sfx_paths: [FxSfx]string
 
-SFX_DIR   :: "/tmp/shader_explorer_sfx"
+SFX_DIR   :: "/tmp/gis_sfx"
 SFX_RATE  :: 22050
 SFX_MIN_MS := [FxSfx]i64 {
 	.SAVE         = 80,

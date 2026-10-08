@@ -20,7 +20,7 @@ import sdl "vendor:sdl3"
 import "core:math/rand"
 import stbi "vendor:stb/image"
 
-// shader_explorer: a shader playground. Every .slang file in
+// gis (Gobbi Interactive Shaders): a shader playground. Every .slang file in
 // src/shaders/scenes is a scene (compute or fullscreen graphics pass,
 // discovered and built at runtime: see scene_runtime.odin). Scenes
 // render into an offscreen texture; a single blit pipeline samples it
@@ -767,7 +767,7 @@ main :: proc() {
 	pass_pixel_readback: PassPixelReadback
 
 	set_title :: proc(window: ^sdl.Window, title: string) {
-		if !sdl.SetWindowTitle(window, fmt.ctprint("shader_explorer · ", title)) {
+		if !sdl.SetWindowTitle(window, fmt.ctprint("gis · ", title)) {
 			log.warnf("failed to update window title: %s", sdl.GetError())
 		}
 	}
