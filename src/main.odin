@@ -332,13 +332,14 @@ benchmark_log :: proc(label: string, samples: []f32) {
 main :: proc() {
 	once := false
 	start_scene := 0
-	fps_initialized := false
+	start_scene_name := ""
 	start_graph := false
 	start_mobile := false
 	force3d := false
 	shot_path := ""
 	force_color := false
 	pan_test := false
+	fps_initialized := false
 	pixel_test := false
 	notify_test := false
 	benchmark_frames := 0
@@ -393,11 +394,12 @@ main :: proc() {
 		case "--scene":
 			if i + 1 < len(args) {
 				i += 1
-				n, parsed := strconv.parse_int(args[i])
-				if parsed && n > 0 {
+				// Accepts a 1-based index (--scene 10) or a scene name
+				// (--scene 10_multipass); the name wins when both parse.
+				if n, parsed := strconv.parse_int(args[i]); parsed && n > 0 {
 					start_scene = int(n - 1)
 				} else {
-					log.warnf("ignoring invalid --scene value %q", args[i])
+					start_scene_name = strings.clone(args[i])
 				}
 			}
 		case "--pixel-test":
@@ -519,6 +521,21 @@ main :: proc() {
 		log.error("failed to initialize scene catalog")
 		return
 	}
+
+	// --scene <name>: resolve to the catalog index (alphabetical order,
+	// same order the selector shows).
+	if start_scene_name != "" {
+		found := false
+		for &s, i in scene_mgr.scenes do if s.title == start_scene_name {
+			scene_ensure_loaded(&scene_mgr, gpu, i)
+			scene_mgr.current = i
+			found = true
+			break
+		}
+		if !found do log.warnf("scene %q not found in catalog", start_scene_name)
+	}
+
+	set_title(window, scene_mgr.scenes[scene_mgr.current].title)
 
 	// Blit: the only graphics pipeline besides the UI overlay.
 	blit_pipeline := create_pipeline(
