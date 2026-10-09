@@ -127,12 +127,21 @@ build_errors_parse :: proc(stderr: string) {
 //   filled by the app; everything else comes from widgets.
 
 SCENES_DIR :: "src/shaders/scenes"
+// User scenes live OUTSIDE the source tree: they survive repo updates
+// and are clearly separated from the built-in learning trail in the
+// scene selector. Created on demand by scene_user_dir.
+USER_SCENES_DIR :: "gis_scenes"
 // Scene artifacts live in their own directory, outside the compiled
 // `generated` package: the glue .odin goose emits for scenes is unused
 // (pipelines are built from reflection JSON) and two manifests sharing
 // one outputDir would clobber each other's common.odin.
 GENERATED_DIR :: "src/generated/scenes"
 SCENES_MANIFEST :: "src/generated/scenes/manifest.json"
+
+// Scene title -> owning root directory. Filled by scene_names_on_disk;
+// every path helper (entry path, modules, mtimes, graph.json) resolves
+// through it so a user scene renders identically to a built-in one.
+scene_roots: map[string]string
 
 SceneKind :: enum {
 	COMPUTE,
@@ -215,6 +224,7 @@ RuntimeScene :: struct {
 	source:   string,
 	mtime:    time.Time,
 	loaded:   bool,
+	user_owned: bool, // lives in USER_SCENES_DIR, not the repo tree
 	passes:   [dynamic]ScenePass,
 	// Widgets merged from every pass's reflection (deduped by label);
 	// values live here, writes fan out to the pass cbuffers by field name.
@@ -841,15 +851,19 @@ create_graphics_pipeline_raw :: proc(
 	}
 	return pipeline
 }
+// Root directory owning a scene: the user dir when registered there,
+// the built-in tree otherwise. Unknown names fall back to built-in so
+// callers before the first scan still build valid paths.
+scene_root_dir :: proc(name: string) -> string {
+	if root, ok := scene_roots[name]; ok do return root
+	return SCENES_DIR
+}
 
-// --------------------------------------------------------------------
-// Discovery + goose orchestration
-
-// A scene is a directory under SCENES_DIR: <name>/<name>.slang is the
-// entry shader, graph.json its node structure, and any extra .slang files
-// are scene-owned modules. This is the entry path for a scene name.
+// A scene is a directory under its root: <name>/<name>.slang is the
+// entry shader, graph.json its node structure, and any extra .slang
+// files are scene-owned modules. This is the entry path for a scene name.
 scene_entry_path :: proc(name: string) -> string {
-	return fmt.tprintf("%s/%s/%s.slang", SCENES_DIR, name, name)
+	return fmt.tprintf("%s/%s/%s.slang", scene_root_dir(name), name, name)
 }
 
 // Scene-owned module files (every .slang in the scene dir except the
@@ -860,7 +874,7 @@ scene_module_names :: proc(name: string) -> [dynamic]string {
 	// Temp-allocated: the caller consumes the list while parsing the
 	// scene (same frame), and the per-frame free_all reclaims it.
 	mods := make([dynamic]string, context.temp_allocator)
-	dir := fmt.tprintf("%s/%s", SCENES_DIR, name)
+	dir := fmt.tprintf("%s/%s", scene_root_dir(name), name)
 	entries, err := os.read_directory_by_path(dir, 0, context.temp_allocator)
 	if err != nil do return mods
 	entry_file := fmt.tprintf("%s.slang", name)
@@ -873,21 +887,49 @@ scene_module_names :: proc(name: string) -> [dynamic]string {
 	slice.sort(mods[:])
 	return mods
 }
-
 scene_names_on_disk :: proc() -> [dynamic]string {
 	// Temp-allocated: callers (scene_poll/rescan) use the list within the
 	// frame, and the main loop's per-frame free_all reclaims it: the
 	// heap would otherwise grow by ~24 strings every frame forever.
 	names := make([dynamic]string, context.temp_allocator)
-	entries, err := os.read_directory_by_path(SCENES_DIR, 0, context.temp_allocator)
-	if err != nil do return names
-	for entry in entries {
-		if entry.type != .Directory do continue
-		if !os.exists(scene_entry_path(entry.name)) do continue
-		append(&names, strings.clone(entry.name, context.temp_allocator))
+	// Built-in first, then user scenes: a user scene with the same name
+	// as a built-in one shadows it (registered last wins in scene_roots).
+	roots := [2]string{SCENES_DIR, scene_user_dir()}
+	for root in roots {
+		entries, err := os.read_directory_by_path(root, 0, context.temp_allocator)
+		if err != nil do continue
+		for entry in entries {
+			if entry.type != .Directory do continue
+			if !os.exists(fmt.tprintf("%s/%s/%s.slang", root, entry.name, entry.name)) do continue
+			// Keys must outlive the frame: the poll path frees the temp
+			// allocator every frame, and a map key pointing into it
+			// dangles (lookup misses, user scenes fall back to builtin).
+			if _, ok := scene_roots[entry.name]; !ok {
+				scene_roots[strings.clone(entry.name)] = root
+			} else {
+				scene_roots[entry.name] = root
+			}
+			// Dedup across roots: the shadowed duplicate is dropped.
+			dup := false
+			for existing in names do if existing == entry.name {
+				dup = true
+				break
+			}
+			if !dup do append(&names, strings.clone(entry.name, context.temp_allocator))
+		}
 	}
 	slice.sort(names[:])
 	return names
+}
+
+// The user scene root, created on first call: sibling to the repo (not
+// inside it), so user work survives clean checkouts and updates.
+scene_user_dir :: proc() -> string {
+	dir := USER_SCENES_DIR
+	if !os.exists(dir) {
+		if os.make_directory(dir) == nil do log.infof("scenes: created user scene dir %s", dir)
+	}
+	return dir
 }
 
 // Writes a goose manifest for the given scenes and runs goose-build so
@@ -918,12 +960,12 @@ scenes_build :: proc(names: []string) -> bool {
 	}
 	first := true
 	for name in names {
-		entry := fmt.tprintf("%s/%s/%s.slang", SCENES_DIR, name, name)
+		entry := scene_entry_path(name)
 		write_shader(&sb, name, entry, &first)
 		// Scene-owned modules (the pass chain): artifact names are
 		// namespaced "scene__mod" so two scenes can both have pass_1.
 		for mod in scene_module_names(name) {
-			source := fmt.tprintf("%s/%s/%s.slang", SCENES_DIR, name, mod)
+			source := fmt.tprintf("%s/%s/%s.slang", scene_root_dir(name), name, mod)
 			write_shader(&sb, fmt.tprintf("%s__%s", name, mod), source, &first)
 		}
 	}
@@ -1015,7 +1057,7 @@ scene_latest_mtime :: proc(name: string) -> time.Time {
 		latest = info.modification_time
 	}
 	for mod in scene_module_names(name) {
-		path := fmt.tprintf("%s/%s/%s.slang", SCENES_DIR, name, mod)
+		path := fmt.tprintf("%s/%s/%s.slang", scene_root_dir(name), name, mod)
 		if info, err := os.stat(path, context.temp_allocator); err == nil {
 			if time.diff(info.modification_time, latest) > 0 {
 				latest = info.modification_time
@@ -1033,6 +1075,7 @@ scene_load_into :: proc(gpu: ^sdl.GPUDevice, name: string, out: ^RuntimeScene) -
 		title  = strings.clone(name),
 		source = scene_entry_path(name),
 	}
+	out.user_owned = scene_root_dir(name) == USER_SCENES_DIR
 	if !os.exists(out.source) do return false
 	out.mtime = scene_latest_mtime(name)
 

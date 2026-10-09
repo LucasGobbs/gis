@@ -333,6 +333,7 @@ main :: proc() {
 	once := false
 	start_scene := 0
 	start_scene_name := ""
+	headless := false
 	start_graph := false
 	start_mobile := false
 	force3d := false
@@ -402,6 +403,10 @@ main :: proc() {
 					start_scene_name = strings.clone(args[i])
 				}
 			}
+		case "--headless":
+			// Code-only mode: scene fullscreen, no UI chrome. Edit the
+			// .slang in an external editor (VS Code); saving hot-reloads.
+			headless = true
 		case "--pixel-test":
 			pixel_test = true
 			if i + 2 < len(args) {
@@ -485,21 +490,33 @@ main :: proc() {
 	}
 	// Borderless: the ImGui title bar (ui.odin) is the window chrome. The
 	// hit test keeps native drag/resize working without a native frame.
-	window := sdl.CreateWindow("shader_explorer", 800, 600, {.RESIZABLE, .BORDERLESS})
+	// Headless skips the chrome entirely: the window is just a canvas for
+	// the scene, sized to fill a good chunk of the screen.
+	win_w, win_h: i32 = 800, 600
+	if headless {
+		bounds: sdl.Rect
+		if sdl.GetDisplayUsableBounds(sdl.GetPrimaryDisplay(), &bounds) {
+			win_w = i32(bounds.h * 4 / 3) // 4:3 of the usable height
+			win_h = i32(bounds.h)
+		}
+	}
+	window := sdl.CreateWindow("gis", win_w, win_h, headless ? sdl.WindowFlags{.RESIZABLE} : sdl.WindowFlags{.RESIZABLE, .BORDERLESS})
 	if window == nil {
 		log.errorf("failed to create SDL window: %s", sdl.GetError())
 		return
 	}
-	if !sdl.SetWindowHitTest(window, window_hit_test, nil) {
-		log.errorf("failed to install window hit test: %s", sdl.GetError())
-		return
+	if !headless {
+		if !sdl.SetWindowHitTest(window, window_hit_test, nil) {
+			log.errorf("failed to install window hit test: %s", sdl.GetError())
+			return
+		}
+		if !sdl.SetWindowMinimumSize(window, 480, 320) {
+			log.errorf("failed to set minimum window size: %s", sdl.GetError())
+			return
+		}
+		// Rounded corners (macOS, via the native NSWindow layer).
+		window_round_corners(window)
 	}
-	if !sdl.SetWindowMinimumSize(window, 480, 320) {
-		log.errorf("failed to set minimum window size: %s", sdl.GetError())
-		return
-	}
-	// Rounded corners (macOS, via the native NSWindow layer).
-	window_round_corners(window)
 	gpu := sdl.CreateGPUDevice({.SPIRV, .MSL, .DXBC, .DXIL}, true, nil)
 	if gpu == nil {
 		log.errorf("failed to create SDL GPU device: %s", sdl.GetError())
@@ -628,29 +645,36 @@ main :: proc() {
 	fx_settings = &ui.fx
 	fx_sfx_init()
 
-	// Integrated ImGui shader editor (F1 toggles the panel).
-	im.CHECKVERSION()
-	im.CreateContext()
-	// Coding font for everything (UI + editor): the atlas default is a tiny
-	// bitmap font that hurts readability; JetBrains Mono is OFL-licensed and
-	// vendored. FontDefault switches NewFrame to it.
-	io_fonts := im.GetIO()
-	if jb := im.FontAtlas_AddFontFromFileTTF(io_fonts.Fonts, "vendor/fonts/JetBrainsMono-Regular.ttf", 16, nil, nil); jb != nil {
-		io_fonts.FontDefault = jb
-		app_font = jb
+	// Integrated ImGui shader editor (F1 toggles the panel). Headless
+	// skips it entirely: no UI context, no editor, no node graph.
+	if !headless {
+		im.CHECKVERSION()
+		im.CreateContext()
+		// Coding font for everything (UI + editor): the atlas default is a tiny
+		// bitmap font that hurts readability; JetBrains Mono is OFL-licensed and
+		// vendored. FontDefault switches NewFrame to it.
+		io_fonts := im.GetIO()
+		if jb := im.FontAtlas_AddFontFromFileTTF(io_fonts.Fonts, "vendor/fonts/JetBrainsMono-Regular.ttf", 16, nil, nil); jb != nil {
+			io_fonts.FontDefault = jb
+			app_font = jb
+		}
+		ui_apply_style()
+		im_sdl.InitForSDLGPU(window)
+		imgui_init := im_sdlgpu.DEFAULT_INIT_INFO
+		imgui_init.Device = gpu
+		imgui_init.ColorTargetFormat = sdl.GetGPUSwapchainTextureFormat(gpu, window)
+		imgui_gpu_ok := im_sdlgpu.Init(&imgui_init)
+		if !imgui_gpu_ok {
+			log.error("failed to initialize ImGui SDL_GPU backend")
+			return
+		}
 	}
-	ui_apply_style()
-	im_sdl.InitForSDLGPU(window)
-	imgui_init := im_sdlgpu.DEFAULT_INIT_INFO
-	imgui_init.Device = gpu
-	imgui_init.ColorTargetFormat = sdl.GetGPUSwapchainTextureFormat(gpu, window)
-	imgui_gpu_ok := im_sdlgpu.Init(&imgui_init)
-	if !imgui_gpu_ok {
-		log.error("failed to initialize ImGui SDL_GPU backend")
-		return
+	ied: ^ImGuiEditor
+	ing: ^NodeGraph
+	if !headless {
+		ied = ied_init()
+		ing = ing_init()
 	}
-	ied := ied_init()
-	ing := ing_init()
 
 	// The application (app.odin): everything that happens is a Msg,
 	// applied in update; effects run through the interpreter below.
@@ -890,6 +914,25 @@ main :: proc() {
 		imgui_mouse := io.WantCaptureMouse
 		imgui_kb := io.WantCaptureKeyboard
 
+		if headless {
+			// Headless event surface: quit, scene pick (1-9), nothing
+			// else. No ImGui, no editor shortcuts, no camera drags —
+			// the scene's uniforms come from defaults + the clock.
+			event: sdl.Event
+			for sdl.PollEvent(&event) {
+				#partial switch event.type {
+				case .QUIT:
+					break main_loop
+				case .KEY_DOWN:
+					if event.key.key == sdl.K_ESCAPE do break main_loop
+					#partial switch event.key.scancode {
+					case ._1, ._2, ._3, ._4, ._5, ._6, ._7, ._8, ._9:
+						n := int(event.key.scancode) - int(sdl.Scancode._1)
+						if n < len(scene_mgr.scenes) do scene_mgr.current = n
+					}
+				}
+			}
+		} else {
 		event: sdl.Event
 		for sdl.PollEvent(&event) {
 			im_sdl.ProcessEvent(&event)
@@ -1063,6 +1106,7 @@ main :: proc() {
 				}
 			}
 		}
+		} // !headless event branch
 
 		// (Re)create offscreen targets before ImGui records preview TexIDs.
 		pass_count := len(scene_mgr.scenes[scene_mgr.current].passes)
@@ -1109,40 +1153,42 @@ main :: proc() {
 		}
 
 		// ImGui frame: Controls + editor panel build their widgets here; the
-		// draw data is rendered after the blit pass below.
-		im_sdlgpu.NewFrame()
-		im_sdl.NewFrame()
-		if pan_test {
-			// Fake the cursor hovering the node canvas (panel spans x
-			// 46..46+52% of the window, below the 38px title bar) and, for
-			// a stretch of frames, wheel deltas as a trackpad sends them.
-			// Queued after the backend's NewFrame so its (possibly stale)
-			// mouse-pos event doesn't override the fake one.
-			w, h: i32
-			sdl.GetWindowSize(window, &w, &h)
-			im.IO_AddMousePosEvent(io, f32(46) + f32(w) * 0.26, f32(h) * 0.55)
-			if pan_test_frame >= 10 && pan_test_frame < 40 {
-				im.IO_AddMouseWheelEvent(io, 0.5, 0.8)
+		// draw data is rendered after the blit pass below. Headless skips
+		// the whole UI pass: no NewFrame, no widgets, no editor ticks.
+		if !headless {
+			im_sdlgpu.NewFrame()
+			im_sdl.NewFrame()
+			if pan_test {
+				// Fake the cursor hovering the node canvas (panel spans x
+				// 46..46+52% of the window, below the 38px title bar) and, for
+				// a stretch of frames, wheel deltas as a trackpad sends them.
+				// Queued after the backend's NewFrame so its (possibly stale)
+				// mouse-pos event doesn't override the fake one.
+				w, h: i32
+				sdl.GetWindowSize(window, &w, &h)
+				im.IO_AddMousePosEvent(io, f32(46) + f32(w) * 0.26, f32(h) * 0.55)
+				if pan_test_frame >= 10 && pan_test_frame < 40 {
+					im.IO_AddMouseWheelEvent(io, 0.5, 0.8)
+				}
+				pan_test_frame += 1
 			}
-			pan_test_frame += 1
+			im.NewFrame()
+			// Node previews sample the previous frame's per-pass outputs.
+			ing_pass_tex = pass_tex[:]
+			ing_scene_tex = scene_tex
+			ing_provenance_valid = ui.debug_provenance_valid
+			ing_provenance_path = ui.debug_provenance_path
+			ing_provenance_rgba = ui.debug_provenance_rgba
+			ing_output_pass = scene_mgr.scenes[scene_mgr.current].pipeline.output_pass
+			ing_runtime_pipeline_error = scene_mgr.scenes[scene_mgr.current].pipeline_error
+			ing_n_passes = pass_count
+			ui_build(ui, &scene_mgr, window, ied, ing, width, height)
+			// The editor follows the active scene (its tab plus every imported
+			// module) and keeps its background work (LSP sync, diagnostics)
+			ied_open_scene(ied, scene_mgr.scenes[scene_mgr.current].title)
+			ied_tick(ied)
+			ied_frame(ied, &ui.fx)
 		}
-		im.NewFrame()
-		// Node previews sample the previous frame's per-pass outputs.
-		ing_pass_tex = pass_tex[:]
-		ing_scene_tex = scene_tex
-		ing_provenance_valid = ui.debug_provenance_valid
-		ing_provenance_path = ui.debug_provenance_path
-		ing_provenance_rgba = ui.debug_provenance_rgba
-		ing_output_pass = scene_mgr.scenes[scene_mgr.current].pipeline.output_pass
-		ing_runtime_pipeline_error = scene_mgr.scenes[scene_mgr.current].pipeline_error
-		ing_n_passes = pass_count
-		ui_build(ui, &scene_mgr, window, ied, ing, width, height)
-		// The editor follows the active scene (its tab plus every imported
-		// module) and keeps its background work (LSP sync, diagnostics)
-		// flowing whether or not its window is visible.
-		ied_open_scene(ied, scene_mgr.scenes[scene_mgr.current].title)
-		ied_tick(ied)
-		ied_frame(ied, &ui.fx)
 
 		// Message pump (app.odin): every action queued by widgets or
 		// events this frame is applied in update; the interpreter below
@@ -1254,22 +1300,22 @@ main :: proc() {
 			ui.pixel_inspect_request = true
 		}
 		current = scene_mgr.current
-		if show_metrics {
-			im.ShowMetricsWindow(nil)
-		}
-		// Error/notice toasts (SDL asserts, build failures) draw over
-		// everything else, top-right. The self-test re-fires every second
-		// so captures at any moment show all three kinds.
-		if notify_test {
-			notify_test_frame += 1
-			if notify_test_frame % 60 == 1 {
-				notify(.INFO, "notify test: info")
-				notify(.WARN, "notify test: warning")
-				notify(.ERROR, "notify test: error")
+		if !headless {
+			if show_metrics do im.ShowMetricsWindow(nil)
+			// Error/notice toasts (SDL asserts, build failures) draw over
+			// everything else, top-right. The self-test re-fires every second
+			// so captures at any moment show all three kinds.
+			if notify_test {
+				notify_test_frame += 1
+				if notify_test_frame % 60 == 1 {
+					notify(.INFO, "notify test: info")
+					notify(.WARN, "notify test: warning")
+					notify(.ERROR, "notify test: error")
+				}
 			}
+			notify_draw(io.DeltaTime)
+			im.Render()
 		}
-		notify_draw(io.DeltaTime)
-		im.Render()
 
 		ticks := sdl.GetTicks()
 		dt := f32(ticks - prev_ticks) / 1000
@@ -1601,17 +1647,19 @@ main :: proc() {
 				}
 
 				// ImGui pass: Controls + editor panel on top of everything.
-				draw_data := im.GetDrawData()
-				if draw_data.DisplaySize.x > 0 && draw_data.DisplaySize.y > 0 {
-					im_sdlgpu.PrepareDrawData(draw_data, cmd)
-					imgui_target := sdl.GPUColorTargetInfo {
-						texture  = swapchain_texture,
-						load_op  = .LOAD,
-						store_op = .STORE,
+				if !headless {
+					draw_data := im.GetDrawData()
+					if draw_data.DisplaySize.x > 0 && draw_data.DisplaySize.y > 0 {
+						im_sdlgpu.PrepareDrawData(draw_data, cmd)
+						imgui_target := sdl.GPUColorTargetInfo {
+							texture  = swapchain_texture,
+							load_op  = .LOAD,
+							store_op = .STORE,
+						}
+						imgui_pass := sdl.BeginGPURenderPass(cmd, &imgui_target, 1, nil)
+						im_sdlgpu.RenderDrawData(draw_data, cmd, imgui_pass)
+						sdl.EndGPURenderPass(imgui_pass)
 					}
-					imgui_pass := sdl.BeginGPURenderPass(cmd, &imgui_target, 1, nil)
-					im_sdlgpu.RenderDrawData(draw_data, cmd, imgui_pass)
-					sdl.EndGPURenderPass(imgui_pass)
 				}
 			}
 		}
@@ -1662,9 +1710,12 @@ main :: proc() {
 	if debug_watch_readback.pending do debug_watch_readback_cancel(&debug_watch_readback, gpu)
 	if debug_watch_buffer != nil do sdl.ReleaseGPUBuffer(gpu, debug_watch_buffer)
 	if pixel_readback.pending do pixel_readback_cancel(&pixel_readback, gpu)
-	ite_destroy(ied.handle)
-	im_sdlgpu.Shutdown()
-	im_sdl.Shutdown()
-	im.DestroyContext()
+	if !headless {
+		ite_destroy(ied.handle)
+		ine_destroy(ing.handle)
+		im_sdlgpu.Shutdown()
+		im_sdl.Shutdown()
+		im.DestroyContext()
+	}
 	log.info("Exiting")
 }

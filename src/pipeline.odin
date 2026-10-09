@@ -46,7 +46,7 @@ PipelinePlan :: struct {
 }
 
 pipeline_graph_path :: proc(scene: string) -> string {
-	return fmt.tprintf("%s/%s/graph.json", SCENES_DIR, scene)
+	return fmt.tprintf("%s/%s/graph.json", scene_root_dir(scene), scene)
 }
 
 pipeline_plan_destroy :: proc(plan: ^PipelinePlan) {

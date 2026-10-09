@@ -1,4 +1,4 @@
-# Shader Explorer
+# gis — Gobbi Interactive Shaders
 
 A desktop live-coding environment for learning and experimenting with real-time GPU
 shaders: no windowing, buffers, or pipeline boilerplate between you and the first
@@ -28,6 +28,19 @@ up and the error comes back into the editor as an annotation.
   or incompatible endpoints keep the last valid pipeline active.
 - **Failure-preserving hot reload**: dependency-tracked incremental builds on a
   worker thread; broken code keeps the previous pipeline on screen.
+- **Headless mode**: `--headless` turns the app into a pure render
+  surface for the selected scene — no UI chrome, no editor, no node
+  graph. Edit the `.slang` in an external editor (VS Code); every save
+  hot-reloads the running scene. Static nodes: each scene's `graph.json`
+  is honored but never edited in-app.
+- **User scenes vs built-ins**: scenes under `src/shaders/scenes/` are
+  the built-in catalog; new scenes (created in-app or dropped in
+  `gis_scenes/<name>/<name>.slang`) live outside the source tree and are
+  marked with a dot in the scene selector. A user scene with the same
+  name as a built-in one shadows it. Because user scenes sit two levels
+  below the repo root, their shared-module import is
+  `import "../../src/shaders/common";` (the in-app template already
+  emits it).
 - **Assets**: OBJ model loading and texture import (stb_image); scene templates for
   compute / 2D / 3D graphics.
 - **Visual debugging**: `debug_scalar`, `debug_signed`, `debug_vector`,
@@ -71,10 +84,10 @@ src/
   scene_runtime.odin   scene discovery, async incremental builds, reflection parsing
   pipeline.odin        graph.json schema, validation, DAG plan, last-known-good
   imgui_editor.odin    code editor UI (ImGuiColorTextEdit + slangd LSP client)
-  imgui_nodes.odin     node editor (imnodes), reflection-driven pins, layout
+  imgui_nodes.odin     node editor (imnodes-odin), reflection-driven pins, layout
   scene_templates.odin new-scene templates
   shaders/scenes/      the scene corpus (one folder per scene)
-vendor/                slang, odin-imgui, ImGuiColorTextEdit, imnodes, fonts
+vendor/                slang, odin-imgui, ImGuiColorTextEdit, imnodes-odin, fonts
 ```
 
 ## Editable pipeline graph

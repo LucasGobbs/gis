@@ -17,7 +17,9 @@ SceneTemplateKind :: enum {
 }
 
 TEMPLATE_COMPUTE :: `// New compute scene: one thread per pixel writing out_tex.
-import "../../common";
+// User scenes live in gis_scenes/<name>/: two levels below the repo
+// root, so the shared module import carries the extra hop.
+import "../../src/shaders/common";
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<SceneUniforms> Uniforms;
@@ -37,7 +39,9 @@ void computeMain(uint3 id : SV_DispatchThreadID) {
 `
 
 TEMPLATE_GRAPHICS_2D :: `// New 2D graphics scene: fullscreen triangle, per-pixel fragment.
-import "../../common";
+// User scenes live in gis_scenes/<name>/: two levels below the repo
+// root, so the shared module import carries the extra hop.
+import "../../src/shaders/common";
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<SceneUniforms> Uniforms;
@@ -56,7 +60,9 @@ float4 pixelMain(VsOut input) : SV_Target0 {
 `
 
 TEMPLATE_GRAPHICS_3D :: `// New 3D graphics scene: renders the loaded model with wrapped diffuse.
-import "../../common";
+// User scenes live in gis_scenes/<name>/: two levels below the repo
+// root, so the shared module import carries the extra hop.
+import "../../src/shaders/common";
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<SceneUniforms> Uniforms;
@@ -100,17 +106,20 @@ template_source :: proc(kind: SceneTemplateKind) -> string {
 }
 
 // Creates a scene unit (directory with the entry shader) at the first
-// free name under SCENES_DIR and returns the scene title for follow-up
-// selection.
+// free name under USER_SCENES_DIR and returns the scene title for
+// follow-up selection.
 scene_create :: proc(kind: SceneTemplateKind) -> (title: string, ok: bool) {
 	base := template_base_name(kind)
 	source := template_source(kind)
+	// User scenes live outside the source tree (USER_SCENES_DIR): they
+	// survive repo updates and read as "mine" in the scene selector.
+	user_dir := scene_user_dir()
 	for n := 1; n < 100; n += 1 {
 		name := base
 		if n > 1 {
 			name = fmt.tprintf("%s_%d", base, n)
 		}
-		dir := fmt.tprintf("%s/%s", SCENES_DIR, name)
+		dir := fmt.tprintf("%s/%s", user_dir, name)
 		if os.exists(dir) do continue
 		if os.make_directory(dir) != nil {
 			log.errorf("new scene: failed to create %s", dir)
