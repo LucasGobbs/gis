@@ -211,8 +211,12 @@ host_frame :: proc(h: ^Host) -> bool {
 	frame_timing_begin(&h.timing)
 	free_all(context.temp_allocator)
 
-	// 2. Scene hot-reload + on-demand asset routes.
-	scene_poll(&h.scene_mgr, h.gfx.gpu)
+	// 2. Scene hot-reload + on-demand asset routes. Blocked while a GIF
+	// capture is mid-flight: its uniforms/submit touch the scene pointer
+	// captured at gif_capture_begin, and a reload would swap it under us.
+	if !gif_capture.active {
+		scene_poll(&h.scene_mgr, h.gfx.gpu)
+	}
 	pipeline_scene_refresh(&h.scene_mgr.scenes[h.scene_mgr.current])
 	pipeline_scene_reload(&h.scene_mgr.scenes[h.scene_mgr.current], &h.gfx)
 
@@ -233,7 +237,12 @@ host_frame :: proc(h: ^Host) -> bool {
 	// 5. One pump per frame: every SDL event goes to the ImGui backend
 	// (outside headless) and into glove; dispatch runs after NewFrame.
 	glove_sdl.pump_poll(&h.input_pump, &h.inputs)
-	if glove.quit_requested(&h.inputs) do return false
+	// Window close / Cmd+Q: gated by the unsaved-work guard. The quit
+	// latch stays set when suppressed, so it must be consumed here or
+	// the app can never close.
+	if glove.quit_requested(&h.inputs) {
+		if input_quit_allowed(&h.input_ctx) do return false
+	}
 	pixel_size := glove.window_pixel_size(&h.inputs)
 	width, height := pixel_size.x, pixel_size.y
 
@@ -320,6 +329,24 @@ host_frame :: proc(h: ^Host) -> bool {
 		selftest_notify_tick(&h.selftest)
 		notify_draw(!h.headless ? im.GetIO().DeltaTime : 1.0/60.0)
 		im.Render()
+		// --hover-debug: HUD with what the scene actually receives —
+		// SDL-space mouse (raw glove), scene-space mouse_pixel, click,
+		// app time. Diagnoses "the scene ignores my mouse": if these
+		// numbers don't move, the events never reach the app; if they
+		// do, the uniform/uniform-push path is the suspect.
+		if hover_debug {
+			raw_pos := glove.mouse_position(&h.inputs)
+			hud := fmt.ctprintf(
+				"mouse sdl=(%.0f,%.0f) scene=(%.0f,%.0f) click=%v app_time=%.2f",
+				raw_pos.x, raw_pos.y,
+				h.input_ctx.mouse_pixel.x, h.input_ctx.mouse_pixel.y,
+				h.input_ctx.mouse_click,
+				h.app_time,
+			)
+			dl := im.GetForegroundDrawList()
+			im.DrawList_AddRectFilled(dl, {8, TITLEBAR_H + 8}, {8 + im.CalcTextSize(hud).x + 12, TITLEBAR_H + 30}, im.GetColorU32Vec4({0, 0, 0, 0.75}), 4)
+			im.DrawList_AddText(dl, {14, TITLEBAR_H + 12}, im.GetColorU32Vec4({0.95, 0.85, 0.55, 1}), hud)
+		}
 	}
 
 	// 14. Frame clock.
@@ -439,6 +466,15 @@ host_frame :: proc(h: ^Host) -> bool {
 		inspector_request_pixel(&h.inspector, h.ui, scale, &h.gfx.uploader, h.targets.scene, width, height)
 	}
 
+	// 21b. GIF capture: one frame per app frame (UI stays live). Skipped
+	// while the UI-requested export is still arming this frame; step
+	// starts on the next one.
+	if gif_capture.active && export_pending == .NONE {
+		gif_capture_step(h, h.targets.scene, width, height, h.ui.params.color, &resources)
+	}
+	// Assembly + final-toast pump (ffmpeg runs off the main thread).
+	gif_export_pump()
+
 	// 22. Frame export: download the just-submitted scene texture and exit.
 	// The download's copy pass is queue-ordered AFTER the scene frame,
 	// but wait for the render fence anyway so the export never races
@@ -452,22 +488,18 @@ host_frame :: proc(h: ^Host) -> bool {
 	// 23. UI export buttons: scene_tex now holds the current frame.
 	#partial switch export_pending {
 	case .PNG:
-		export_frame_png(&h.gfx.uploader, h.targets.scene, width, height, h.scene_mgr.scenes[current].title)
+		if path := export_frame_png(&h.gfx.uploader, h.targets.scene, width, height, h.scene_mgr.scenes[current].title); path != "" {
+			notify(.INFO, tr("saved %s"), path)
+		} else {
+			notify(.ERROR, tr("png export failed"))
+		}
 	case .GIF:
-		export_gif(
-			&h.gfx,
-			h.gfx.gpu,
-			&h.scene_mgr.scenes[current],
-			h.targets.scene,
-			&resources,
-			width,
-			height,
-			h.ui.params.color,
-			h.ui.gif_start,
-			h.ui.gif_end,
-		)
+		// Capture now happens one frame per app frame (UI stays live);
+		// the EXPORT_GIF cmd only arms it here.
+		if !gif_capture.active {
+			gif_capture_begin(h, h.ui.gif_start, h.ui.gif_end)
+		}
 	}
-
 	// 24. Graphics passes: blit the texture, then the UI overlay.
 	if !host_present(h, width, height, h.targets.scene, h.app_time) {
 		return false
