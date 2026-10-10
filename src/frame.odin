@@ -228,6 +228,7 @@ host_frame :: proc(h: ^Host) -> bool {
 
 	// 4. No scenes at all: nothing to render.
 	if len(h.scene_mgr.scenes) == 0 do return false
+	current := h.scene_mgr.current // captured BEFORE the pump: the switch test at step 10 compares against this
 
 	// 5. One pump per frame: every SDL event goes to the ImGui backend
 	// (outside headless) and into glove; dispatch runs after NewFrame.
@@ -290,13 +291,14 @@ host_frame :: proc(h: ^Host) -> bool {
 	if quit do return false
 
 	// 10. Requested scene change: drop stale readbacks, load or roll back.
-	current := h.scene_mgr.current
-	requested_scene := h.scene_mgr.current
+	// `current` was captured before the pump (step 4); a SceneSelected msg
+	// applied in update made it diverge from scene_mgr.current — the same
+	// test the original main loop ran. Equal values: no switch requested.
 	if h.scene_mgr.current != current {
 		inspector_on_scene_change(&h.inspector, h.ui, &h.gfx.uploader)
 	}
-	if requested_scene != current && !scene_ensure_loaded(&h.scene_mgr, h.gfx.gpu, requested_scene) {
-		log.errorf("keeping scene %s because %s could not be loaded", h.scene_mgr.scenes[current].title, h.scene_mgr.scenes[requested_scene].title)
+	if !scene_ensure_loaded(&h.scene_mgr, h.gfx.gpu, h.scene_mgr.current) {
+		log.errorf("keeping scene %s because %s could not be loaded", h.scene_mgr.scenes[current].title, h.scene_mgr.scenes[h.scene_mgr.current].title)
 		h.scene_mgr.current = current
 	}
 
@@ -309,9 +311,8 @@ host_frame :: proc(h: ^Host) -> bool {
 		gen_timer_reset(&h.gen)
 	}
 	// Messages may have switched the scene this frame (update applied
-	// them); refresh the local before rendering.
+	// them); the render below reads scene_mgr.current directly.
 	selftest_request_pixel(&h.selftest, h.ui)
-	current = h.scene_mgr.current
 
 	// 13. Metrics, toasts, ImGui render.
 	if !h.headless {
