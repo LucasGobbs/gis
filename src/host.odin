@@ -155,6 +155,12 @@ host_init :: proc(h: ^Host, o: Options) -> bool {
 		}
 		h.editor = ied_init()
 		h.graph = ing_init()
+		ui_prefs_load(h.ui, h.editor)
+		im.GetStyle().FontSizeBase = h.ui.font_size
+		// Keyboard navigation for the ImGui chrome (sidebar, combos,
+		// popups): the app is keyboard-first (Cmd+S, F1-F5), the chrome
+		// should not be mouse-only.
+		im.GetIO().ConfigFlags += {im.ConfigFlags.NavEnableKeyboard}
 		h.imgui_ready = true
 	}
 
@@ -180,6 +186,7 @@ host_init :: proc(h: ^Host, o: Options) -> bool {
 		orbit_dist  = 2.6,
 		model_pitch = 0.55,
 	}
+	h.inputs.action_log_enabled = o.input_log
 	input_bindings_init(&h.inputs, &h.input_ctx)
 	if !h.headless {
 		// ImGui (and only ImGui) sees the raw event stream too, for its

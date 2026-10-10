@@ -328,12 +328,13 @@ host_frame :: proc(h: ^Host) -> bool {
 		if show_metrics do im.ShowMetricsWindow(nil)
 		selftest_notify_tick(&h.selftest)
 		notify_draw(!h.headless ? im.GetIO().DeltaTime : 1.0/60.0)
-		im.Render()
 		// --hover-debug: HUD with what the scene actually receives —
 		// SDL-space mouse (raw glove), scene-space mouse_pixel, click,
 		// app time. Diagnoses "the scene ignores my mouse": if these
 		// numbers don't move, the events never reach the app; if they
-		// do, the uniform/uniform-push path is the suspect.
+		// do, the uniform/uniform-push path is the suspect. Must draw
+		// before im.Render(): afterwards the frame is torn down and the
+		// foreground draw list call faults.
 		if hover_debug {
 			raw_pos := glove.mouse_position(&h.inputs)
 			hud := fmt.ctprintf(
@@ -347,6 +348,7 @@ host_frame :: proc(h: ^Host) -> bool {
 			im.DrawList_AddRectFilled(dl, {8, TITLEBAR_H + 8}, {8 + im.CalcTextSize(hud).x + 12, TITLEBAR_H + 30}, im.GetColorU32Vec4({0, 0, 0, 0.75}), 4)
 			im.DrawList_AddText(dl, {14, TITLEBAR_H + 12}, im.GetColorU32Vec4({0.95, 0.85, 0.55, 1}), hud)
 		}
+		im.Render()
 	}
 
 	// 14. Frame clock.

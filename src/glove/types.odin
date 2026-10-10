@@ -409,6 +409,11 @@ System :: struct {
 	// Capture filter set by the app each frame before dispatch.
 	captures:                Captures,
 
+	// --input-log: when set, dispatch logs every fired action (the
+	// emission the app reacts to) alongside the raw event log the
+	// adapter writes. App sets it during init; off by default.
+	action_log_enabled:      bool,
+
 	// Handlers registered on named actions and window lifecycle.
 	button_handlers:         [dynamic]Button_Handler_Entry,
 	axis_2d_handlers:        [dynamic]Axis_2D_Handler_Entry,

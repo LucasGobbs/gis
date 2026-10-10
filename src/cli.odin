@@ -7,6 +7,7 @@ package main
 import "core:os"
 import "core:strconv"
 import "core:strings"
+import glove_sdl "./glove/adapters/sdl"
 
 Options :: struct {
 	once:             bool,
@@ -20,8 +21,9 @@ Options :: struct {
 	pixel_test:       bool,
 	ied_debug_clicks: bool,
 	watch_test:       bool,
-	pan_test:         bool,
 	hover_debug:      bool,
+	input_log:        bool,
+	pan_test:         bool,
 	ied_test:         bool,
 	benchmark_frames: int, // 0 = off
 	benchmark_warmup: int,
@@ -50,6 +52,10 @@ options_parse :: proc(args: []string) -> Options {
 		case "--hover-debug":
 			// Logs the live hover pipeline (capture, dwell, lookup).
 			o.hover_debug = true
+		case "--input-log":
+			// Logs every raw key press and mouse click (glove SDL
+			// adapter) — the exact user input stream.
+			o.input_log = true
 		case "--notify-test":
 			// Fires one toast of each kind at startup (visual check of
 			// the notification overlay).
@@ -66,7 +72,7 @@ options_parse :: proc(args: []string) -> Options {
 		case "--metrics":
 			o.metrics = true
 		case "--mobile":
-			// Start in mobile theater (F4): 9:16 portrait for vertical
+			// Start in mobile theater (F5): 9:16 portrait for vertical
 			// recordings.
 			o.start_mobile = true
 		case "--color":
@@ -142,5 +148,6 @@ options_apply_globals :: proc(o: Options) {
 	ied_debug_clicks = o.ied_debug_clicks
 	ied_selftest = o.ied_test
 	hover_debug = o.hover_debug
+
 	show_metrics = o.metrics
 }

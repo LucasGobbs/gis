@@ -1,6 +1,7 @@
 package sdl
 
 import "core:c"
+import "core:log"
 import glove "../.."
 import sdl3 "vendor:sdl3"
 
@@ -14,11 +15,28 @@ register_event :: proc(user_data: rawptr, system: ^glove.System, raw_event: rawp
 
 	#partial switch event.type {
 	case .KEY_DOWN, .KEY_UP:
+		if system.action_log_enabled {
+			log.infof(
+				"[input] key %s scan=%v mods=%v",
+				event.key.down ? "down" : "up",
+				event.key.scancode,
+				event.key.mod,
+			)
+		}
 		key, ok := key_from_scancode(event.key.scancode)
 		if !ok do return false
 		glove.key_set(system, key, event.key.down)
 		return true
 	case .MOUSE_BUTTON_DOWN, .MOUSE_BUTTON_UP:
+		if system.action_log_enabled {
+			log.infof(
+				"[input] mouse %s button=%d at=(%.0f,%.0f)",
+				event.button.down ? "down" : "up",
+				event.button.button,
+				event.button.x,
+				event.button.y,
+			)
+		}
 		button, ok := mouse_button_from_sdl(event.button.button)
 		if !ok do return false
 		glove.mouse_set_button(system, button, event.button.down)

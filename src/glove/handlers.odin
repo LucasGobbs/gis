@@ -5,6 +5,8 @@ package glove
 // that runs them. Handlers fire only through dispatch: capture filtering
 // and trigger evaluation live here, never in the app.
 
+import "core:log"
+
 action_find :: proc(system: ^System, name: string) -> (Button_Action, bool) {
 	for action, index in system.button_actions {
 		if action.name == name do return Button_Action(index), true
@@ -92,7 +94,10 @@ dispatch :: proc(system: ^System) {
 		case .Down:     fire = data.state.down
 		case .Changed:  fire = false
 		}
-		if fire do entry.handler(entry.user_data, system, entry.action)
+		if fire {
+			if system.action_log_enabled do log.infof("[input] action %s (%v)", data.name, entry.trigger)
+			entry.handler(entry.user_data, system, entry.action)
+		}
 	}
 
 	for entry in system.axis_2d_handlers {
