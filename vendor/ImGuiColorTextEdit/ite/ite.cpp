@@ -146,7 +146,12 @@ void ite_set_glass(void *ed, bool on, float alpha) {
 	if (on == s->glass && s->palette_saved) return;
 	// Re-save on every transition into glass so theme changes are preserved.
 	if (on && !s->glass) {
-		s->saved_palette = s->editor.GetPalette();
+		// While a fade (open/close spring) is active the current palette is
+		// the fade-dimmed one; saving it here would bake the animation's
+		// alpha into the glass restore point and compound on every F3
+		// toggle (text fades to invisible after a few presses). The
+		// pre-fade palette is the authority to save.
+		s->saved_palette = s->fade_active ? s->fade_saved_palette : s->editor.GetPalette();
 		s->palette_saved = true;
 	}
 	if (on) {
@@ -164,6 +169,17 @@ void ite_set_glass(void *ed, bool on, float alpha) {
 		s->editor.SetPalette(s->saved_palette);
 	}
 	s->glass = on;
+	// A toggle mid-animation re-bases the fade: recapture its restore
+	// point so completion lands on the post-toggle palette instead of
+	// re-restoring the pre-toggle one (which could re-dim a glass-off
+	// editor or bake the dim back over the next ON toggle).
+	if (s->fade_active) {
+		s->fade_saved_palette = s->editor.GetPalette();
+	}
+}
+
+uint32_t ite_get_background_alpha(void *ed) {
+	return (S(ed)->editor.GetPalette()[static_cast<size_t>(TextEditor::Color::background)] >> 24) & 0xFF;
 }
 
 void ite_set_leading_whitespace_only(void *ed, bool on) {

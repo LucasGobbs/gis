@@ -64,6 +64,10 @@ void ite_set_glass(void *ed, bool on, float alpha);
 // so the fade must scale the palette itself.
 void ite_set_fade(void *ed, float alpha);
 
+// Current background palette entry's alpha byte (0..255): the selftest
+// reads it back to verify glass toggling did not compound the fade.
+uint32_t ite_get_background_alpha(void *ed);
+
 // Themes: replace the whole palette. colors maps to the component's Color
 // enum (text, keyword, declaration, number, string, punctuation,
 // preprocessor, identifier, knownIdentifier, comment, background, cursor,
