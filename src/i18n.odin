@@ -40,19 +40,19 @@ I18nEntry :: struct {
 }
 
 i18n_build :: proc(entries: []I18nEntry) -> ^i18n.Translation {
-	cat := new(i18n.Translation)
-	cat.k_v = make(map[string]i18n.Section)
+	catalog := new(i18n.Translation)
+	catalog.k_v = make(map[string]i18n.Section)
 	section := make(i18n.Section)
-	for e in entries {
-		forms := make([]string, 2 if e.plural != "" else 1)
-		forms[0] = strings.clone(e.single)
-		if e.plural != "" do forms[1] = strings.clone(e.plural)
-		section[strings.clone(e.key)] = forms
+	for entry in entries {
+		forms := make([]string, 2 if entry.plural != "" else 1)
+		forms[0] = strings.clone(entry.single)
+		if entry.plural != "" do forms[1] = strings.clone(entry.plural)
+		section[strings.clone(entry.key)] = forms
 	}
-	cat.k_v[strings.clone("")] = section
+	catalog.k_v[strings.clone("")] = section
 	// ES and PT share the English rule: singular for 1, plural otherwise.
-	cat.pluralize = proc(n: int) -> int { return 0 if n == 1 else 1 }
-	return cat
+	catalog.pluralize = proc(count: int) -> int { return 0 if count == 1 else 1 }
+	return catalog
 }
 
 I18N_LANG_FILE :: "assets/i18n.lang"
@@ -68,18 +68,18 @@ i18n_set_language :: proc(lang: Language) {
 	case .PT:
 		i18n.ACTIVE = i18n_build(PT_STRINGS)
 	}
-	buf := [1]u8{u8(lang) + '0'}
-	if err := os.write_entire_file(I18N_LANG_FILE, buf[:]); err != nil {
+	tag_buffer := [1]u8{u8(lang) + '0'}
+	if write_err := os.write_entire_file(I18N_LANG_FILE, tag_buffer[:]); write_err != nil {
 		log.errorf("i18n: could not write %s", I18N_LANG_FILE)
 	}
 }
 
 i18n_init :: proc() {
-	lang := Language.EN
-	if data, err := os.read_entire_file(I18N_LANG_FILE, context.temp_allocator); err == nil && len(data) >= 1 {
-		if data[0] >= '0' && data[0] <= '2' do lang = Language(data[0] - '0')
+	current_language := Language.EN
+	if file_data, read_err := os.read_entire_file(I18N_LANG_FILE, context.temp_allocator); read_err == nil && len(file_data) >= 1 {
+		if file_data[0] >= '0' && file_data[0] <= '2' do current_language = Language(file_data[0] - '0')
 	}
-	i18n_set_language(lang)
+	i18n_set_language(current_language)
 }
 
 // ---------------------------------------------------------------------
@@ -114,6 +114,7 @@ ES_STRINGS := []I18nEntry{
 	{"create resource", "crear recurso", ""},
 	{"debug", "depuración", ""},
 	{"delete node", "eliminar nodo", ""},
+	{"swap file", "cambiar archivo", ""},
 	{"develop", "revelar", ""},
 	{"develop style", "estilo de revelado", ""},
 	{"develop transition", "transición de revelado", ""},
@@ -138,7 +139,6 @@ ES_STRINGS := []I18nEntry{
 	{"graphics pass", "pass graphics", ""},
 	{"grid", "cuadrícula", ""},
 	{"image", "imagen", ""},
-	{"ink particles", "partículas de tinta", ""},
 	{"interaction", "interacción", ""},
 	{"iris", "iris", ""},
 	{"language", "idioma", ""},
@@ -166,7 +166,6 @@ ES_STRINGS := []I18nEntry{
 	{"scene '%s' failed to load", "la escena '%s' no pudo cargarse", ""},
 	{"shared", "compartidos", ""},
 	{"show 2d", "show 2d", ""},
-	{"sound", "sonido", ""},
 	{"springs", "resortes", ""},
 	{"start (s)", "inicio (s)", ""},
 	{"subtle", "sutil", ""},
@@ -194,9 +193,7 @@ ES_STRINGS := []I18nEntry{
 	{"toggle editor glass", "modo cristal del editor", ""},
 	{"theater mode", "modo teatro", ""},
 	{"mobile theater (9:16)", "teatro móvil (9:16)", ""},
-	{"zen mode: hide panels", "modo zen: ocultar paneles", ""},
 	{"toggle sidebar", "mostrar/ocultar barra lateral", ""},
-	{"select scene by number", "seleccionar escena por número", ""},
 	{"close tooltip / quit", "cerrar tooltip / salir", ""},
 	{"save all", "guardar todo", ""},
 	{"go to definition", "ir a la definición", ""},
@@ -205,7 +202,14 @@ ES_STRINGS := []I18nEntry{
 	{"undo / redo", "deshacer / rehacer", ""},
 	{"find in file", "buscar en el archivo", ""},
 	{"pixel inspector: click the scene to sample", "inspector de píxeles: clic en la escena para muestrear", ""},
-	{"hold the mouse on a symbol for docs; wheel to scroll", "mantén el mouse sobre un símbolo para ver docs; rueda para desplazar", ""},
+	{"file explorer", "explorador de archivos", ""},
+	{"node graph", "grafo de nodos", ""},
+	{"new file", "nuevo archivo", ""},
+	{"scenes", "escenas", ""},
+	{"trails", "guías", ""},
+	{"user scenes", "escenas de usuario", ""},
+	{"graph grab: drag to pan", "mantén espacio y arrastra para mover el grafo", ""},
+	{"node graph zoom", "zoom del grafo de nodos", ""},
 }
 
 PT_STRINGS := []I18nEntry{
@@ -236,6 +240,7 @@ PT_STRINGS := []I18nEntry{
 	{"create resource", "criar recurso", ""},
 	{"debug", "depuração", ""},
 	{"delete node", "excluir nó", ""},
+	{"swap file", "trocar arquivo", ""},
 	{"develop", "revelar", ""},
 	{"develop style", "estilo de revelação", ""},
 	{"develop transition", "transição de revelação", ""},
@@ -260,7 +265,6 @@ PT_STRINGS := []I18nEntry{
 	{"graphics pass", "pass graphics", ""},
 	{"grid", "grade", ""},
 	{"image", "imagem", ""},
-	{"ink particles", "partículas de tinta", ""},
 	{"interaction", "interação", ""},
 	{"iris", "íris", ""},
 	{"language", "idioma", ""},
@@ -288,7 +292,6 @@ PT_STRINGS := []I18nEntry{
 	{"scene '%s' failed to load", "a cena '%s' falhou ao carregar", ""},
 	{"shared", "compartilhados", ""},
 	{"show 2d", "show 2d", ""},
-	{"sound", "som", ""},
 	{"springs", "molas", ""},
 	{"start (s)", "início (s)", ""},
 	{"subtle", "sutil", ""},
@@ -316,13 +319,17 @@ PT_STRINGS := []I18nEntry{
 	{"toggle editor glass", "modo vidro do editor", ""},
 	{"theater mode", "modo teatro", ""},
 	{"mobile theater (9:16)", "teatro mobile (9:16)", ""},
-	{"zen mode: hide panels", "modo zen: esconder painéis", ""},
-	{"toggle sidebar", "mostrar/ocultar barra lateral", ""},
-	{"select scene by number", "selecionar cena pelo número", ""},
 	{"close tooltip / quit", "fechar tooltip / sair", ""},
 	{"save all", "salvar tudo", ""},
 	{"go to definition", "ir para a definição", ""},
-	{"duplicate line", "duplicar linha", ""},
+	{"file explorer", "explorador de arquivos", ""},
+	{"node graph", "grafo de nós", ""},
+	{"new file", "novo arquivo", ""},
+	{"scenes", "cenas", ""},
+	{"trails", "trilhas", ""},
+	{"user scenes", "cenas do usuário", ""},
+	{"graph grab: drag to pan", "segure espaço e arraste para mover o grafo", ""},
+	{"node graph zoom", "zoom do grafo de nós", ""},
 	{"navigate back", "voltar", ""},
 	{"undo / redo", "desfazer / refazer", ""},
 	{"find in file", "buscar no arquivo", ""},

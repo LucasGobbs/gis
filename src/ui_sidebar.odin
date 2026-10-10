@@ -8,6 +8,7 @@ package main
 import im "../vendor/odin-imgui"
 import "core:fmt"
 import "core:math"
+import "core:os"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -21,18 +22,18 @@ STRIP_W :: 46
 // list (the font has no icon glyphs). The active mode gets the accent
 // tint; hover brightens. Returns true when clicked.
 ui_strip_button :: proc(ui: ^Ui, mode: SidebarMode, index: int) -> bool {
-	dl := im.GetWindowDrawList()
+	draw_list := im.GetWindowDrawList()
 	im.SetCursorPos({(STRIP_W - 34) / 2, 10 + f32(index) * 42})
 	pos := im.GetCursorScreenPos()
 	clicked := im.InvisibleButton(fmt.ctprintf("##strip%d", index), {34, 34})
 	hovered := im.IsItemHovered()
 	active := ui.mode == mode && ui.panel_open
-	cx := pos.x + 17
-	cy := pos.y + 17
+	center_x := pos.x + 17
+	center_y := pos.y + 17
 	// The active tint is the strip's animated pill (ui_activity_strip);
 	// buttons only draw the hover wash.
 	if !active && hovered {
-		im.DrawList_AddRectFilled(dl, pos, {pos.x + 34, pos.y + 34}, im.GetColorU32Vec4({1, 1, 1, 0.07}), 8)
+		im.DrawList_AddRectFilled(draw_list, pos, {pos.x + 34, pos.y + 34}, im.GetColorU32Vec4({1, 1, 1, 0.07}), 8)
 	}
 	icon_col := im.GetColorU32Vec4(
 		active ? im.Vec4{0.91, 0.66, 0.34, 1} :
@@ -43,50 +44,50 @@ ui_strip_button :: proc(ui: ^Ui, mode: SidebarMode, index: int) -> bool {
 		// Sliders: three rails with knobs at different offsets.
 		knobs := [3]f32{-2, 3, -4}
 		for k, i in knobs {
-			y := cy - 6 + f32(i) * 6
-			im.DrawList_AddLine(dl, {cx - 7, y}, {cx + 7, y}, icon_col, 1.4)
-			im.DrawList_AddCircleFilled(dl, {cx + k, y}, 2.2, icon_col)
+			y := center_y - 6 + f32(i) * 6
+			im.DrawList_AddLine(draw_list, {center_x - 7, y}, {center_x + 7, y}, icon_col, 1.4)
+			im.DrawList_AddCircleFilled(draw_list, {center_x + k, y}, 2.2, icon_col)
 		}
 	case .FILES:
 		// Folder: body outline with a raised tab on the top edge.
-		im.DrawList_AddRect(dl, {cx - 8, cy - 4}, {cx + 8, cy + 7}, icon_col, 2, 1.4)
-		im.DrawList_AddLine(dl, {cx - 8, cy - 4}, {cx - 8, cy - 6}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx - 8, cy - 6}, {cx - 3, cy - 6}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx - 3, cy - 6}, {cx - 1, cy - 4}, icon_col, 1.4)
+		im.DrawList_AddRect(draw_list, {center_x - 8, center_y - 4}, {center_x + 8, center_y + 7}, icon_col, 2, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x - 8, center_y - 4}, {center_x - 8, center_y - 6}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x - 8, center_y - 6}, {center_x - 3, center_y - 6}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x - 3, center_y - 6}, {center_x - 1, center_y - 4}, icon_col, 1.4)
 	case .LEARN:
 		// Open book: two page halves around a spine.
-		im.DrawList_AddLine(dl, {cx, cy - 7}, {cx, cy + 6}, icon_col, 1.4) // spine
-		im.DrawList_AddLine(dl, {cx, cy - 7}, {cx - 8, cy - 4}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx - 8, cy - 4}, {cx - 8, cy + 5}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx - 8, cy + 5}, {cx, cy + 6}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx, cy - 7}, {cx + 8, cy - 4}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx + 8, cy - 4}, {cx + 8, cy + 5}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx + 8, cy + 5}, {cx, cy + 6}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x, center_y - 7}, {center_x, center_y + 6}, icon_col, 1.4) // spine
+		im.DrawList_AddLine(draw_list, {center_x, center_y - 7}, {center_x - 8, center_y - 4}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x - 8, center_y - 4}, {center_x - 8, center_y + 5}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x - 8, center_y + 5}, {center_x, center_y + 6}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x, center_y - 7}, {center_x + 8, center_y - 4}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x + 8, center_y - 4}, {center_x + 8, center_y + 5}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x + 8, center_y + 5}, {center_x, center_y + 6}, icon_col, 1.4)
 	case .GRAPH:
 		// Graph: two nodes linked by an edge.
-		im.DrawList_AddLine(dl, {cx - 2, cy - 2}, {cx + 3, cy + 3}, icon_col, 1.4)
-		im.DrawList_AddCircle(dl, {cx - 5, cy - 4}, 3.2, icon_col)
-		im.DrawList_AddCircle(dl, {cx + 6, cy + 5}, 3.2, icon_col)
+		im.DrawList_AddLine(draw_list, {center_x - 2, center_y - 2}, {center_x + 3, center_y + 3}, icon_col, 1.4)
+		im.DrawList_AddCircle(draw_list, {center_x - 5, center_y - 4}, 3.2, icon_col)
+		im.DrawList_AddCircle(draw_list, {center_x + 6, center_y + 5}, 3.2, icon_col)
 	case .EXPORT:
 		// Export: an arrow dropping into a tray.
-		im.DrawList_AddLine(dl, {cx, cy - 7}, {cx, cy + 1}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx - 4, cy - 3}, {cx, cy + 1}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx + 4, cy - 3}, {cx, cy + 1}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx - 7, cy + 3}, {cx - 7, cy + 7}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx + 7, cy + 3}, {cx + 7, cy + 7}, icon_col, 1.4)
-		im.DrawList_AddLine(dl, {cx - 7, cy + 7}, {cx + 7, cy + 7}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x, center_y - 7}, {center_x, center_y + 1}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x - 4, center_y - 3}, {center_x, center_y + 1}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x + 4, center_y - 3}, {center_x, center_y + 1}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x - 7, center_y + 3}, {center_x - 7, center_y + 7}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x + 7, center_y + 3}, {center_x + 7, center_y + 7}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {center_x - 7, center_y + 7}, {center_x + 7, center_y + 7}, icon_col, 1.4)
 	case .EFFECTS:
 		// Ink droplet: teardrop.
-		im.DrawList_AddCircleFilled(dl, {cx, cy + 2.5}, 4.6, icon_col)
-		im.DrawList_AddTriangleFilled(dl, {cx - 4, cy + 1}, {cx + 4, cy + 1}, {cx, cy - 7}, icon_col)
+		im.DrawList_AddCircleFilled(draw_list, {center_x, center_y + 2.5}, 4.6, icon_col)
+		im.DrawList_AddTriangleFilled(draw_list, {center_x - 4, center_y + 1}, {center_x + 4, center_y + 1}, {center_x, center_y - 7}, icon_col)
 	case .SHORTCUTS:
 		// Keyboard: deck outline with two rows of keycaps.
-		im.DrawList_AddRect(dl, {cx - 9, cy - 5.5}, {cx + 9, cy + 5.5}, icon_col, 2, 1.4)
+		im.DrawList_AddRect(draw_list, {center_x - 9, center_y - 5.5}, {center_x + 9, center_y + 5.5}, icon_col, 2, 1.4)
 		for r in 0 ..< 2 {
 			for k in 0 ..< 3 {
-				kx := cx - 5.5 + f32(k) * 5.5
-				ky := cy - 2.2 + f32(r) * 4.4
-				im.DrawList_AddRectFilled(dl, {kx - 1.6, ky - 1.4}, {kx + 1.6, ky + 1.4}, icon_col, 1)
+				kx := center_x - 5.5 + f32(k) * 5.5
+				ky := center_y - 2.2 + f32(r) * 4.4
+				im.DrawList_AddRectFilled(draw_list, {kx - 1.6, ky - 1.4}, {kx + 1.6, ky + 1.4}, icon_col, 1)
 			}
 		}
 	}
@@ -98,9 +99,9 @@ ui_strip_button :: proc(ui: ^Ui, mode: SidebarMode, index: int) -> bool {
 // settings gear sits at the bottom: editor theme, font scale, and glass
 // mode (moved out of the editor toolbar).
 ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
-	io := im.GetIO()
+	imgui_io := im.GetIO()
 	im.SetNextWindowPos({x_off, TITLEBAR_H}, .Always)
-	im.SetNextWindowSize({STRIP_W, io.DisplaySize.y - TITLEBAR_H}, .Always)
+	im.SetNextWindowSize({STRIP_W, imgui_io.DisplaySize.y - TITLEBAR_H}, .Always)
 	flags := im.WindowFlags {
 		.NoTitleBar,
 		.NoResize,
@@ -116,11 +117,10 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 	im.PushStyleVarVec2(.WindowPadding, {0, 0})
 	im.PushStyleVar(.WindowRounding, 0) // docked chrome is square
 	if im.Begin("##activity_strip", nil, flags) {
-		dl := im.GetWindowDrawList()
+		draw_list := im.GetWindowDrawList()
 		modes := [7]SidebarMode{.CONTROLS, .FILES, .LEARN, .GRAPH, .EXPORT, .EFFECTS, .SHORTCUTS}
 
 		// Animated selection pill: slides to the active mode's slot
-		// (fx.springs; snaps when springs or the FX layer are off).
 		active_idx := 0
 		for m, i in modes {
 			if m == ui.mode {
@@ -128,11 +128,11 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 				break
 			}
 		}
-		anim_step(&ui.pill, f32(27 + active_idx * 42), io.DeltaTime, &ui.fx)
+		anim_step(&ui.pill, f32(27 + active_idx * 42), imgui_io.DeltaTime, &ui.fx)
 		if ui.panel_open {
 			win_pos := im.GetWindowPos()
-			py := win_pos.y + ui.pill.value
-			im.DrawList_AddRectFilled(dl, {win_pos.x + 6, py - 17}, {win_pos.x + 40, py + 17}, im.GetColorU32Vec4({0.91, 0.66, 0.34, 0.22}), 8)
+			pill_y := win_pos.y + ui.pill.value
+			im.DrawList_AddRectFilled(draw_list, {win_pos.x + 6, pill_y - 17}, {win_pos.x + 40, pill_y + 17}, im.GetColorU32Vec4({0.91, 0.66, 0.34, 0.22}), 8)
 		}
 
 		for m, i in modes {
@@ -146,25 +146,25 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 		}
 
 		// Settings gear pinned to the bottom edge. Glyph: ring + 8 spokes.
-		gear_y := io.DisplaySize.y - TITLEBAR_H - 34 - 10
+		gear_y := imgui_io.DisplaySize.y - TITLEBAR_H - 34 - 10
 		im.SetCursorPos({(STRIP_W - 34) / 2, gear_y})
-		gpos := im.GetCursorScreenPos()
+		gear_pos := im.GetCursorScreenPos()
 		if im.InvisibleButton("##strip_settings", {34, 34}) {
 			im.OpenPopup("##settings")
 		}
-		ghov := im.IsItemHovered()
-		if ghov {
-			im.DrawList_AddRectFilled(dl, gpos, {gpos.x + 34, gpos.y + 34}, im.GetColorU32Vec4({1, 1, 1, 0.07}), 8)
+		gear_hovered := im.IsItemHovered()
+		if gear_hovered {
+			im.DrawList_AddRectFilled(draw_list, gear_pos, {gear_pos.x + 34, gear_pos.y + 34}, im.GetColorU32Vec4({1, 1, 1, 0.07}), 8)
 		}
-		gc := im.Vec2{gpos.x + 17, gpos.y + 17}
-		gcol := im.GetColorU32Vec4(
-			ghov ? im.Vec4{0.87, 0.88, 0.90, 1} : im.Vec4{0.55, 0.57, 0.62, 1},
+		gear_center := im.Vec2{gear_pos.x + 17, gear_pos.y + 17}
+		gear_color := im.GetColorU32Vec4(
+			gear_hovered ? im.Vec4{0.87, 0.88, 0.90, 1} : im.Vec4{0.55, 0.57, 0.62, 1},
 		)
-		im.DrawList_AddCircle(dl, gc, 3.2, gcol, 0, 1.4)
+		im.DrawList_AddCircle(draw_list, gear_center, 3.2, gear_color, 0, 1.4)
 		for i in 0 ..< 8 {
-			a := f32(i) * math.PI / 4
-			ca, sa := math.cos(a), math.sin(a)
-			im.DrawList_AddLine(dl, {gc.x + 5.2 * ca, gc.y + 5.2 * sa}, {gc.x + 7.8 * ca, gc.y + 7.8 * sa}, gcol, 1.4)
+			angle := f32(i) * math.PI / 4
+			cos_a, sin_a := math.cos(angle), math.sin(angle)
+			im.DrawList_AddLine(draw_list, {gear_center.x + 5.2 * cos_a, gear_center.y + 5.2 * sin_a}, {gear_center.x + 7.8 * cos_a, gear_center.y + 7.8 * sin_a}, gear_color, 1.4)
 		}
 
 		// Settings popup: appearance knobs, one place only. Two
@@ -175,14 +175,14 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 		// Tall enough for every row (language, theme, two fonts, glass,
 		// transparency, two pan knobs): open with the bottom inside the
 		// window instead of overflowing past it.
-		im.SetNextWindowPos({STRIP_W + 6, io.DisplaySize.y - 480}, .Appearing)
+		im.SetNextWindowPos({STRIP_W + 6, imgui_io.DisplaySize.y - 480}, .Appearing)
 		if im.BeginPopup("##settings", {}) {
 			im.TextDisabled(trc("language"))
 			im.SetNextItemWidth(130)
 			if im.BeginCombo("##lang", strings_to_c(LANGUAGE_TAGS[app_language]), {}) {
-				for tag, l in LANGUAGE_TAGS {
-					if im.Selectable(strings_to_c(tag), l == app_language, {}) {
-						i18n_set_language(l)
+				for tag, lang_value in LANGUAGE_TAGS {
+					if im.Selectable(strings_to_c(tag), lang_value == app_language, {}) {
+						i18n_set_language(lang_value)
 					}
 				}
 				im.EndCombo()
@@ -190,9 +190,9 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 			im.TextDisabled(trc("theme"))
 			im.SetNextItemWidth(130)
 			if im.BeginCombo("##theme", strings_to_c(THEME_NAMES[ied.theme]), {}) {
-				for name, t in THEME_NAMES {
-					if im.Selectable(strings_to_c(name), t == ied.theme, {}) {
-						ied.theme = t
+				for name, theme_value in THEME_NAMES {
+					if im.Selectable(strings_to_c(name), theme_value == ied.theme, {}) {
+						ied.theme = theme_value
 						ied_apply_theme(ied)
 					}
 				}
@@ -228,9 +228,9 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 		}
 		// 1 px separator between the strip and the panel/scene.
 		im.DrawList_AddLine(
-			dl,
+			draw_list,
 			{STRIP_W - 0.5, TITLEBAR_H},
-			{STRIP_W - 0.5, io.DisplaySize.y},
+			{STRIP_W - 0.5, imgui_io.DisplaySize.y},
 			im.GetColorU32Vec4({1, 1, 1, 0.09}),
 		)
 	}
@@ -396,14 +396,14 @@ ui_controls_panel :: proc(ui: ^Ui, sm: ^SceneManager) {
 		if len(scene.widgets) > 0 {
 			im.SeparatorText(fmt.ctprintf(tr("%s params"), scene.title))
 			for &w, i in scene.widgets {
-				id := fmt.ctprintf("%s##w%d", w.label, i)
+				widget_id := fmt.ctprintf("%s##w%d", w.label, i)
 				switch w.kind {
 				case .SLIDER:
-					im.SliderFloat(id, &w.value[0], w.min, w.max, "%.2f")
+					im.SliderFloat(widget_id, &w.value[0], w.min, w.max, "%.2f")
 				case .TOGGLE:
-					im.Checkbox(id, &w.on)
+					im.Checkbox(widget_id, &w.on)
 				case .COLOR:
-					im.ColorEdit3(id, &w.value)
+					im.ColorEdit3(widget_id, &w.value)
 				}
 			}
 		}
@@ -416,9 +416,9 @@ ui_controls_panel :: proc(ui: ^Ui, sm: ^SceneManager) {
 ui_export_panel :: proc(ui: ^Ui) {
 	im.TextDisabled(trc("export"))
 	if im.Button(trc("export png")) {
-		mn := im.GetItemRectMin()
-		mx := im.GetItemRectMax()
-		emit(ExportAction{kind = .PNG, at = {(mn.x + mx.x) / 2, (mn.y + mx.y) / 2}})
+		button_min := im.GetItemRectMin()
+		button_max := im.GetItemRectMax()
+		emit(ExportAction{kind = .PNG, at = {(button_min.x + button_max.x) / 2, (button_min.y + button_max.y) / 2}})
 	}
 	im.SameLine()
 	im.TextUnformatted(fmt.ctprintf(tr("frame at t = %.2f s"), ui.time^))
@@ -433,22 +433,22 @@ ui_export_panel :: proc(ui: ^Ui) {
 	frames := max(1, int((ui.gif_end - ui.gif_start) * GIF_FPS))
 	im.TextUnformatted(fmt.ctprintf(tr("%d frames @ %d fps"), frames, GIF_FPS))
 	if im.Button(trc("export gif")) {
-		mn := im.GetItemRectMin()
-		mx := im.GetItemRectMax()
-		emit(ExportAction{kind = .GIF, at = {(mn.x + mx.x) / 2, (mn.y + mx.y) / 2}})
+		button_min := im.GetItemRectMin()
+		button_max := im.GetItemRectMax()
+		emit(ExportAction{kind = .GIF, at = {(button_min.x + button_max.x) / 2, (button_min.y + button_max.y) / 2}})
 	}
 }
 
 // EFFECTS mode: the FX showroom. Global intensity (off = the static
 // fallback), per-effect toggles, and preview triggers.
 ui_fx_panel :: proc(ui: ^Ui) {
-	fx := &ui.fx
+	fx_settings := &ui.fx
 	im.TextDisabled(trc("effects"))
 
 	im.SetNextItemWidth(140)
-	if im.BeginCombo("##fx_intensity", trc(FX_INTENSITY_NAMES[fx.intensity]), {}) {
+	if im.BeginCombo("##fx_intensity", trc(FX_INTENSITY_NAMES[fx_settings.intensity]), {}) {
 		for name, v in FX_INTENSITY_NAMES {
-			if im.Selectable(trc(name), v == fx.intensity, {}) {
+			if im.Selectable(trc(name), v == fx_settings.intensity, {}) {
 				emit(SetFxIntensity(v))
 			}
 		}
@@ -457,34 +457,26 @@ ui_fx_panel :: proc(ui: ^Ui) {
 
 	// Toggles route through update (app.odin): the checkbox edits a copy,
 	// the real field flips only there.
-	develop := fx.develop
+	develop := fx_settings.develop
 	if im.Checkbox(trc("develop transition"), &develop) {
 		emit(ToggleFx(.DEVELOP))
 	}
-	particles := fx.particles
-	if im.Checkbox(trc("ink particles"), &particles) {
-		emit(ToggleFx(.PARTICLES))
-	}
-	springs := fx.springs
+	springs := fx_settings.springs
 	if im.Checkbox(trc("springs"), &springs) {
 		emit(ToggleFx(.SPRINGS))
 	}
-	grain := fx.grain
+	grain := fx_settings.grain
 	if im.Checkbox(trc("paper grain"), &grain) {
 		emit(ToggleFx(.GRAIN))
-	}
-	sound := fx.sound
-	if im.Checkbox(trc("sound"), &sound) {
-		emit(ToggleFx(.SOUND))
 	}
 
 	// Develop style: which transition plays on scene switch.
 	im.TextDisabled(trc("develop style"))
 	im.SetNextItemWidth(140)
-	if im.BeginCombo("##fx_devstyle", trc(FX_DEVELOP_STYLE_NAMES[fx.develop_style]), {}) {
+	if im.BeginCombo("##fx_devstyle", trc(FX_DEVELOP_STYLE_NAMES[fx_settings.develop_style]), {}) {
 		for name, v in FX_DEVELOP_STYLE_NAMES {
-			if im.Selectable(trc(name), v == fx.develop_style, {}) {
-				fx.develop_style = v
+			if im.Selectable(trc(name), v == fx_settings.develop_style, {}) {
+				fx_settings.develop_style = v
 			}
 		}
 		im.EndCombo()
@@ -494,12 +486,6 @@ ui_fx_panel :: proc(ui: ^Ui) {
 	im.SeparatorText(trc("preview"))
 	if im.Button(trc("develop")) {
 		emit(DevelopPreview{})
-	}
-	im.SameLine()
-	if im.Button(trc("burst")) {
-		mn := im.GetItemRectMin()
-		mx := im.GetItemRectMax()
-		fx_burst(fx, {(mn.x + mx.x) / 2, (mn.y + mx.y) / 2}, 70, 30, 240)
 	}
 }
 
@@ -517,47 +503,88 @@ ui_files_panel :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor) {
 
 	// Only the open scene's files: the unit's entry shader plus its
 	// modules (passes). Other scenes switch from the title-bar combo.
-	im.TextDisabled(strings_to_c(active_title))
+	im.TextDisabled(fmt.ctprintf("%s · %s", tr("file explorer"), active_title))
+	// "+ new file" right-aligned on the caption row: creates a module in
+	// the active scene's directory, first free mod_N.slang index.
+	if active_title != "" {
+		new_w := im.CalcTextSize(strings_to_c(fmt.tprintf("%s +", tr("new file")))).x + im.GetStyle().FramePadding.x * 2
+		im.SetCursorPosX(im.GetWindowWidth() - new_w - im.GetStyle().WindowPadding.x)
+		if im.SmallButton(fmt.ctprintf("%s +", trc("new file"))) {
+			files_new_scene_module(ed, active_title)
+		}
+	}
 	prefix := fmt.tprintf("scenes/%s/", active_title)
-	for f in ed.files {
-		if !strings.has_prefix(f, prefix) do continue
-		rel := f[len(prefix):]
+	for file in ed.files {
+		if !strings.has_prefix(file, prefix) do continue
+		rel := file[len(prefix):]
 		label := rel == active_title ? active_title : fmt.tprintf("  %s", rel)
 		if im.Selectable(strings_to_c(label), false, {}) {
-			ied_load_named(ed, f)
+			ied_load_named(ed, file)
 			ed.open = true
 		}
 	}
-
+	// The scene's node graph: the GRAPH sidebar mode is its editor, so
+	// selecting this row navigates there instead of the text editor.
+	if im.Selectable("  graph.json", false, {}) {
+		emit(SetMode(.GRAPH))
+	}
+	if im.IsItemHovered() {
+		im.SetTooltip(trc("node graph"))
+	}
 	im.Spacing()
 	im.TextDisabled(trc("shared"))
-	for f in ed.files {
-		if strings.has_prefix(f, "scenes/") do continue
-		if im.Selectable(strings_to_c(f), false, {}) {
-			ied_load_named(ed, f)
+	for file in ed.files {
+		if strings.has_prefix(file, "scenes/") do continue
+		if im.Selectable(strings_to_c(file), false, {}) {
+			ied_load_named(ed, file)
 			ed.open = true // surface the floating editor on the file
 		}
 	}
 }
+
+// Create mod_N.slang (first free N) in the active scene's directory, seed
+// it with a header comment, rescan the editor and open the new tab.
+files_new_scene_module :: proc(ed: ^ImGuiEditor, scene: string) {
+	scene_dir := fmt.tprintf("src/shaders/scenes/%s", scene)
+	base := ""
+	for n := 1; ; n += 1 {
+		candidate := fmt.tprintf("mod_%d.slang", n)
+		if !os.exists(fmt.tprintf("%s/%s", scene_dir, candidate)) {
+			break
+		}
+	}
+	name := base[:len(base) - len(".slang")]
+	path := fmt.tprintf("%s/%s", scene_dir, base)
+	content := fmt.tprintf("// %s: scene-owned module created from the file explorer.\n", base)
+	if write_err := os.write_entire_file(path, transmute([]u8)content); write_err != nil {
+		notify(.ERROR, "could not create %s", path)
+		return
+	}
+	ied_rescan(ed)
+	ied_load_named(ed, fmt.tprintf("scenes/%s/%s", scene, name))
+	ed.open = true
+	notify(.INFO, "created %s", path)
+}
+
 
 // Paper grain behind the panel content: the scanned paper texture, slow
 // UV drift, barely-there alpha (fx.grain). Draws into the current window
 // (the side panel) before any widgets.
 ui_draw_grain :: proc(ui: ^Ui) {
 	if !fx_on(&ui.fx) || !ui.fx.grain || fx_grain_binding == nil do return
-	dl := im.GetWindowDrawList()
-	wp := im.GetWindowPos()
-	ws := im.GetWindowSize()
+	draw_list := im.GetWindowDrawList()
+	win_pos := im.GetWindowPos()
+	win_size := im.GetWindowSize()
 	tex_ref := im.TextureRef {
 		_TexID = im.TextureID(uintptr(fx_grain_binding)),
 	}
 	im.ImDrawList_AddImage(
-		dl,
+		draw_list,
 		tex_ref,
-		wp,
-		{wp.x + ws.x, wp.y + ws.y},
+		win_pos,
+		{win_pos.x + win_size.x, win_pos.y + win_size.y},
 		{f32(im.GetTime()) * 0.002, 0},
-		{f32(im.GetTime()) * 0.002 + ws.x / 1024, ws.y / 1024},
+		{f32(im.GetTime()) * 0.002 + win_size.x / 1024, win_size.y / 1024},
 		im.GetColorU32Vec4({1, 1, 1, 0.05}),
 	)
 }
@@ -567,9 +594,9 @@ ui_draw_grain :: proc(ui: ^Ui) {
 // reached the handle). Drag sets ui.user_w: one user width for every
 // mode (VS Code behavior). Amber seam while hovering/dragging.
 ui_panel_edge :: proc(ui: ^Ui, panel_x: f32) {
-	io := im.GetIO()
+	imgui_io := im.GetIO()
 	im.SetNextWindowPos({panel_x + ui.panel_w.value + 1, TITLEBAR_H}, .Always)
-	im.SetNextWindowSize({8, io.DisplaySize.y - TITLEBAR_H}, .Always)
+	im.SetNextWindowSize({8, imgui_io.DisplaySize.y - TITLEBAR_H}, .Always)
 	edge_flags := im.WindowFlags {
 		.NoTitleBar,
 		.NoResize,
@@ -584,7 +611,7 @@ ui_panel_edge :: proc(ui: ^Ui, panel_x: f32) {
 	// button's hit rect out of the strip entirely.
 	im.PushStyleVarVec2(.WindowPadding, {0, 0})
 	if im.Begin("##panel_edge", nil, edge_flags) {
-		im.InvisibleButton("##edge_btn", {8, io.DisplaySize.y - TITLEBAR_H})
+		im.InvisibleButton("##edge_btn", {8, imgui_io.DisplaySize.y - TITLEBAR_H})
 		edge_hovered := im.IsItemHovered()
 		edge_active := im.IsItemActive()
 		if edge_hovered || edge_active {
@@ -592,18 +619,18 @@ ui_panel_edge :: proc(ui: ^Ui, panel_x: f32) {
 		}
 		if edge_active {
 			ui.user_w = clamp(
-				io.MousePos.x - STRIP_W - ui.sidebar_x.value + 3,
+				imgui_io.MousePos.x - STRIP_W - ui.sidebar_x.value + 3,
 				220,
-				io.DisplaySize.x * 0.85,
+				imgui_io.DisplaySize.x * 0.85,
 			)
 		}
 		if edge_hovered || edge_active {
-			dl := im.GetWindowDrawList()
-			ex := panel_x + ui.panel_w.value - 0.5
+			draw_list := im.GetWindowDrawList()
+			edge_x := panel_x + ui.panel_w.value - 0.5
 			im.DrawList_AddLine(
-				dl,
-				{ex, TITLEBAR_H},
-				{ex, io.DisplaySize.y},
+				draw_list,
+				{edge_x, TITLEBAR_H},
+				{edge_x, imgui_io.DisplaySize.y},
 				im.GetColorU32Vec4({0.91, 0.66, 0.34, 0.8}),
 			)
 		}
@@ -628,16 +655,12 @@ ui_shortcuts_panel :: proc(ui: ^Ui) {
 	im.TextDisabled(trc("shortcuts"))
 
 	im.SeparatorText(trc("window"))
-	ui_key_row("drag", tr("drag the title bar to move (unzooms first)"))
-	ui_key_row("2x click", tr("double-click the title bar to zoom"))
-	ui_key_row("green", tr("green light: fullscreen"))
-	ui_key_row("F1", tr("toggle shader editor"))
-	ui_key_row("F2", tr("toggle editor glass"))
-	ui_key_row("F3", tr("theater mode"))
-	ui_key_row("F4", tr("mobile theater (9:16)"))
-	ui_key_row("Space", tr("zen mode: hide panels"))
+	ui_key_row("F1", tr("toggle sidebar"))
+	ui_key_row("F2", tr("toggle shader editor"))
+	ui_key_row("F3", tr("toggle editor glass"))
+	ui_key_row("F4", tr("theater mode"))
+	ui_key_row("F5", tr("mobile theater (9:16)"))
 	ui_key_row("Cmd+B", tr("toggle sidebar"))
-	ui_key_row("1-9", tr("select scene by number"))
 	ui_key_row("Esc", tr("close tooltip / quit"))
 
 	im.SeparatorText(trc("editor"))

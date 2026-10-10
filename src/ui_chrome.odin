@@ -1,107 +1,44 @@
 package main
 
-// Title bar chrome: the app window is borderless (SDL_WINDOW_BORDERLESS),
-// so this file owns everything the native frame would do: traffic-light
-// window controls, the scene selector, save/pause, and the hot-rect
-// registry that keeps the SDL hit test (main.odin) off interactive
-// widgets. Split out of ui.odin.
+// Toolbar: the in-app bar rendered below the native window frame (the
+// OS owns the title bar and its window controls): the scene selector,
+// scene creation, save/pause. Split out of ui.odin.
 
+import "core:fmt"
 import im "../vendor/odin-imgui"
+import "core:os"
+import "core:slice"
 import sdl "vendor:sdl3"
+import "core:strings"
 
 // ---------------------------------------------------------------------------
-// Title bar: the app window is borderless (SDL_WINDOW_BORDERLESS), so this
-// bar IS the window chrome: traffic-light controls on the left, the scene
-// selector beside them, "+ new", drag space, pause on the right. Empty bar
-// space drags the window and edge strips resize it via the SDL hit test in
-// main.odin; every interactive widget registers its rect below so the hit
-// test leaves clicks on them to ImGui.
+// Toolbar: scene switching, scene creation from templates, save/pause.
+// Emits messages (app.odin) instead of returning them.
 
+// Height of the in-app toolbar row, below the native window frame.
 TITLEBAR_H :: 38
-
-titlebar_hot_rects: [8][4]f32 // min.x, min.y, max.x, max.y in window coords
-titlebar_hot_count: int
-
-// The title bar IS an SDL draggable region (window_hit_test, main.odin):
-// macOS handles the drag and its window tiling natively. No manual drag
-// state needed.
-
-titlebar_reset_hot :: proc() {
-	titlebar_hot_count = 0
-}
-
-titlebar_mark_hot :: proc() {
-	if titlebar_hot_count >= len(titlebar_hot_rects) do return
-	mn := im.GetItemRectMin()
-	mx := im.GetItemRectMax()
-	titlebar_hot_rects[titlebar_hot_count] = {mn.x, mn.y, mx.x, mx.y}
-	titlebar_hot_count += 1
-}
-
-titlebar_point_hot :: proc(x, y: f32) -> bool {
-	for r in titlebar_hot_rects[:titlebar_hot_count] {
-		if x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3] do return true
-	}
-	return false
-}
-
-TrafficAction :: enum {
-	NONE,
-	CLOSE,
-	MINIMIZE,
-	MAXIMIZE,
-}
-
-// macOS-style traffic lights: 12 px circles on 20 px slots. Glyphs appear
-// when any of the three is hovered; the whole set dims to gray while the
-// window is unfocused, matching native behavior.
-ui_traffic_lights :: proc(focused: bool) -> TrafficAction {
-	action := TrafficAction.NONE
-	dl := im.GetWindowDrawList()
-	group_min := im.GetCursorScreenPos()
-	mouse := im.GetMousePos()
-	slot := f32(20)
-	group_hovered :=
-		mouse.x >= group_min.x && mouse.x < group_min.x + 3 * slot &&
-		mouse.y >= group_min.y && mouse.y < group_min.y + slot
-
-	cols := [3]im.Vec4 {
-		{0.95, 0.38, 0.35, 1}, // close
-		{0.97, 0.75, 0.19, 1}, // minimize
-		{0.19, 0.78, 0.26, 1}, // zoom
-	}
-	acts := [3]TrafficAction{.CLOSE, .MINIMIZE, .MAXIMIZE}
-	ids := [3]cstring{"##tl_close", "##tl_min", "##tl_max"}
-	for i in 0 ..< 3 {
-		pos := im.GetCursorScreenPos()
-		center := im.Vec2{pos.x + slot / 2, pos.y + slot / 2}
-		if im.InvisibleButton(ids[i], {slot, slot}) {
-			action = acts[i]
-		}
-		titlebar_mark_hot()
-		col := focused ? cols[i] : im.Vec4{0.40, 0.40, 0.43, 1}
-		im.DrawList_AddCircleFilled(dl, center, 6, im.GetColorU32Vec4(col))
-		if group_hovered {
-			glyph := im.GetColorU32Vec4({0, 0, 0, 0.55})
-			switch i {
-			case 0: // close: x
-				im.DrawList_AddLine(dl, {center.x - 3, center.y - 3}, {center.x + 3, center.y + 3}, glyph, 1.3)
-				im.DrawList_AddLine(dl, {center.x - 3, center.y + 3}, {center.x + 3, center.y - 3}, glyph, 1.3)
-			case 1: // minimize: -
-				im.DrawList_AddLine(dl, {center.x - 3.2, center.y}, {center.x + 3.2, center.y}, glyph, 1.3)
-			case 2: // zoom: square
-				im.DrawList_AddRect(dl, {center.x - 2.8, center.y - 2.8}, {center.x + 2.8, center.y + 2.8}, glyph, 0, 1.2)
-			}
-		}
-		if i < 2 do im.SameLine(0, 0)
-	}
-	return action
-}
 
 // Title bar (see above): scene switching, scene creation from templates,
 // window controls. Emits messages (app.odin) instead of returning them.
+
+// Trail page base names for the scene selector's third group: every
+// assets/trails/*.md, sorted, extension stripped. Temp-allocated; built
+// per frame the combo popup is open. Picking one opens the LEARN panel
+// on the trail instead of switching the render scene.
+titlebar_trail_names :: proc() -> [dynamic]string {
+	names := make([dynamic]string, 0, 8, context.temp_allocator)
+	entries, err := os.read_directory_by_path(LEARN_DIR, 0, context.temp_allocator)
+	if err != nil do return names
+	for entry in entries {
+		if entry.type != .Regular do continue
+		if !strings.has_suffix(entry.name, ".md") do continue
+		append(&names, strings.trim_suffix(entry.name, ".md"))
+	}
+	slice.sort(names[:])
+	return names
+}
+
 ui_toolbar :: proc(ui: ^Ui, sm: ^SceneManager, window: ^sdl.Window, ied: ^ImGuiEditor) {
-	titlebar_reset_hot()
 
 	// A template-created scene appeared in the rescan: select it now.
 	// Only clear the pending title once the watcher actually discovered
@@ -118,9 +55,9 @@ ui_toolbar :: proc(ui: ^Ui, sm: ^SceneManager, window: ^sdl.Window, ied: ^ImGuiE
 		}
 	}
 
-	io := im.GetIO()
+	imgui_io := im.GetIO()
 	im.SetNextWindowPos({0, 0}, .Always)
-	im.SetNextWindowSize({io.DisplaySize.x, TITLEBAR_H}, .Always)
+	im.SetNextWindowSize({imgui_io.DisplaySize.x, TITLEBAR_H}, .Always)
 	flags := im.WindowFlags {
 		.NoTitleBar,
 		.NoResize,
@@ -139,45 +76,99 @@ ui_toolbar :: proc(ui: ^Ui, sm: ^SceneManager, window: ^sdl.Window, ied: ^ImGuiE
 	// surfaces only: rounded corners against flush neighbors clash.
 	im.PushStyleVar(.WindowRounding, 0)
 	if im.Begin("##titlebar", nil, flags) {
-		dl := im.GetWindowDrawList()
-		focused := .INPUT_FOCUS in sdl.GetWindowFlags(window)
-
-		// Window controls; the scene selector sits right beside them.
-		im.SetCursorPos({10, (TITLEBAR_H - 20) / 2})
-		#partial switch ui_traffic_lights(focused) {
-		case .CLOSE:
-			emit(Quit{})
-		case .MINIMIZE:
-			emit(WindowMinimize{})
-		case .MAXIMIZE:
-			// Green = macOS fullscreen (covers Dock and menu bar), not
-			// zoom. Zoom lives on the title-bar double-click instead.
-			emit(WindowFullscreen{})
-		}
+		draw_list := im.GetWindowDrawList()
 
 		frame_y := (TITLEBAR_H - (im.GetFontSize() + 8)) / 2
 
 		// Scene selector: click shows all available scenes.
-		im.SetCursorPos({10 + 3 * 20 + 8, frame_y})
-		im.SetNextItemWidth(210)
 		im.PushStyleColorVec4(.FrameBg, {1, 1, 1, 0.05})
 		im.PushStyleColorVec4(.FrameBgHovered, {1, 1, 1, 0.10})
 		im.PushStyleColorVec4(.FrameBgActive, {1, 1, 1, 0.15})
 		current_title := len(sm.scenes) > 0 ? sm.scenes[sm.current].title : "?"
+		im.SetCursorPos({10, frame_y})
+		im.SetNextItemWidth(210)
 		if im.BeginCombo("##scene_sel", strings_to_c(current_title), {.HeightLarge}) {
+			// Grouped popup: built-in scenes grouped by the learning trail
+			// that introduces them (a "(scene:TITLE)" link in its page),
+			// then built-ins no trail covers, user scenes, and the trail
+			// pages themselves. Groups are computed per open frame
+			// (temp-allocated); a group with no members renders no caption.
+			trails := titlebar_trail_names()
+			trail_texts := make(map[string]string, 8, context.temp_allocator)
+			for trail in trails {
+				if trail == "index" do continue
+				path := fmt.tprintf("%s/%s.md", LEARN_DIR, trail)
+				if data, read_err := os.read_entire_file(path, context.temp_allocator); read_err == nil {
+					trail_texts[trail] = string(data)
+				}
+			}
+			scene_trail := make(map[string]string, len(sm.scenes), context.temp_allocator)
+			for &s, _ in sm.scenes {
+				if root, has_root := scene_roots[s.title]; has_root && root == USER_SCENES_DIR {
+					continue
+				}
+				for trail in trails {
+					text, ok := trail_texts[trail]
+					if !ok do continue
+					if strings.contains(text, fmt.tprintf("(scene:%s)", s.title)) {
+						scene_trail[s.title] = trail
+						break
+					}
+				}
+			}
+			// Trail-context groups first, in trail page order.
+			grouped := false
+			for trail in trails {
+				if _, ok := trail_texts[trail]; !ok do continue
+				caption_done := false
+				for &s, i in sm.scenes {
+					if scene_trail[s.title] != trail do continue
+					if !caption_done {
+						if grouped do im.Separator()
+						im.TextDisabled(strings_to_c(trail))
+						caption_done = true
+						grouped = true
+					}
+					if im.Selectable(strings_to_c(s.title), i == sm.current, {}) {
+						emit(SceneSelected(i))
+					}
+				}
+			}
+			// Built-ins no trail introduces, then user scenes.
+			builtin_done, user_done := false, false
 			for &s, i in sm.scenes {
+				if _, in_trail := scene_trail[s.title]; in_trail do continue
+				root, has_root := scene_roots[s.title]
+				is_user := has_root && root == USER_SCENES_DIR
+				if is_user && !user_done {
+					if builtin_done || grouped do im.Separator()
+					im.TextDisabled(trc("user scenes"))
+					user_done = true
+				} else if !is_user && !builtin_done {
+					if grouped do im.Separator()
+					im.TextDisabled(trc("scenes"))
+					builtin_done = true
+				}
 				if im.Selectable(strings_to_c(s.title), i == sm.current, {}) {
 					emit(SceneSelected(i))
 				}
 			}
+			if len(trails) > 0 {
+				if builtin_done || user_done || grouped do im.Separator()
+				im.TextDisabled(trc("trails"))
+				for trail in trails {
+					if im.Selectable(strings_to_c(trail), false, {}) {
+						learn_load(trail)
+						emit(SetMode(.LEARN))
+					}
+				}
+			}
 			im.EndCombo()
 		}
-		titlebar_mark_hot()
 		{
-			mn := im.GetItemRectMin()
-			mx := im.GetItemRectMax()
-			ui.scene_sel_rect = {mn.x, mn.y, mx.x, mx.y}
-			fx_celebrate_pos = {(mn.x + mx.x) / 2, (mn.y + mx.y) / 2}
+			rect_min := im.GetItemRectMin()
+			rect_max := im.GetItemRectMax()
+			ui.scene_sel_rect = {rect_min.x, rect_min.y, rect_max.x, rect_max.y}
 		}
 		im.PopStyleColor(3)
 
@@ -202,88 +193,85 @@ ui_toolbar :: proc(ui: ^Ui, sm: ^SceneManager, window: ^sdl.Window, ied: ^ImGuiE
 			}
 			im.EndCombo()
 		}
-		titlebar_mark_hot()
 
 		// Save-all (floppy) left of pause: same drawn-icon style: the font
 		// has no 💾 glyph. Saves every dirty editor tab (ied_save_all).
 		size := f32(22)
-		save_x := io.DisplaySize.x - 10 - size - 8 - size
+		save_x := imgui_io.DisplaySize.x - 10 - size - 8 - size
 		im.SetCursorPos({save_x, (TITLEBAR_H - size) / 2})
 		if im.InvisibleButton("##saveall", {size, size}) {
 			emit(SaveAll{})
 		}
-		titlebar_mark_hot()
-		smn := im.GetItemRectMin()
+		save_min := im.GetItemRectMin()
 		if im.IsItemHovered() {
-			im.DrawList_AddRectFilled(dl, smn, {smn.x + size, smn.y + size}, im.GetColorU32Vec4({1, 1, 1, 0.08}), 4)
+			im.DrawList_AddRectFilled(draw_list, save_min, {save_min.x + size, save_min.y + size}, im.GetColorU32Vec4({1, 1, 1, 0.08}), 4)
 		}
-		scol := im.GetColorU32(.Text, 1.0)
+		save_color := im.GetColorU32(.Text, 1.0)
 		// Floppy: body outline, metal shutter top-right, label slot bottom.
-		im.DrawList_AddRect(dl, {smn.x + 3, smn.y + 3}, {smn.x + size - 3, smn.y + size - 3}, scol, 2, 1.4)
-		im.DrawList_AddRectFilled(dl, {smn.x + size - 10, smn.y + 4}, {smn.x + size - 5, smn.y + 10}, scol)
-		im.DrawList_AddRect(dl, {smn.x + 7, smn.y + size - 9}, {smn.x + size - 7, smn.y + size - 4}, scol, 1, 1.2)
+		im.DrawList_AddRect(draw_list, {save_min.x + 3, save_min.y + 3}, {save_min.x + size - 3, save_min.y + size - 3}, save_color, 2, 1.4)
+		im.DrawList_AddRectFilled(draw_list, {save_min.x + size - 10, save_min.y + 4}, {save_min.x + size - 5, save_min.y + 10}, save_color)
+		im.DrawList_AddRect(draw_list, {save_min.x + 7, save_min.y + size - 9}, {save_min.x + size - 7, save_min.y + size - 4}, save_color, 1, 1.2)
 
 		// Save flash: amber fill fading out, with a check that draws
 		// itself in during the first third of the fade (main sets
 		// ui.save_flash = 1 on a successful save).
 		if ui.save_flash > 0 {
-			ui.save_flash = max(0, ui.save_flash - io.DeltaTime * 1.4)
-			k := ui.save_flash
+			ui.save_flash = max(0, ui.save_flash - imgui_io.DeltaTime * 1.4)
+			flash := ui.save_flash
 			im.DrawList_AddRectFilled(
-				dl,
-				{smn.x + 3, smn.y + 3},
-				{smn.x + size - 3, smn.y + size - 3},
-				im.GetColorU32Vec4({0.91, 0.66, 0.34, 0.45 * k}),
+				draw_list,
+				{save_min.x + 3, save_min.y + 3},
+				{save_min.x + size - 3, save_min.y + size - 3},
+				im.GetColorU32Vec4({0.91, 0.66, 0.34, 0.45 * flash}),
 				2,
 			)
-			p := min(1, (1 - k) * 3.3)
-			x1, y1 := smn.x + 6, smn.y + size * 0.55
-			x2, y2 := smn.x + 9.5, smn.y + size - 6.5
-			x3, y3 := smn.x + size - 4.5, smn.y + 5.5
-			ccol := im.GetColorU32Vec4({1, 1, 1, 0.9})
-			s1 := min(p / 0.35, 1)
-			s2 := min(max(0, (p - 0.35) / 0.65), 1)
-			if s1 > 0 {
-				im.DrawList_AddLine(dl, {x1, y1}, {x1 + (x2 - x1) * s1, y1 + (y2 - y1) * s1}, ccol, 1.6)
+			check_progress := min(1, (1 - flash) * 3.3)
+			x1, y1 := save_min.x + 6, save_min.y + size * 0.55
+			x2, y2 := save_min.x + 9.5, save_min.y + size - 6.5
+			x3, y3 := save_min.x + size - 4.5, save_min.y + 5.5
+			check_color := im.GetColorU32Vec4({1, 1, 1, 0.9})
+			first_leg := min(check_progress / 0.35, 1)
+			second_leg := min(max(0, (check_progress - 0.35) / 0.65), 1)
+			if first_leg > 0 {
+				im.DrawList_AddLine(draw_list, {x1, y1}, {x1 + (x2 - x1) * first_leg, y1 + (y2 - y1) * first_leg}, check_color, 1.6)
 			}
-			if s2 > 0 {
-				im.DrawList_AddLine(dl, {x2, y2}, {x2 + (x3 - x2) * s2, y2 + (y3 - y2) * s2}, ccol, 1.6)
+			if second_leg > 0 {
+				im.DrawList_AddLine(draw_list, {x2, y2}, {x2 + (x3 - x2) * second_leg, y2 + (y3 - y2) * second_leg}, check_color, 1.6)
 			}
 		}
 
 		// Pause/play on the right edge: drawn icon (the font has no ⏸/▶
 		// glyphs), one block showing the action the click will take:
 		// bars while running, triangle while paused.
-		im.SetCursorPos({io.DisplaySize.x - 10 - size, (TITLEBAR_H - size) / 2})
+		im.SetCursorPos({imgui_io.DisplaySize.x - 10 - size, (TITLEBAR_H - size) / 2})
 		if im.InvisibleButton("##pauseplay", {size, size}) {
 			ui.params.paused = !ui.params.paused
 		}
-		titlebar_mark_hot()
-		mn := im.GetItemRectMin()
+		pause_min := im.GetItemRectMin()
 		if im.IsItemHovered() {
-			im.DrawList_AddRectFilled(dl, mn, {mn.x + size, mn.y + size}, im.GetColorU32Vec4({1, 1, 1, 0.08}), 4)
+			im.DrawList_AddRectFilled(draw_list, pause_min, {pause_min.x + size, pause_min.y + size}, im.GetColorU32Vec4({1, 1, 1, 0.08}), 4)
 		}
-		col := im.GetColorU32(.Text, 1.0)
+		icon_color := im.GetColorU32(.Text, 1.0)
 		if ui.params.paused {
-			pad := f32(5)
+			triangle_inset := f32(5)
 			im.DrawList_AddTriangleFilled(
-				dl,
-				{mn.x + pad, mn.y + pad},
-				{mn.x + pad, mn.y + size - pad},
-				{mn.x + size - pad + 2, mn.y + size / 2},
-				col,
+				draw_list,
+				{pause_min.x + triangle_inset, pause_min.y + triangle_inset},
+				{pause_min.x + triangle_inset, pause_min.y + size - triangle_inset},
+				{pause_min.x + size - triangle_inset + 2, pause_min.y + size / 2},
+				icon_color,
 			)
 		} else {
-			bw := f32(4)
-			im.DrawList_AddRectFilled(dl, {mn.x + 5, mn.y + 5}, {mn.x + 5 + bw, mn.y + size - 5}, col)
-			im.DrawList_AddRectFilled(dl, {mn.x + size - 5 - bw, mn.y + 5}, {mn.x + size - 5, mn.y + size - 5}, col)
+			bar_width := f32(4)
+			im.DrawList_AddRectFilled(draw_list, {pause_min.x + 5, pause_min.y + 5}, {pause_min.x + 5 + bar_width, pause_min.y + size - 5}, icon_color)
+			im.DrawList_AddRectFilled(draw_list, {pause_min.x + size - 5 - bar_width, pause_min.y + 5}, {pause_min.x + size - 5, pause_min.y + size - 5}, icon_color)
 		}
 
 		// 1 px separator between the chrome and the scene below.
 		im.DrawList_AddLine(
-			dl,
+			draw_list,
 			{0, TITLEBAR_H - 0.5},
-			{io.DisplaySize.x, TITLEBAR_H - 0.5},
+			{imgui_io.DisplaySize.x, TITLEBAR_H - 0.5},
 			im.GetColorU32Vec4({1, 1, 1, 0.09}),
 		)
 	}

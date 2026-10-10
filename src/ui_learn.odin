@@ -19,57 +19,91 @@ learn_text: string // owned page content
 
 learn_load :: proc(page: string) {
 	path := fmt.tprintf("%s/%s.md", LEARN_DIR, page)
-	data, err := os.read_entire_file(path, context.temp_allocator)
-	if err != nil {
+	file_data, read_err := os.read_entire_file(path, context.temp_allocator)
+	if read_err != nil {
 		log.errorf("learn: could not read %s", path)
 		return
 	}
 	delete(learn_text)
-	learn_text = strings.clone(string(data))
+	learn_text = strings.clone(string(file_data))
 	delete(learn_page)
 	learn_page = strings.clone(page)
 }
 
+// True when the next segment still fits before the panel's right
+// edge. cursor_x is the x a SameLine(0, 0) would continue at (the
+// last segment's item-rect max), not GetCursorScreenPos(): after a
+// text item that is already the next line's start. SameLine's spacing
+// is 0, so the segment lands exactly at cursor_x.
+// Wrapped text used by every trail page line: plain lines, link-line
+// segments, and labels all share it so long text always breaks at the
+// containing block's width instead of overflowing the sidebar. An
+// optional color replaces the default text color (pushed manually
+// because TextWrapped has no colored variant).
+learn_text_wrapped :: proc(text: cstring, color := im.Vec4{-1, -1, -1, -1}) {
+	if color.x >= 0 do im.PushStyleColorVec4(.Text, color)
+	im.TextWrapped("%s", text)
+	if color.x >= 0 do im.PopStyleColor()
+}
+
+learn_segment_fits :: proc(seg: string, cursor_x, right_edge: f32) -> bool {
+	return cursor_x + im.CalcTextSize(strings_to_c(seg)).x <= right_edge
+}
+
 // Renders one inline segment run: plain text interleaved with
 // [label](target) links. Targets are "scene:NAME" (load scene + open
-// editor) and "trail:NAME" (navigate). Returns true if a link fired.
+// editor) and "trail:NAME" (navigate). Segments wrap at the panel
+// width; long ones continue on the next line.
 learn_render_rich_line :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor, line: string) {
 	// Lines without links wrap at the panel width; link lines flow
 	// inline (content authors keep those short).
 	if strings.index(line, "](") < 0 {
-		im.TextWrapped("%s", strings_to_c(line))
-		return
+		learn_text_wrapped(strings_to_c(line))
 	}
-	rest := line
-	first := true
-	link_col := im.Vec4{0.55, 0.75, 0.95, 1}
+	// Right edge (screen space) this line's segments must stay inside,
+	// measured once from the entry cursor: GetContentRegionAvail() is
+	// cursor-relative, so the bullet indent is included for free and
+	// the edge stays valid across wrapped continuation lines.
+	right_edge := im.GetCursorScreenPos().x + im.GetContentRegionAvail().x
+	remaining := line
+	first_segment := true
+	// X where the next SameLine(0, 0) segment would land: the last
+	// drawn item's rect max, or the entry cursor before any segment.
+	cursor_x := im.GetCursorScreenPos().x
+	link_color := im.Vec4{0.55, 0.75, 0.95, 1}
+
 	for {
-		open := strings.index(rest, "[")
-		if open < 0 do break
-		close := strings.index(rest[open:], "](")
-		if close < 0 do break
-		close += open
-		end := strings.index(rest[close + 2:], ")")
-		if end < 0 do break
-		end += close + 2
-		label := rest[open + 1:close]
-		target := rest[close + 2:end]
+		open_bracket := strings.index(remaining, "[")
+		if open_bracket < 0 do break
+		close_bracket := strings.index(remaining[open_bracket:], "](")
+		if close_bracket < 0 do break
+		close_bracket += open_bracket
+		link_end := strings.index(remaining[close_bracket + 2:], ")")
+		if link_end < 0 do break
+		link_end += close_bracket + 2
+		label := remaining[open_bracket + 1:close_bracket]
+		target := remaining[close_bracket + 2:link_end]
 		// Segment before the link.
-		if open > 0 {
-			if !first { im.SameLine(0, 0) }
-			im.TextUnformatted(strings_to_c(rest[:open]))
-			first = false
+		if open_bracket > 0 {
+			if !first_segment && learn_segment_fits(remaining[:open_bracket], cursor_x, right_edge) {
+				im.SameLine(0, 0)
+			}
+			learn_text_wrapped(strings_to_c(remaining[:open_bracket]))
+			cursor_x = im.GetItemRectMax().x
+			first_segment = false
 		}
-		if !first { im.SameLine(0, 0) }
-		im.TextColored(link_col, "%s", strings_to_c(label))
+		if !first_segment && learn_segment_fits(label, cursor_x, right_edge) {
+			im.SameLine(0, 0)
+		}
+		learn_text_wrapped(strings_to_c(label), link_color)
 		if im.IsItemHovered() {
-			mn := im.GetItemRectMin()
-			mx := im.GetItemRectMax()
+			link_min := im.GetItemRectMin()
+			link_max := im.GetItemRectMax()
 			im.DrawList_AddLine(
 				im.GetWindowDrawList(),
-				{mn.x, mx.y - 1},
-				{mx.x, mx.y - 1},
-				im.GetColorU32Vec4(link_col),
+				{link_min.x, link_max.y - 1},
+				{link_max.x, link_max.y - 1},
+				im.GetColorU32Vec4(link_color),
 				1,
 			)
 			if im.IsMouseClicked(.Left) {
@@ -92,12 +126,15 @@ learn_render_rich_line :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor, lin
 				}
 			}
 		}
-		first = false
-		rest = rest[end + 1:]
+		cursor_x = im.GetItemRectMax().x
+		first_segment = false
+		remaining = remaining[link_end + 1:]
 	}
-	if len(rest) > 0 {
-		if !first { im.SameLine(0, 0) }
-		im.TextUnformatted(strings_to_c(rest))
+	if len(remaining) > 0 {
+		if !first_segment && learn_segment_fits(remaining, cursor_x, right_edge) {
+			im.SameLine(0, 0)
+		}
+		learn_text_wrapped(strings_to_c(remaining))
 	}
 }
 
@@ -112,16 +149,26 @@ learn_render_page :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor) {
 		}
 		if in_code {
 			// Fenced block: dim text over a subtle strip, indented.
-			mn := im.GetCursorScreenPos()
-			w := im.GetContentRegionAvail().x
-			h := im.GetTextLineHeight()
-			im.DrawList_AddRectFilled(
-				im.GetWindowDrawList(),
-				{mn.x, mn.y},
-				{mn.x + w, mn.y + h},
-				im.GetColorU32Vec4({1, 1, 1, 0.05}),
-			)
-			im.TextDisabled("  %s", strings_to_c(line))
+			// TextDisabled doesn't wrap; push the disabled color manually
+			// around TextWrapped so long code lines stay inside the panel.
+			// The strip is drawn before the text, so it can't know the
+			// wrapped height; skip it when the line won't fit unwrapped
+			// (cosmetic compromise, wrapped code is rare in trail pages).
+			code_min := im.GetCursorScreenPos()
+			code_width := im.GetContentRegionAvail().x
+			code_height := im.GetTextLineHeight()
+			fits := im.CalcTextSize(fmt.ctprintf("  %s", line)).x <= code_width
+			if fits {
+				im.DrawList_AddRectFilled(
+					im.GetWindowDrawList(),
+					{code_min.x, code_min.y},
+					{code_min.x + code_width, code_min.y + code_height},
+					im.GetColorU32Vec4({1, 1, 1, 0.05}),
+				)
+			}
+			im.PushStyleColorVec4(.Text, im.GetStyleColorVec4(.TextDisabled)^)
+			im.TextWrapped("  %s", strings_to_c(line))
+			im.PopStyleColor()
 			code_lines += 1
 			continue
 		}
@@ -131,9 +178,9 @@ learn_render_page :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor) {
 			im.Spacing()
 		case strings.has_prefix(trimmed, "## "):
 			im.Spacing()
-			im.TextColored({0.91, 0.66, 0.34, 1}, "%s", strings_to_c(trimmed[3:]))
+			learn_text_wrapped(strings_to_c(trimmed[3:]), {0.91, 0.66, 0.34, 1})
 		case strings.has_prefix(trimmed, "# "):
-			im.TextColored({0.95, 0.92, 0.88, 1}, "%s", strings_to_c(trimmed[2:]))
+			learn_text_wrapped(strings_to_c(trimmed[2:]), {0.95, 0.92, 0.88, 1})
 			im.Separator()
 			im.Spacing()
 		case strings.has_prefix(trimmed, "- "):

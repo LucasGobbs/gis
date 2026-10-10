@@ -108,7 +108,7 @@ template_source :: proc(kind: SceneTemplateKind) -> string {
 // Creates a scene unit (directory with the entry shader) at the first
 // free name under USER_SCENES_DIR and returns the scene title for
 // follow-up selection.
-scene_create :: proc(kind: SceneTemplateKind) -> (title: string, ok: bool) {
+scene_create :: proc(kind: SceneTemplateKind) -> (title: string, succeeded: bool) {
 	base := template_base_name(kind)
 	source := template_source(kind)
 	// User scenes live outside the source tree (USER_SCENES_DIR): they
@@ -119,13 +119,13 @@ scene_create :: proc(kind: SceneTemplateKind) -> (title: string, ok: bool) {
 		if n > 1 {
 			name = fmt.tprintf("%s_%d", base, n)
 		}
-		dir := fmt.tprintf("%s/%s", user_dir, name)
-		if os.exists(dir) do continue
-		if os.make_directory(dir) != nil {
-			log.errorf("new scene: failed to create %s", dir)
+		scene_dir := fmt.tprintf("%s/%s", user_dir, name)
+		if os.exists(scene_dir) do continue
+		if os.make_directory(scene_dir) != nil {
+			log.errorf("new scene: failed to create %s", scene_dir)
 			return "", false
 		}
-		path := fmt.tprintf("%s/%s.slang", dir, name)
+		path := fmt.tprintf("%s/%s.slang", scene_dir, name)
 		if os.write_entire_file(path, transmute([]u8)source) != nil {
 			log.errorf("new scene: failed to write %s", path)
 			return "", false

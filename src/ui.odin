@@ -8,7 +8,8 @@ import sdl "vendor:sdl3"
 
 // Controls UI: Dear ImGui is the only UI toolkit in the app (microui was
 // retired). The editor panel lives in imgui_editor.odin; this file owns
-// the title bar (the borderless window's chrome, with the scene selector),
+// the toolbar (the in-app row below the native window frame, with the
+// scene selector),
 // the Controls window, the scene's reflected params (a visually separate
 // section), and the normalized graph-paper grid drawn behind the windows
 // via the background draw list.
@@ -231,25 +232,8 @@ ui_build :: proc(
 	frame_w, frame_h: i32,
 ) {
 	ui_toolbar(ui, sm, window, ied)
-	io := im.GetIO()
-	ui.captures_mouse = io.WantCaptureMouse
-
-	// FX per-frame: particles always run (they render on the foreground
-	// draw list, above everything).
-	fx_particles_step(io.DeltaTime)
-	fx_particles_draw(im.GetForegroundDrawList())
-
-	// Cursor trail: soft motes behind fast cursor movement (quiet by
-	// design: texture, not fireworks).
-	{
-		mouse := [2]f32{io.MousePos.x, io.MousePos.y}
-		d := mouse - fx_last_mouse
-		if d.x * d.x + d.y * d.y > 36 && fx_alive < FX_MAX_PARTICLES - 4 {
-			fx_trail(&ui.fx, mouse)
-			if d.x * d.x + d.y * d.y > 144 do fx_trail(&ui.fx, mouse)
-		}
-		fx_last_mouse = mouse
-	}
+	imgui_io := im.GetIO()
+	ui.captures_mouse = imgui_io.WantCaptureMouse
 
 	// Mode change: the panel content slides in from the left with a
 	// cubic ease-out (replaces the old flat alpha fade, which read as
@@ -258,15 +242,15 @@ ui_build :: proc(
 		ui.prev_mode = ui.mode
 		ui.slide = 0
 	}
-	ui.slide = min(1, ui.slide + io.DeltaTime / 0.16)
+	ui.slide = min(1, ui.slide + imgui_io.DeltaTime / 0.16)
 
 	// Zen (SPACE / Cmd+B): the whole sidebar slides off the left edge
 	// and back. Keep rendering while the spring settles.
-	target_w := ui_panel_width(ui, ui.mode, io.DisplaySize.x)
+	target_w := ui_panel_width(ui, ui.mode, imgui_io.DisplaySize.x)
 	anim_step(
 		&ui.sidebar_x,
 		ui.open ? 0 : -(STRIP_W + target_w),
-		io.DeltaTime,
+		imgui_io.DeltaTime,
 		&ui.fx,
 	)
 
@@ -283,20 +267,20 @@ ui_build :: proc(
 
 	// Panel collapse: clicking the active mode's icon springs the width
 	// shut (VS Code behavior, but physical).
-	anim_step(&ui.panel_w, ui.panel_open ? target_w : 0, io.DeltaTime, &ui.fx)
+	anim_step(&ui.panel_w, ui.panel_open ? target_w : 0, imgui_io.DeltaTime, &ui.fx)
 	if ui.panel_w.value < 4 do return
 
 	slide_off := f32(0)
 	panel_alpha := f32(1)
 	if fx_on(&ui.fx) && ui.fx.springs {
-		t := ui.slide
-		ease := 1 - (1 - t) * (1 - t) * (1 - t)
+		progress := ui.slide
+		ease := 1 - (1 - progress) * (1 - progress) * (1 - progress)
 		slide_off = (1 - ease) * -14
 		panel_alpha = 0.25 + 0.75 * ease
 	}
 
 	im.SetNextWindowPos({STRIP_W + ui.sidebar_x.value + slide_off, TITLEBAR_H}, .Always)
-	im.SetNextWindowSize({ui.panel_w.value, io.DisplaySize.y - TITLEBAR_H}, .Always)
+	im.SetNextWindowSize({ui.panel_w.value, imgui_io.DisplaySize.y - TITLEBAR_H}, .Always)
 	panel_x := STRIP_W + ui.sidebar_x.value + slide_off
 	im.SetNextWindowBgAlpha(panel_alpha)
 	flags := im.WindowFlags {
@@ -319,6 +303,14 @@ ui_build :: proc(
 	im.PushStyleVar(.WindowRounding, 0) // docked chrome is square
 	if im.Begin("##side_panel", nil, flags) {
 		ui_draw_grain(ui)
+		// Every text panel wraps at the panel's right edge: one push
+		// (0 = wrap to window edge) backstops any long string in
+		// CONTROLS/FILES/LEARN/EXPORT/EFFECTS/SHORTCUTS. GRAPH skips it:
+		// imnodes pin labels and node titles clip by design (widths
+		// reserved at imgui_nodes.odin), and wrapping would corrupt the
+		// socket geometry.
+		text_panel := ui.mode != .GRAPH
+		if text_panel do im.PushTextWrapPos(0)
 		switch ui.mode {
 		case .CONTROLS:
 			ui_controls_panel(ui, sm)
@@ -335,6 +327,7 @@ ui_build :: proc(
 		case .SHORTCUTS:
 			ui_shortcuts_panel(ui)
 		}
+		if text_panel do im.PopTextWrapPos()
 	}
 	im.End()
 	im.PopStyleVar()
@@ -351,9 +344,9 @@ GRID_MAJOR_EVERY :: 5    // dark line every 0.5
 GRID_LABEL_EVERY :: 2    // label every 0.2
 
 ui_draw_grid :: proc(ui: ^Ui, frame_w, frame_h: i32) {
-	dl := im.GetBackgroundDrawList()
-	w := f32(frame_w)
-	h := f32(frame_h)
+	draw_list := im.GetBackgroundDrawList()
+	width := f32(frame_w)
+	height := f32(frame_h)
 
 	minor := im.GetColorU32Vec4({0, 0, 0, 0.09})
 	major := im.GetColorU32Vec4({0, 0, 0, 0.26})
@@ -362,45 +355,45 @@ ui_draw_grid :: proc(ui: ^Ui, frame_w, frame_h: i32) {
 
 	// Vertical: normalized X grows left -> right.
 	for k in 0 ..= GRID_DIVISIONS {
-		x := f32(k) / GRID_DIVISIONS * w
-		col := minor
+		x := f32(k) / GRID_DIVISIONS * width
+		color := minor
 		if k == 0 || k == GRID_DIVISIONS {
-			col = axis
+			color = axis
 		} else if k % GRID_MAJOR_EVERY == 0 {
-			col = major
+			color = major
 		}
-		im.DrawList_AddLine(dl, {min(x, w - 1), 0}, {min(x, w - 1), h}, col)
+		im.DrawList_AddLine(draw_list, {min(x, width - 1), 0}, {min(x, width - 1), height}, color)
 	}
 	// Horizontal: screen Y grows down, normalized Y grows up.
 	for k in 0 ..= GRID_DIVISIONS {
-		y := h - f32(k) / GRID_DIVISIONS * h
-		col := minor
+		y := height - f32(k) / GRID_DIVISIONS * height
+		color := minor
 		if k == 0 || k == GRID_DIVISIONS {
-			col = axis
+			color = axis
 		} else if k % GRID_MAJOR_EVERY == 0 {
-			col = major
+			color = major
 		}
-		py := clamp(y, 0, h - 1)
-		im.DrawList_AddLine(dl, {0, py}, {w, py}, col)
+		line_y := clamp(y, 0, height - 1)
+		im.DrawList_AddLine(draw_list, {0, line_y}, {width, line_y}, color)
 	}
 
 	// Labels: X just above the bottom edge, Y just right of the left edge,
 	// a single 0 at the origin.
 	for k in 0 ..= GRID_DIVISIONS {
 		if k % GRID_LABEL_EVERY != 0 do continue
-		v := f32(k) / GRID_DIVISIONS
-		x := clamp(v * w + 3, 3, w - 18)
-		im.DrawList_AddText(dl, {x, h - 15}, text_col, fmt.ctprintf("%.1f", v))
+		value := f32(k) / GRID_DIVISIONS
+		x := clamp(value * width + 3, 3, width - 18)
+		im.DrawList_AddText(draw_list, {x, height - 15}, text_col, fmt.ctprintf("%.1f", value))
 	}
 	for k := GRID_LABEL_EVERY; k <= GRID_DIVISIONS; k += GRID_LABEL_EVERY {
-		v := f32(k) / GRID_DIVISIONS
-		y := clamp(h - v * h - 14, 2, h - 16)
-		im.DrawList_AddText(dl, {4, y}, text_col, fmt.ctprintf("%.1f", v))
+		value := f32(k) / GRID_DIVISIONS
+		y := clamp(height - value * height - 14, 2, height - 16)
+		im.DrawList_AddText(draw_list, {4, y}, text_col, fmt.ctprintf("%.1f", value))
 	}
 }
 
 // cstring view of a Go-style string, in temp allocator (ImGui needs
 // NUL-terminated labels).
-strings_to_c :: proc(s: string) -> cstring {
-	return fmt.ctprintf("%s", s)
+strings_to_c :: proc(text: string) -> cstring {
+	return fmt.ctprintf("%s", text)
 }

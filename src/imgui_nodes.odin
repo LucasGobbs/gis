@@ -9,10 +9,12 @@
 // terminal "show 2d" node (the frame the viewport presents). Passes chain
 // in declaration order: a graphics node's frame output feeds the next
 // pass's first texture input (e.g. phong 3D → blur compute: params →
-// graphics → compute). Links are derived from the source on a 120-frame
-// rescan; they are not user-editable. The node layout persists in the
-// scene's graph.json. All state lives here in Odin; the C++ side only
-// renders.
+// graphics → compute). Uniforms are wireless: the params node's output
+// pins carry a broadcast mark and every cbuffer input a receiver mark;
+// no uniform links are drawn and they play no part in the layout. The
+// remaining links are derived from the source on a 120-frame rescan;
+// they are not user-editable. The node layout persists in the scene's
+// graph.json. All state lives here in Odin; the C++ side only renders.
 //
 // Pan with two fingers on the trackpad (wheel deltas adjust the editor
 // panning); middle-drag also pans (imnodes built-in).
@@ -39,9 +41,9 @@ ine_owning_ctx: ^imnodes.Context
 ine_create :: proc() -> ^imnodes.Editor_Context {
 	// Dedicated context + editor context, dark style (same shape the ine
 	// wrapper used to mirror).
-	ctx := imnodes.create_context()
-	ine_owning_ctx = ctx
-	imnodes.set_current_context(ctx)
+	node_context := imnodes.create_context()
+	ine_owning_ctx = node_context
+	imnodes.set_current_context(node_context)
 	editor := imnodes.editor_context_create()
 	imnodes.editor_context_set(editor)
 	imnodes.style_colors_dark()
@@ -60,19 +62,31 @@ ine_destroy :: proc(editor: ^imnodes.Editor_Context) {
 }
 
 ine_editor_begin :: proc() {
+	ine_editor_scope = true
 	imnodes.begin_node_editor()
 }
 
 ine_editor_end :: proc() {
 	imnodes.end_node_editor()
+	ine_editor_scope = false
+}
+
+// True between ine_editor_begin and ine_editor_end. imnodes' position
+// queries panic on nodes absent from the current frame's pool (e.g. right
+// after a scene switch), so sg_save/sg_compute_layout fall back to the
+// cached node.cur whenever this is false.
+ine_editor_scope: bool
+
+ine_scope_active :: proc() -> bool {
+	return ine_editor_scope
 }
 
 ine_minimap :: proc(size_fraction: f32, location: imnodes.Mini_Map_Location) {
 	imnodes.mini_map(size_fraction, location)
 }
 
-ine_begin_node :: proc(id: int) {
-	imnodes.begin_node(i32(id))
+ine_begin_node :: proc(node_id: int) {
+	imnodes.begin_node(i32(node_id))
 }
 
 ine_end_node :: proc() {
@@ -87,43 +101,43 @@ ine_title_bar_end :: proc() {
 	imnodes.end_node_title_bar()
 }
 
-ine_input_attr_begin :: proc(id: int, shape: imnodes.Pin_Shape) {
-	imnodes.begin_input_attribute(i32(id), shape)
+ine_input_attr_begin :: proc(attr_id: int, shape: imnodes.Pin_Shape) {
+	imnodes.begin_input_attribute(i32(attr_id), shape)
 }
 
 ine_input_attr_end :: proc() {
 	imnodes.end_input_attribute()
 }
 
-ine_output_attr_begin :: proc(id: int, shape: imnodes.Pin_Shape) {
-	imnodes.begin_output_attribute(i32(id), shape)
+ine_output_attr_begin :: proc(attr_id: int, shape: imnodes.Pin_Shape) {
+	imnodes.begin_output_attribute(i32(attr_id), shape)
 }
 
 ine_output_attr_end :: proc() {
 	imnodes.end_output_attribute()
 }
 
-ine_static_attr_begin :: proc(id: int) {
-	imnodes.begin_static_attribute(i32(id))
+ine_static_attr_begin :: proc(attr_id: int) {
+	imnodes.begin_static_attribute(i32(attr_id))
 }
 
 ine_static_attr_end :: proc() {
 	imnodes.end_static_attribute()
 }
 
-ine_link :: proc(id, start_attr, end_attr: int) {
-	imnodes.link(i32(id), i32(start_attr), i32(end_attr))
+ine_link :: proc(link_id, start_attr, end_attr: int) {
+	imnodes.link(i32(link_id), i32(start_attr), i32(end_attr))
 }
 
 ine_is_link_created :: proc(start_attr, end_attr: ^int) -> bool {
-	created, a, b, _ := imnodes.is_link_created()
-	start_attr^, end_attr^ = int(a), int(b)
+	created, start_id, end_id, _ := imnodes.is_link_created()
+	start_attr^, end_attr^ = int(start_id), int(end_id)
 	return created
 }
 
 ine_is_link_destroyed :: proc(link_id: ^int) -> bool {
-	destroyed, id := imnodes.is_link_destroyed()
-	link_id^ = int(id)
+	destroyed, removed_id := imnodes.is_link_destroyed()
+	link_id^ = int(removed_id)
 	return destroyed
 }
 
@@ -135,20 +149,20 @@ ine_pop_attribute_flag :: proc() {
 	imnodes.pop_attribute_flag()
 }
 
-ine_set_node_grid_pos :: proc(id: int, pos: im.Vec2) {
-	imnodes.set_node_grid_space_pos(i32(id), pos)
+ine_set_node_grid_pos :: proc(node_id: int, position: im.Vec2) {
+	imnodes.set_node_grid_space_pos(i32(node_id), position)
 }
 
-ine_get_node_grid_pos :: proc(id: int) -> im.Vec2 {
-	return imnodes.get_node_grid_space_pos(i32(id))
+ine_get_node_grid_pos :: proc(node_id: int) -> im.Vec2 {
+	return imnodes.get_node_grid_space_pos(i32(node_id))
 }
 
 ine_get_panning :: proc() -> im.Vec2 {
 	return imnodes.editor_context_get_panning()
 }
 
-ine_reset_panning :: proc(pos: im.Vec2) {
-	imnodes.editor_context_reset_panning(pos)
+ine_reset_panning :: proc(position: im.Vec2) {
+	imnodes.editor_context_reset_panning(position)
 }
 
 ine_is_editor_hovered :: proc() -> bool {
@@ -156,12 +170,12 @@ ine_is_editor_hovered :: proc() -> bool {
 }
 
 ine_is_node_hovered :: proc() -> (hovered: bool, node_id: int) {
-	h, id := imnodes.is_node_hovered()
-	return h, int(id)
+	is_hovered, hovered_id := imnodes.is_node_hovered()
+	return is_hovered, int(hovered_id)
 }
 
-ine_push_color_style :: proc(col: imnodes.Col, color: u32) {
-	imnodes.push_color_style(col, color)
+ine_push_color_style :: proc(color_slot: imnodes.Col, packed_color: u32) {
+	imnodes.push_color_style(color_slot, packed_color)
 }
 
 ine_pop_color_style :: proc() {
@@ -207,7 +221,7 @@ INE_COL_PIN_HOVERED    :: imnodes.Col.PinHovered
 // selected model's vertex stream (the stage_in ModelVertex parameter) to
 // model passes; IMAGE feeds the app's textures (paper/skybox) and
 // samplers.
-SgPassKind :: enum { PARAMS, GRAPHICS, COMPUTE, SHOW, OBJECT3D, IMAGE }
+SgPassKind :: enum { PARAMS, GRAPHICS, COMPUTE, SHOW, OBJECT3D, IMAGE, COMBINE }
 
 SG_KIND_TAGS := [SgPassKind]string {
 	.PARAMS   = "params",
@@ -216,6 +230,7 @@ SG_KIND_TAGS := [SgPassKind]string {
 	.SHOW     = "output",
 	.OBJECT3D = "mesh",
 	.IMAGE    = "texture",
+	.COMBINE  = "combine",
 }
 
 // Colors are ABGR-packed (a<<24|b<<16|g<<8|r) like col32() produces, written
@@ -227,6 +242,7 @@ SG_KIND_COLORS := [SgPassKind]u32 {
 	.SHOW     = 0xFF << 24 | 0x57 << 16 | 0xA8 << 8 | 0xE8, // safelight amber
 	.OBJECT3D = 0xFF << 24 | 0x5C << 16 | 0xA0 << 8 | 0x58, // green
 	.IMAGE    = 0xFF << 24 | 0xA5 << 16 | 0xA3 << 8 | 0x4F, // teal
+	.COMBINE  = 0xFF << 24 | 0xE8 << 16 | 0x6A << 8 | 0xB0, // pink
 }
 
 // imnodes pin shapes per node kind.
@@ -237,6 +253,7 @@ SG_KIND_PIN_SHAPES := [SgPassKind]imnodes.Pin_Shape {
 	.SHOW     = .Circle,
 	.OBJECT3D = .Triangle,
 	.IMAGE    = .Quad,
+	.COMBINE  = .Circle,
 }
 
 SG_PIN_IN_COLOR  :: 0xFF << 24 | 0xE0 << 16 | 0xE0 << 8 | 0xE0 // white
@@ -246,11 +263,11 @@ SG_PIN_OUT_COLOR :: 0xFF << 24 | 0x2E << 16 | 0xE2 << 8 | 0xA6 // green
 // Body tint for a kind: the kind's hue darkened and fully OPAQUE, no
 // canvas bleeding through nodes. `bright` scales the kind color.
 sg_kind_body :: proc(kind: SgPassKind, bright: f32) -> u32 {
-	c := SG_KIND_COLORS[kind]
-	r := u32(f32(c & 0xFF) * bright)
-	g := u32(f32(c >> 8 & 0xFF) * bright)
-	b := u32(f32(c >> 16 & 0xFF) * bright)
-	return 0xFF << 24 | b << 16 | g << 8 | r
+	packed := SG_KIND_COLORS[kind]
+	red := u32(f32(packed & 0xFF) * bright)
+	green := u32(f32(packed >> 8 & 0xFF) * bright)
+	blue := u32(f32(packed >> 16 & 0xFF) * bright)
+	return 0xFF << 24 | blue << 16 | green << 8 | red
 }
 
 // Type icon in the title bar: a 16px glyph drawn in the 20px slot at the
@@ -259,46 +276,56 @@ sg_kind_body :: proc(kind: SgPassKind, bright: f32) -> u32 {
 // Kind icon drawn directly into the node's draw list. `zoom` scales every
 // coordinate/length so the icon grows and stays centered in its 20x~16 slot
 // alongside the (zoom-scaled) title text.
-sg_draw_kind_icon :: proc(dl: ^im.DrawList, kind: SgPassKind, pos: im.Vec2, col: u32, zoom: f32) {
-	z := max(zoom, 0.01)
-	cx := pos.x + 10 * z
-	cy := pos.y + 8 * z
+sg_draw_kind_icon :: proc(draw_list: ^im.DrawList, kind: SgPassKind, position: im.Vec2, color: u32, zoom: f32) {
+	scale := max(zoom, 0.01)
+	center_x := position.x + 10 * scale
+	center_y := position.y + 8 * scale
 	switch kind {
 	case .PARAMS:
 		// Sliders: three rails with knobs.
 		knobs := [3]f32{-1.5, 2, -3}
-		for k, i in knobs {
-			y := cy - 4 * z + f32(i) * 4 * z
-			im.DrawList_AddLine(dl, {cx - 5 * z, y}, {cx + 5 * z, y}, col, 1.1 * z)
-			im.DrawList_AddCircleFilled(dl, {cx + k * z, y}, 1.6 * z, col)
+		for knob, index in knobs {
+			rail_y := center_y - 4 * scale + f32(index) * 4 * scale
+			im.DrawList_AddLine(draw_list, {center_x - 5 * scale, rail_y}, {center_x + 5 * scale, rail_y}, color, 1.1 * scale)
+			im.DrawList_AddCircleFilled(draw_list, {center_x + knob * scale, rail_y}, 1.6 * scale, color)
 		}
 	case .GRAPHICS:
 		// Triangle.
-		im.DrawList_AddTriangle(dl, {cx, cy - 5 * z}, {cx - 5 * z, cy + 4 * z}, {cx + 5 * z, cy + 4 * z}, col, 1.2 * z)
+		im.DrawList_AddTriangle(draw_list, {center_x, center_y - 5 * scale}, {center_x - 5 * scale, center_y + 4 * scale}, {center_x + 5 * scale, center_y + 4 * scale}, color, 1.2 * scale)
 	case .COMPUTE:
 		// 3x3 thread grid.
-		for r in 0 ..< 3 {
-			for c in 0 ..< 3 {
-				x := cx - 5 * z + f32(c) * 5 * z
-				y := cy - 5 * z + f32(r) * 5 * z
-				im.DrawList_AddRectFilled(dl, {x, y}, {x + 3 * z, y + 3 * z}, col)
+		for row in 0 ..< 3 {
+			for column in 0 ..< 3 {
+				cell_x := center_x - 5 * scale + f32(column) * 5 * scale
+				cell_y := center_y - 5 * scale + f32(row) * 5 * scale
+				im.DrawList_AddRectFilled(draw_list, {cell_x, cell_y}, {cell_x + 3 * scale, cell_y + 3 * scale}, color)
 			}
 		}
 	case .SHOW:
 		// Monitor: screen outline with a stand.
-		im.DrawList_AddRect(dl, {cx - 5 * z, cy - 5 * z}, {cx + 5 * z, cy + 2 * z}, col, 1 * z, 1.2 * z)
-		im.DrawList_AddLine(dl, {cx, cy + 2 * z}, {cx, cy + 5 * z}, col, 1.2 * z)
+		im.DrawList_AddRect(draw_list, {center_x - 5 * scale, center_y - 5 * scale}, {center_x + 5 * scale, center_y + 2 * scale}, color, 1 * scale, 1.2 * scale)
+		im.DrawList_AddLine(draw_list, {center_x, center_y + 2 * scale}, {center_x, center_y + 5 * scale}, color, 1.2 * scale)
 	case .OBJECT3D:
 		// Cube: back square offset from the front one, joined corners.
-		im.DrawList_AddRect(dl, {cx - 5 * z, cy - 1 * z}, {cx + 1 * z, cy + 5 * z}, col, 0, 1.1 * z)
-		im.DrawList_AddRect(dl, {cx - 1 * z, cy - 5 * z}, {cx + 5 * z, cy + 1 * z}, col, 0, 1.1 * z)
-		im.DrawList_AddLine(dl, {cx - 5 * z, cy - 1 * z}, {cx - 1 * z, cy - 5 * z}, col, 1.1 * z)
-		im.DrawList_AddLine(dl, {cx + 1 * z, cy + 5 * z}, {cx + 5 * z, cy + 1 * z}, col, 1.1 * z)
+		im.DrawList_AddRect(draw_list, {center_x - 5 * scale, center_y - 1 * scale}, {center_x + 1 * scale, center_y + 5 * scale}, color, 0, 1.1 * scale)
+		im.DrawList_AddRect(draw_list, {center_x - 1 * scale, center_y - 5 * scale}, {center_x + 5 * scale, center_y + 1 * scale}, color, 0, 1.1 * scale)
+		im.DrawList_AddLine(draw_list, {center_x - 5 * scale, center_y - 1 * scale}, {center_x - 1 * scale, center_y - 5 * scale}, color, 1.1 * scale)
+		im.DrawList_AddLine(draw_list, {center_x + 1 * scale, center_y + 5 * scale}, {center_x + 5 * scale, center_y + 1 * scale}, color, 1.1 * scale)
 	case .IMAGE:
 		// Picture: frame with a mountain and a sun dot.
-		im.DrawList_AddRect(dl, {cx - 5 * z, cy - 4 * z}, {cx + 5 * z, cy + 5 * z}, col, 1 * z, 1.1 * z)
-		im.DrawList_AddTriangleFilled(dl, {cx - 4 * z, cy + 4 * z}, {cx, cy - 1 * z}, {cx + 4 * z, cy + 4 * z}, col)
-		im.DrawList_AddCircleFilled(dl, {cx + 2.5 * z, cy - 2 * z}, 1 * z, col)
+		im.DrawList_AddRect(draw_list, {center_x - 5 * scale, center_y - 4 * scale}, {center_x + 5 * scale, center_y + 5 * scale}, color, 1 * scale, 1.1 * scale)
+		im.DrawList_AddTriangleFilled(draw_list, {center_x - 4 * scale, center_y + 4 * scale}, {center_x, center_y - 1 * scale}, {center_x + 4 * scale, center_y + 4 * scale}, color)
+		im.DrawList_AddCircleFilled(draw_list, {center_x + 2.5 * scale, center_y - 2 * scale}, 1 * scale, color)
+	case .COMBINE:
+		// Diamond.
+		im.DrawList_AddQuadFilled(
+			draw_list,
+			{center_x, center_y - 5 * scale},
+			{center_x + 5 * scale, center_y},
+			{center_x, center_y + 5 * scale},
+			{center_x - 5 * scale, center_y},
+			color,
+		)
 	}
 }
 
@@ -336,7 +363,9 @@ SgNode :: struct {
 
 // Wire flavor, set from the link's semantics at creation (sg_sync):
 // decides the decoration style drawn over the imnodes base link: the
-// frame chain flows, texture/mesh feeds are dashed, uniforms dotted.
+// frame chain flows, texture/mesh feeds are dashed. UNIFORM is unused
+// today: uniforms are wireless (broadcast/receive marks on the pins, no
+// links); the value stays reserved for future use.
 SgLinkFlavor :: enum { FRAME, UNIFORM, TEXTURE, MESH }
 
 SgLink :: struct {
@@ -378,117 +407,72 @@ sg_file_name :: proc(path: string) -> string {
 
 // Small lightning bolt marking an app-injected pin, drawn centered
 // INSIDE the pin socket's shape where a link would attach.
-sg_draw_injected :: proc(dl: ^im.DrawList, cx, cy: f32) {
+sg_draw_injected :: proc(draw_list: ^im.DrawList, center_x, center_y: f32) {
 	col := im.GetColorU32Vec4({0.91, 0.66, 0.34, 1}) // safelight amber
-	im.DrawList_AddLine(dl, {cx + 1.6, cy - 3}, {cx - 1.2, cy + 0.4}, col, 1.1)
-	im.DrawList_AddLine(dl, {cx - 1.2, cy + 0.4}, {cx + 1.6, cy + 0.4}, col, 1.1)
-	im.DrawList_AddLine(dl, {cx + 1.6, cy + 0.4}, {cx - 1.2, cy + 3.6}, col, 1.1)
-}
-
-// --- Wire decorations -------------------------------------------------------
-// Styled wires drawn over imnodes' dimmed solid link (see the link loop in
-// ing_panel). Every flavor draws on the same cubic bezier imnodes uses,
-// sampled once per link per frame.
-
-// [2]f32 -> im.Vec2 (the draw list takes Vec2; the wire math is arrays).
-sg_v :: proc(p: [2]f32) -> im.Vec2 {
-	return {p.x, p.y}
+	im.DrawList_AddLine(draw_list, {center_x + 1.6, center_y - 3}, {center_x - 1.2, center_y + 0.4}, col, 1.1)
+	im.DrawList_AddLine(draw_list, {center_x - 1.2, center_y + 0.4}, {center_x + 1.6, center_y + 0.4}, col, 1.1)
+	im.DrawList_AddLine(draw_list, {center_x + 1.6, center_y + 0.4}, {center_x - 1.2, center_y + 3.6}, col, 1.1)
 }
 
 // Replace the alpha channel of an ABGR-packed color.
-sg_alpha :: proc(col: u32, a: u32) -> u32 {
-	return a << 24 | (col & 0x00FF_FFFF)
+sg_alpha :: proc(color: u32, alpha: u32) -> u32 {
+	return alpha << 24 | (color & 0x00FF_FFFF)
 }
 
-// Cubic bezier evaluation (matches the link curve imnodes draws).
-sg_bezier_at :: proc(p0, p1, p2, p3: [2]f32, t: f32) -> [2]f32 {
-	u := 1 - t
-	return p0 * (u * u * u) + p1 * (3 * u * u * t) + p2 * (3 * u * t * t) + p3 * (t * t * t)
-}
+// Wireless-uniform marks, drawn over the pin shapes (same style as the
+// injected bolt above; `zoom` scales every length so the marks track the
+// editor zoom like the kind icons do). Both marks share the wireless
+// accent (a light blue), and both are animated: rings radiate outward on
+// the emitter, converge inward on the receiver.
 
-// The control points imnodes uses for links: horizontal handles at a
-// quarter of the endpoint distance, from output pin `a` to input pin `b`.
-sg_link_bezier :: proc(a, b: [2]f32) -> (p0, p1, p2, p3: [2]f32) {
-	d := b - a
-	h := 0.25 * math.sqrt(d.x * d.x + d.y * d.y)
-	off := [2]f32{h, 0}
-	return a, a + off, b - off, b
-}
+// The wireless accent: a light blue, distinct from every node kind hue
+// so the uniform feed reads as its own signal, not a node's wire.
+SG_WIRELESS_COLOR :: 0xFF << 24 | 0xFF << 16 | 0xC8 << 8 | 0x7A // light blue (ABGR)
 
-// Point at arc length s along a sampled polyline.
-sg_poly_at :: proc(pts: [][2]f32, s: f32) -> [2]f32 {
-	rem := s
-	for i in 1 ..< len(pts) {
-		d := pts[i] - pts[i - 1]
-		l := math.sqrt(d.x * d.x + d.y * d.y)
-		if rem <= l {
-			return l > 1e-4 ? pts[i - 1] + d * (rem / l) : pts[i - 1]
-		}
-		rem -= l
-	}
-	return pts[len(pts) - 1]
-}
-
-// Dashes along a sampled polyline; `offset` shifts the pattern along the
-// wire (animate it for a marching-ant effect).
-sg_draw_dashed :: proc(dl: ^im.DrawList, pts: [][2]f32, col: u32, thick, dash, gap, offset: f32) {
-	total := f32(0)
-	for i in 1 ..< len(pts) {
-		d := pts[i] - pts[i - 1]
-		total += math.sqrt(d.x * d.x + d.y * d.y)
-	}
-	period := dash + gap
-	for s := -math.mod(offset, period); s < total; s += period {
-		a := max(s, 0)
-		b := min(s + dash, total)
-		// Chord each dash in short steps so it follows the curve.
-		for t0 := a; t0 < b; t0 += 4 {
-			t1 := min(t0 + 4, b)
-			im.DrawList_AddLine(dl, sg_v(sg_poly_at(pts, t0)), sg_v(sg_poly_at(pts, t1)), col, thick)
-		}
+// Rings shared by both wireless marks: `grow` true expands outward
+// (emitter), false converges inward (receiver). Two staggered rings on a
+// ~1.6s loop; alpha fades as the ring travels.
+sg_draw_wireless_rings :: proc(
+	draw_list: ^im.DrawList,
+	center: im.Vec2,
+	base_radius, span: f32,
+	color: u32,
+	zoom: f32,
+	now: f64,
+	grow: bool,
+) {
+	scale := max(zoom, 0.01)
+	phase := f32(math.mod(now * 0.625, 1.0))
+	for k in 0 ..< 2 {
+		t := math.mod(phase + f32(k) * 0.5, 1.0)
+		radius :=
+			(base_radius + span * t) * scale if grow else
+			(base_radius + span - span * t) * scale
+		alpha :=
+			u32(f32(0x90) * (1.0 - t)) if grow else
+			u32(f32(0x30) + f32(0x60) * t)
+		im.DrawList_AddCircle(draw_list, center, radius, sg_alpha(color, alpha), 0, 1.2 * scale)
 	}
 }
 
-// One link's wire decoration, styled by flavor: the frame chain gets dots
-// marching toward the consumer (the frame flowing through the passes),
-// texture/mesh feeds get marching dashes, uniforms a static dotted line
-// (constant for the frame: no flow). Colors come from the source node's
-// kind. `a`/`b` are the screen-space socket centers.
-sg_draw_link_wire :: proc(dl: ^im.DrawList, l: SgLink, a, b: [2]f32, now: f64) {
-	SEG :: 32
-	pts: [SEG + 1][2]f32
-	p0, p1, p2, p3 := sg_link_bezier(a, b)
-	for i in 0 ..= SEG {
-		pts[i] = sg_bezier_at(p0, p1, p2, p3, f32(i) / SEG)
-	}
-	switch l.flavor {
-	case .FRAME:
-		// Faint solid underlay, then three dots flowing from the source
-		// pass to the consumer, each with a soft glow.
-		im.DrawList_AddPolyline(dl, (^im.Vec2)(&pts[0]), SEG + 1, sg_alpha(l.col, 0x30), 1.2)
-		phase := f32(now * 0.45)
-		for k in 0 ..< 3 {
-			t := phase + f32(k) / 3
-			t -= math.floor(t)
-			p := sg_bezier_at(p0, p1, p2, p3, t)
-			im.DrawList_AddCircleFilled(dl, sg_v(p), 4.5, sg_alpha(l.col, 0x30))
-			im.DrawList_AddCircleFilled(dl, sg_v(p), 2.4, sg_alpha(l.col, 0xF0))
-		}
-	case .TEXTURE:
-		sg_draw_dashed(dl, pts[:], sg_alpha(l.col, 0xC0), 1.4, 7, 5, f32(now * 24))
-	case .MESH:
-		sg_draw_dashed(dl, pts[:], sg_alpha(l.col, 0xC0), 1.6, 12, 7, f32(now * 16))
-	case .UNIFORM:
-		total := f32(0)
-		for i in 1 ..= SEG {
-			d := pts[i] - pts[i - 1]
-			total += math.sqrt(d.x * d.x + d.y * d.y)
-		}
-		for s := f32(0); s <= total; s += 7 {
-			im.DrawList_AddCircleFilled(dl, sg_v(sg_poly_at(pts[:], s)), 1.3, sg_alpha(l.col, 0xB0))
-		}
-	}
+// Broadcast mark on a params node's cbuffer output: draws the ball (a
+// filled light-blue disc covering the imnodes pin socket) plus two
+// concentric rings pulsing outward (expanding radius, fading alpha, on a
+// ~1.6s loop). Drawn after EndNodeEditor so it sits over the socket.
+sg_draw_broadcast_mark :: proc(draw_list: ^im.DrawList, center_x, center_y: f32, zoom: f32, now: f64) {
+	center := im.Vec2{center_x, center_y}
+	im.DrawList_AddCircleFilled(draw_list, center, 4.2 * max(zoom, 0.01), SG_WIRELESS_COLOR)
+	sg_draw_wireless_rings(draw_list, center, 4.2, 9.0, SG_WIRELESS_COLOR, zoom, now, true)
 }
+
+// Receive mark on a pass's cbuffer input: two concentric rings converging
+// inward toward the pin (shrinking radius, brightening alpha), in the
+// same light blue as the broadcast: the signal arriving.
+sg_draw_receive_mark :: proc(draw_list: ^im.DrawList, center_x, center_y: f32, zoom: f32, now: f64) {
+	center := im.Vec2{center_x, center_y}
+	sg_draw_wireless_rings(draw_list, center, 4.2, 8.8, SG_WIRELESS_COLOR, zoom, now, false)
+}
+
 
 NodeGraph :: struct {
 	handle:      ^imnodes.Editor_Context,
@@ -517,6 +501,7 @@ NodeGraph :: struct {
 	// and the pending file-pick/create-delete state.
 	user_nodes:   [dynamic]SgUserNode,
 	file_pick:    SgPassKind, // kind being file-picked this popup
+	swap_key:     string, // user node key pending a file swap via context menu (owned)
 	delete_key:   string, // user node key pending delete via context menu (owned)
 	save_pending: bool, // persist graph.json after the next sync
 	saved_links: [dynamic]SgGraphLinkJson,
@@ -532,6 +517,9 @@ NodeGraph :: struct {
 	// Layered layout: node index pairs per link (rebuilt each sync by
 	// sg_compute_layout for depth + barycenter ordering).
 	link_pairs: [dynamic][2]int,
+	// Node id whose context menu is open (##node_user_menu): user nodes
+	// offer swap/delete, combine nodes offer delete only.
+	menu_node_id: int,
 }
 
 // Stable id for a namespaced key.
@@ -571,20 +559,24 @@ SgFileInfo :: struct {
 	bind_out:   [dynamic]SgBinding, // RWTexture outputs
 	entries:    [dynamic]SgEntry,
 	uses_model: bool, // a vertex entry takes the ModelVertex stage_in struct
+	// Non-empty for combinator files: the op from the first-line marker
+	// "// graph-node: combine <OP>" (ADD/MUL/AND/OR/NOT). A slice into
+	// text (not owned).
+	combine_op: string,
 }
 
 sg_is_ident :: proc(b: u8) -> bool {
 	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
-sg_last_word :: proc(s: string) -> string {
-	t := strings.trim_space(s)
-	for i := len(t) - 1; i >= 0; i -= 1 {
-		if !sg_is_ident(t[i]) {
-			return t[i + 1:]
+sg_last_word :: proc(text: string) -> string {
+	trimmed := strings.trim_space(text)
+	for i := len(trimmed) - 1; i >= 0; i -= 1 {
+		if !sg_is_ident(trimmed[i]) {
+			return trimmed[i + 1:]
 		}
 	}
-	return t
+	return trimmed
 }
 
 // Extracts the variable name from a binding declaration line: the
@@ -604,6 +596,12 @@ sg_parse_file :: proc(text: string) -> SgFileInfo {
 	for line, lineno in strings.split_lines(text, context.temp_allocator) {
 		if line == "" do continue
 		trimmed := strings.trim_space(line)
+		// Combinator marker: first comment line of the file carrying it
+		// (the generated template puts it on line 1).
+		if info.combine_op == "" && strings.has_prefix(trimmed, "// graph-node: combine ") {
+			info.combine_op = trimmed[len("// graph-node: combine "):]
+			continue
+		}
 		if trimmed == "" || strings.has_prefix(trimmed, "//") do continue
 		if strings.has_prefix(trimmed, `[shader("`) {
 			rest := trimmed[len(`[shader("`):]
@@ -626,13 +624,13 @@ sg_parse_file :: proc(text: string) -> SgFileInfo {
 			}
 		case strings.contains(rest, "ConstantBuffer<"):
 			if name, ok := sg_binding_name(rest); ok {
-				tname := ""
+				type_name := ""
 				if lt := strings.index(rest, "<"); lt >= 0 {
 					if gt := strings.index(rest[lt + 1:], ">"); gt > 0 {
-						tname = rest[lt + 1:][:gt]
+						type_name = rest[lt + 1:][:gt]
 					}
 				}
-				append(&info.bind_in, SgBinding{name, .CBUFFER, tname})
+				append(&info.bind_in, SgBinding{name, .CBUFFER, type_name})
 			}
 		case strings.contains(rest, "Texture2D<"):
 			if name, ok := sg_binding_name(rest); ok {
@@ -690,9 +688,8 @@ sg_resolve_endpoint :: proc(ng: ^NodeGraph, endpoint: string) -> int {
 	}
 	return -1
 }
-
 sg_is_pass_kind :: proc(kind: SgPassKind) -> bool {
-	return kind == .GRAPHICS || kind == .COMPUTE
+	return kind == .GRAPHICS || kind == .COMPUTE || kind == .COMBINE
 }
 
 sg_node_id_for_pin :: proc(ng: ^NodeGraph, pin_id: int) -> int {
@@ -712,18 +709,28 @@ sg_path_exists :: proc(ng: ^NodeGraph, from_node, to_node: int) -> bool {
 		if current == to_node do return true
 		for link in ng.links {
 			if !link.editable do continue
-			a := sg_node_id_for_pin(ng, link.from)
-			b := sg_node_id_for_pin(ng, link.to)
-			if a != current || b < 0 || seen[b] do continue
-			seen[b] = true
-			append(&queue, b)
+			link_source := sg_node_id_for_pin(ng, link.from)
+			link_target := sg_node_id_for_pin(ng, link.to)
+			if link_source != current || link_target < 0 || seen[link_target] do continue
+			seen[link_target] = true
+			append(&queue, link_target)
 		}
 	}
 	return false
 }
 
-sg_validate_connection :: proc(ng: ^NodeGraph, a, b: int) -> (from, to: int, error_message: string, ok: bool) {
-	from_id, to_id := a, b
+// Validates a pipeline edge between pins (either order; normalized so
+// `from` is the output). Rules by endpoint kind:
+//   - outputs: a pass's TEXTURE/RWTEXTURE, or a user resource node's
+//     texture/BUFFER output (uimg:/uobj:). The fixed image/object3d nodes
+//     exist only for legacy graphs and never save as a source.
+//   - inputs: a pass's TEXTURE/BUFFER (ModelVertex), or the viewport's
+//     frame (pass outputs only). Types must match.
+// An input already holding an editable link is allowed: sg_connect
+// replaces it. Resource sources never create cycles (sg_path_exists
+// only walks pass nodes), so the cycle check runs for pass sources only.
+sg_validate_connection :: proc(ng: ^NodeGraph, pin_a, pin_b: int) -> (from, to: int, error_message: string, ok: bool) {
+	from_id, to_id := pin_a, pin_b
 	an, ap, aok := sg_node_pin(ng, from_id)
 	bn, bp, bok := sg_node_pin(ng, to_id)
 	if !aok || !bok do return -1, -1, "unknown pin", false
@@ -733,31 +740,75 @@ sg_validate_connection :: proc(ng: ^NodeGraph, a, b: int) -> (from, to: int, err
 		ap, bp = bp, ap
 		from_id, to_id = to_id, from_id
 	}
-	if !sg_is_pass_kind(an.kind) do return -1, -1, "pipeline edges must start at a pass output", false
-	if !sg_is_pass_kind(bn.kind) && bn.kind != .SHOW do return -1, -1, "pipeline edges must end at a pass or viewport", false
-	if bp.kind != .TEXTURE do return -1, -1, "pipeline edges require a texture input", false
-	if ap.kind != .TEXTURE && ap.kind != .RWTEXTURE do return -1, -1, "pipeline edges require a texture output", false
+	source_is_pass := sg_is_pass_kind(an.kind)
+	source_is_resource :=
+		(an.kind == .IMAGE && strings.has_prefix(an.key, "uimg:") && ap.kind == .TEXTURE) ||
+		(an.kind == .OBJECT3D && strings.has_prefix(an.key, "uobj:") && ap.kind == .BUFFER)
+	if !source_is_pass && !source_is_resource {
+		return -1, -1, "pipeline edges must start at a pass or resource output", false
+	}
+	target_is_pass := sg_is_pass_kind(bn.kind)
+	if !target_is_pass && bn.kind != .SHOW {
+		return -1, -1, "pipeline edges must end at a pass or viewport", false
+	}
+	if bn.kind == .SHOW {
+		if !source_is_pass {
+			return -1, -1, "viewport takes a pass output", false
+		}
+		if bp.kind != .TEXTURE || (ap.kind != .TEXTURE && ap.kind != .RWTEXTURE) {
+			return -1, -1, "type mismatch", false
+		}
+	} else {
+		// Pass targets: type must match exactly (TEXTURE<->TEXTURE,
+		// BUFFER<->BUFFER).
+		if bp.kind != ap.kind {
+			return -1, -1, "type mismatch", false
+		}
+		if ap.kind != .TEXTURE && ap.kind != .RWTEXTURE && ap.kind != .BUFFER {
+			return -1, -1, "type mismatch", false
+		}
+	}
 	if an.id == bn.id do return -1, -1, "a pass cannot feed itself", false
 	for link in ng.links {
 		if link.from == from_id && link.to == to_id do return -1, -1, "link already exists", false
-		if link.editable && link.to == to_id do return -1, -1, "input already has a producer", false
 	}
-	if bn.kind != .SHOW && sg_path_exists(ng, bn.id, an.id) {
+	if source_is_pass && bn.kind != .SHOW && sg_path_exists(ng, bn.id, an.id) {
 		return -1, -1, "connection would create a cycle", false
 	}
 	return from_id, to_id, "", true
 }
 
+// Replaces-and-appends a UI connection: the input's previous editable
+// link is removed first (one producer per input), then the new edge is
+// appended. Load-time code goes through sg_validate_connection instead.
+sg_connect :: proc(ng: ^NodeGraph, from, to: int) {
+	for link, i in ng.links {
+		if link.editable && link.to == to {
+			ordered_remove(&ng.links, i)
+			break
+		}
+	}
+	sg_append_pipeline_link(ng, from, to)
+}
+
+// Appends an editable link; the wire flavor follows the semantics (the
+// frame chain flows, texture/mesh feeds dashed) and col carries the
+// source node's kind color for the per-link tint.
 sg_append_pipeline_link :: proc(ng: ^NodeGraph, from, to: int) {
-	node, _, ok := sg_node_pin(ng, from)
+	node, pin, ok := sg_node_pin(ng, from)
 	if !ok do return
+	flavor := SgLinkFlavor.FRAME
+	if pin != nil {
+		if pin.kind == .BUFFER do flavor = .MESH
+		if pin.kind == .TEXTURE || pin.kind == .RWTEXTURE do flavor = .TEXTURE
+	}
 	append(
 		&ng.links,
 		SgLink {
 			id = sg_id(ng, fmt.tprintf("link:%d:%d", from, to)),
 			from = from,
 			to = to,
-			flavor = .FRAME,
+			flavor = flavor,
 			col = SG_KIND_COLORS[node.kind],
 			editable = true,
 		},
@@ -806,17 +857,17 @@ sg_load_layout :: proc(ng: ^NodeGraph, scene: string) -> bool {
 	}
 	ng.graph_authoritative = doc.version == PIPELINE_SCHEMA_VERSION
 
-	for k, _ in ng.layout do delete(k)
+	for layout_key, _ in ng.layout do delete(layout_key)
 	clear(&ng.layout)
-	for un in ng.user_nodes do delete(un.path)
+	for user_node in ng.user_nodes do delete(user_node.path)
 	clear(&ng.user_nodes)
 	sg_clear_saved_links(ng)
-	for n in doc.nodes {
-		ng.layout[strings.clone(n.key)] = {n.x, n.y}
-		if n.file != "" {
+	for saved_node in doc.nodes {
+		ng.layout[strings.clone(saved_node.key)] = {saved_node.x, saved_node.y}
+		if saved_node.file != "" {
 			kind := SgPassKind.IMAGE
-			if strings.has_prefix(n.key, "uobj:") do kind = .OBJECT3D
-			append(&ng.user_nodes, SgUserNode{path = strings.clone(n.file), kind = kind})
+			if strings.has_prefix(saved_node.key, "uobj:") do kind = .OBJECT3D
+			append(&ng.user_nodes, SgUserNode{path = strings.clone(saved_node.file), kind = kind})
 		}
 	}
 	for link in doc.links {
@@ -852,8 +903,8 @@ sg_reload_if_changed :: proc(ng: ^NodeGraph) {
 sg_save :: proc(ng: ^NodeGraph) {
 	if ng.scene == "" || len(ng.nodes) == 0 do return
 	pin_names := make(map[int]string, 64, context.temp_allocator)
-	for &n in ng.nodes {
-		for &p in n.pins do pin_names[p.id] = fmt.tprintf("%s:%s", n.key, p.name)
+	for &node in ng.nodes {
+		for &pin in node.pins do pin_names[pin.id] = fmt.tprintf("%s:%s", node.key, pin.name)
 	}
 	sb := strings.builder_make(context.temp_allocator)
 	strings.write_string(&sb, `{"version":`)
@@ -861,47 +912,58 @@ sg_save :: proc(ng: ^NodeGraph) {
 	strings.write_string(&sb, `,"scene":"`)
 	strings.write_string(&sb, ng.scene)
 	strings.write_string(&sb, `","nodes":[`)
-	for &n, i in ng.nodes {
-		if i > 0 do strings.write_byte(&sb, ',')
-		pos := ine_get_node_grid_pos(n.id)
-		x, y := pos.x, pos.y
+	for &node, node_i in ng.nodes {
+		if node_i > 0 do strings.write_byte(&sb, ',')
+		// Outside the editor scope imnodes' pool may not hold this node
+		// (scene switch), so fall back to the last known grid position.
+		position := ine_scope_active() ? ine_get_node_grid_pos(node.id) : im.Vec2{node.cur.x, node.cur.y}
+		pos_x, pos_y := position.x, position.y
 		strings.write_string(&sb, `{"key":"`)
-		strings.write_string(&sb, n.key)
+		strings.write_string(&sb, node.key)
 		strings.write_string(&sb, `","kind":"`)
-		strings.write_string(&sb, SG_KIND_TAGS[n.kind])
-		fmt.sbprintf(&sb, `","x":%.1f,"y":%.1f`, x, y)
-		if strings.has_prefix(n.key, "uimg:") || strings.has_prefix(n.key, "uobj:") {
+		strings.write_string(&sb, SG_KIND_TAGS[node.kind])
+		fmt.sbprintf(&sb, `","x":%.1f,"y":%.1f`, pos_x, pos_y)
+		if strings.has_prefix(node.key, "uimg:") || strings.has_prefix(node.key, "uobj:") {
 			strings.write_string(&sb, `,"file":"`)
-			strings.write_string(&sb, n.key[5:])
+			strings.write_string(&sb, node.key[5:])
 			strings.write_byte(&sb, '"')
 		}
 		strings.write_byte(&sb, '}')
 	}
 	strings.write_string(&sb, `],"links":[`)
-	for link, i in ng.links {
-		from, from_ok := pin_names[link.from]
-		to, to_ok := pin_names[link.to]
+	for link, link_i in ng.links {
+		from_name, from_ok := pin_names[link.from]
+		to_name, to_ok := pin_names[link.to]
 		if !from_ok || !to_ok do continue
-		if i > 0 do strings.write_byte(&sb, ',')
+		if link_i > 0 do strings.write_byte(&sb, ',')
 		strings.write_string(&sb, `{"from":"`)
-		strings.write_string(&sb, from)
+		strings.write_string(&sb, from_name)
 		strings.write_string(&sb, `","to":"`)
-		strings.write_string(&sb, to)
+		strings.write_string(&sb, to_name)
 		strings.write_string(&sb, `"}`)
 	}
 	strings.write_string(&sb, `]}`)
 	path := sg_graph_path(ng.scene)
-	if os.write_entire_file(path, transmute([]u8)strings.to_string(sb)) != nil {
-		log.errorf("[node-graph] failed to write %s", path)
+	// Atomic write: a second app instance (or a crash mid-write) can
+	// truncate a direct overwrite, leaving invalid JSON that rejects the
+	// scene's pipeline forever. Write to a sibling temp file, then swap.
+	tmp_path := fmt.tprintf("%s.tmp", path)
+	if os.write_entire_file(tmp_path, transmute([]u8)strings.to_string(sb)) != nil {
+		log.errorf("[node-graph] failed to write %s", tmp_path)
+		return
+	}
+	if os.rename(tmp_path, path) != nil {
+		log.errorf("[node-graph] failed to swap %s into place", path)
+		os.remove(tmp_path)
 		return
 	}
 	ng.graph_authoritative = true
 	sg_clear_saved_links(ng)
 	for link in ng.links {
-		from, from_ok := pin_names[link.from]
-		to, to_ok := pin_names[link.to]
+		from_name, from_ok := pin_names[link.from]
+		to_name, to_ok := pin_names[link.to]
 		if !from_ok || !to_ok do continue
-		append(&ng.saved_links, SgGraphLinkJson{from = strings.clone(from), to = strings.clone(to)})
+		append(&ng.saved_links, SgGraphLinkJson{from = strings.clone(from_name), to = strings.clone(to_name)})
 	}
 	if info, stat_err := os.stat(path, context.temp_allocator); stat_err == nil {
 		ng.graph_mtime = info.modification_time
@@ -909,19 +971,19 @@ sg_save :: proc(ng: ^NodeGraph) {
 }
 
 sg_clear_graph :: proc(ng: ^NodeGraph) {
-	for &n in ng.nodes {
-		for &p in n.pins { delete(p.name); delete(p.label) }
-		delete(n.pins)
-		delete(n.key)
-		delete(n.title)
-		delete(n.file)
+	for &node in ng.nodes {
+		for &pin in node.pins { delete(pin.name); delete(pin.label) }
+		delete(node.pins)
+		delete(node.key)
+		delete(node.title)
+		delete(node.file)
 	}
 	clear(&ng.nodes)
 	clear(&ng.links)
 	ng.spawn_count = 0
-	for k, _ in ng.layout do delete(k)
+	for layout_key, _ in ng.layout do delete(layout_key)
 	clear(&ng.layout)
-	for un in ng.user_nodes do delete(un.path)
+	for user_node in ng.user_nodes do delete(user_node.path)
 	clear(&ng.user_nodes)
 	sg_clear_saved_links(ng)
 	delete(ng.pipeline_error)
@@ -932,6 +994,10 @@ sg_clear_graph :: proc(ng: ^NodeGraph) {
 	if ng.delete_key != "" {
 		delete(ng.delete_key)
 		ng.delete_key = ""
+	}
+	if ng.swap_key != "" {
+		delete(ng.swap_key)
+		ng.swap_key = ""
 	}
 	delete(ng.scene)
 	ng.scene = ""
@@ -1032,6 +1098,121 @@ sg_add_pin :: proc(ng: ^NodeGraph, node: ^SgNode, name: string, kind: SgBindKind
 	append(&node.pins, SgPin{id = sg_id(ng, key), name = strings.clone(name), input = input, kind = kind})
 }
 
+SG_COMBINE_OPS := [?]string{"ADD", "MUL", "AND", "OR", "NOT"}
+
+// Fragment body per combine op (see the plan's table; ADD is the
+// alpha-over composite, the rest are per-channel in all 4 channels).
+sg_combine_body :: proc(op: string) -> string {
+	switch op {
+	case "ADD":
+		return `float oa = a.a + b.a * (1.0 - a.a); float3 rgb = oa > 1e-6 ? (a.rgb * a.a + b.rgb * b.a * (1.0 - a.a)) / oa : float3(0.0, 0.0, 0.0); return float4(rgb, oa);`
+	case "MUL": return `return a * b;`
+	case "AND": return `return min(a, b);`
+	case "OR":  return `return max(a, b);`
+	case "NOT": return `return float4(1.0 - a.rgb, a.a);`
+	}
+	return ""
+}
+
+SG_TEMPLATE_COMBINE :: `// graph-node: combine @OP@
+// Combinator created from the node graph: a @OP@ of its two inputs.
+import "../../common";
+
+[[vk::binding(0, 0)]]
+ConstantBuffer<SceneUniforms> Uniforms;
+
+[[vk::binding(1, 0)]]
+Texture2D<float4> a_tex;
+
+[[vk::binding(2, 0)]]
+SamplerState a_sampler;
+
+[[vk::binding(3, 0)]]
+Texture2D<float4> b_tex;
+
+[[vk::binding(4, 0)]]
+SamplerState b_sampler;
+
+[shader("vertex")]
+VsOut vertMain(uint vertexIndex : SV_VertexID) {
+    return fullscreen_vertex(vertexIndex, Uniforms.iResolution.xy);
+}
+
+[shader("fragment")]
+float4 pixelMain(VsOut input) : SV_Target0 {
+    float2 uv = input.gl_FragCoord / Uniforms.iResolution.xy;
+    float4 a = a_tex.Sample(a_sampler, uv);
+    float4 b = b_tex.Sample(b_sampler, uv);
+    @BODY@
+}
+`
+
+// Creates a combinator file (combine_<op>[_N].slang) in the current
+// scene's directory and forces a graph resync. The file's first line
+// marks it; sg_sync turns it into a COMBINE node next frame.
+sg_create_combine :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, op: string) {
+	valid := false
+	for candidate in SG_COMBINE_OPS do if candidate == op do valid = true
+	if !valid do return
+	dir := fmt.tprintf("%s/scenes/%s", SHADER_DIR, ng.scene)
+	name := fmt.tprintf("combine_%s", strings.to_lower(op, context.temp_allocator))
+	suffix := 0
+	for {
+		candidate := suffix == 0 ? name : fmt.tprintf("%s_%d", name, suffix)
+		if !os.exists(fmt.tprintf("%s/%s.slang", dir, candidate)) {
+			name = candidate
+			break
+		}
+		suffix += 1
+	}
+	body := sg_combine_body(op)
+	// Marker replacement, NOT fmt.tprintf: the Odin formatter consumes
+	// { } braces as nested-format syntax and mangled every function body
+	// in the template (%!(MISSING CLOSE BRACE)).
+	source, _ := strings.replace(SG_TEMPLATE_COMBINE, "@OP@", op, -1)
+	source, _ = strings.replace(source, "@BODY@", body, -1)
+	path := fmt.tprintf("%s/%s.slang", dir, name)
+	if os.write_entire_file(path, transmute([]u8)source) != nil {
+		log.errorf("[node-graph] failed to write %s", path)
+		return
+	}
+	log.infof("[node-graph] created %s", path)
+	ied_rescan(ed)
+	ng.sync_frame = 0 // force resync on the next panel frame
+}
+
+// Deletes the combinator file behind a COMBINE node, but only while it
+// still carries the marker line (never a user-edited pass). The links
+// that mention the node vanish on the next sync (the node is gone) and
+// sg_save rewrites graph.json without them.
+sg_delete_combine :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, key: string) {
+	file_name := ""
+	if strings.has_prefix(key, "gfx:") {
+		file_name = key[len("gfx:"):]
+	} else if strings.has_prefix(key, "comp:") {
+		// comp:<file>:<entry>: strip the trailing ":<entry>".
+		body := key[len("comp:"):]
+		if colon := strings.last_index(body, ":"); colon >= 0 do file_name = body[:colon]
+	}
+	if file_name == "" do return
+	path := fmt.tprintf("%s/%s.slang", SHADER_DIR, file_name)
+	data, read_err := os.read_entire_file(path, context.temp_allocator)
+	if read_err != nil do return
+	text := string(data)
+	if trimmed := strings.trim_space(text); !strings.has_prefix(trimmed, "// graph-node: combine") {
+		log.warnf("[node-graph] refusing to delete %s: not a combinator file", path)
+		return
+	}
+	if os.remove(path) != nil {
+		log.errorf("[node-graph] failed to delete %s", path)
+		return
+	}
+	log.infof("[node-graph] deleted %s", path)
+	ied_rescan(ed)
+	ng.sync_frame = 0
+}
+
+
 // Files with the given extension inside a directory, as asset-relative
 // paths ("<dir>/<file>"), sorted. Temp-allocated (rebuilt per frame the
 // picker is open).
@@ -1073,8 +1254,8 @@ sg_image_files :: proc() -> [dynamic]string {
 // upserts it (at the right-clicked grid point) and graph.json persists it.
 sg_create_user_node :: proc(ng: ^NodeGraph, kind: SgPassKind, path: string) {
 	key := sg_user_key(kind, path)
-	for un in ng.user_nodes {
-		if sg_user_key(un.kind, un.path) == key do return // already on the canvas
+	for user_node in ng.user_nodes {
+		if sg_user_key(user_node.kind, user_node.path) == key do return // already on the canvas
 	}
 	append(&ng.user_nodes, SgUserNode{path = strings.clone(path), kind = kind})
 	log.infof("[node-graph] created %s node for %s", SG_KIND_TAGS[kind], path)
@@ -1082,13 +1263,32 @@ sg_create_user_node :: proc(ng: ^NodeGraph, kind: SgPassKind, path: string) {
 	ng.save_pending = true
 }
 
+// Re-points the user node pending swap (swap_key) at a new file: the
+// node keeps its canvas position (the key changes, so the imnodes id
+// does too; imnodes re-seats it at the grid origin, the position reload
+// from graph.json restores the spot after the save).
+sg_swap_user_node :: proc(ng: ^NodeGraph, path: string) {
+	if ng.swap_key == "" do return
+	for &user_node in ng.user_nodes {
+		if sg_user_key(user_node.kind, user_node.path) != ng.swap_key do continue
+		delete(user_node.path)
+		user_node.path = strings.clone(path)
+		break
+	}
+	delete(ng.swap_key)
+	ng.swap_key = ""
+	ng.sync_frame = 0 // the sweep + upsert rebuild the node's pins
+	ng.save_pending = true
+}
+
+// Removes the user node pending deletion (delete_key), by key.
 // Removes the user node pending deletion (delete_key), by key.
 sg_delete_user_node :: proc(ng: ^NodeGraph) {
 	if ng.delete_key == "" do return
-	for un, i in ng.user_nodes {
-		if sg_user_key(un.kind, un.path) == ng.delete_key {
-			delete(un.path)
-			ordered_remove(&ng.user_nodes, i)
+	for user_node, index in ng.user_nodes {
+		if sg_user_key(user_node.kind, user_node.path) == ng.delete_key {
+			delete(user_node.path)
+			ordered_remove(&ng.user_nodes, index)
 			break
 		}
 	}
@@ -1098,23 +1298,23 @@ sg_delete_user_node :: proc(ng: ^NodeGraph) {
 	ng.save_pending = true
 }
 
-sg_upsert_node :: proc(ng: ^NodeGraph, d: SgPassDesc) -> ^SgNode {
-	for &n in ng.nodes {
-		if n.key == d.key do return &n
+sg_upsert_node :: proc(ng: ^NodeGraph, pass_desc: SgPassDesc) -> ^SgNode {
+	for &node in ng.nodes {
+		if node.key == pass_desc.key do return &node
 	}
-	pos, has_layout := ng.layout[d.key]
+	position, has_layout := ng.layout[pass_desc.key]
 	auto_pos := false
 	if !has_layout {
 		if ng.create_pos_set {
 			// Right-click creation: spawn at the clicked grid point.
-			pos = [2]f32{ng.create_pos.x, ng.create_pos.y}
+			position = [2]f32{ng.create_pos.x, ng.create_pos.y}
 			ng.create_pos_set = false
 		} else {
 			// Cascade placeholder; sg_compute_layout replaces it with
 			// the layered position before the node is first placed.
-			col := ng.spawn_count % 3
+			column := ng.spawn_count % 3
 			row := ng.spawn_count / 3
-			pos = {40 + f32(col) * 240, 40 + f32(row) * 220}
+			position = {40 + f32(column) * 240, 40 + f32(row) * 220}
 			ng.spawn_count += 1
 			auto_pos = true
 		}
@@ -1122,13 +1322,13 @@ sg_upsert_node :: proc(ng: ^NodeGraph, d: SgPassDesc) -> ^SgNode {
 	append(
 		&ng.nodes,
 		SgNode {
-			id    = sg_id(ng, fmt.tprintf("node:%s", d.key)),
-			key   = strings.clone(d.key),
-			title = strings.clone(d.title),
-			kind  = d.kind,
-			file  = strings.clone(d.file),
-			pos   = pos,
-			cur   = pos,
+			id    = sg_id(ng, fmt.tprintf("node:%s", pass_desc.key)),
+			key   = strings.clone(pass_desc.key),
+			title = strings.clone(pass_desc.title),
+			kind  = pass_desc.kind,
+			file  = strings.clone(pass_desc.file),
+			pos   = position,
+			cur   = position,
 			auto_pos = auto_pos,
 			// Only pass nodes get a preview (the pass loop assigns pi);
 			// params/resource nodes keep the no-preview sentinel.
@@ -1155,9 +1355,9 @@ sg_sync :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor) {
 	files := make([dynamic]string, 0, 8, context.temp_allocator)
 	append(&files, entry)
 	prefix := fmt.tprintf("scenes/%s/", ng.scene)
-	for f in ed.files {
-		if f == entry do continue
-		if strings.has_prefix(f, prefix) do append(&files, f)
+	for file_name in ed.files {
+		if file_name == entry do continue
+		if strings.has_prefix(file_name, prefix) do append(&files, file_name)
 	}
 	slice.sort(files[1:])
 
@@ -1167,56 +1367,62 @@ sg_sync :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor) {
 		for _, &info in infos do sg_free_info(&info)
 		delete(infos)
 	}
-	for f in files {
-		path := fmt.tprintf("%s/%s.slang", SHADER_DIR, f)
+	for file_name in files {
+		path := fmt.tprintf("%s/%s.slang", SHADER_DIR, file_name)
 		data, err := os.read_entire_file(path, context.allocator)
 		if err != nil do continue
-		infos[f] = sg_parse_file(string(data))
+		infos[file_name] = sg_parse_file(string(data))
 	}
 
 	// Collect the passes in declaration order (closure order, then entry
 	// line inside each file).
 	passes := make([dynamic]SgPassDesc, 0, 8, context.temp_allocator)
-	for f, file_idx in files {
-		info, ok := infos[f]
+	for file_name, file_idx in files {
+		info, ok := infos[file_name]
 		if !ok do continue
-		base := f
+		base := file_name
 		if slash := strings.last_index(base, "/"); slash >= 0 {
 			base = base[slash + 1:]
 		}
 		gfx_line := -1
 		compute_entries := 0
-		for e in info.entries {
-			if e.kind == .COMPUTE do compute_entries += 1
+		for entry_desc in info.entries {
+			if entry_desc.kind == .COMPUTE do compute_entries += 1
 		}
 		pass_count := 0
-		for e in info.entries {
-			if e.kind == .COMPUTE {
+		for entry_desc in info.entries {
+			if entry_desc.kind == .COMPUTE {
 				title := base
-				if compute_entries > 1 do title = e.name
+				if compute_entries > 1 do title = entry_desc.name
 				append(
 					&passes,
 					SgPassDesc {
-						key   = fmt.tprintf("comp:%s:%s", f, e.name),
+						key   = fmt.tprintf("comp:%s:%s", file_name, entry_desc.name),
 						title = title,
-						file  = f,
+						file  = file_name,
 						kind  = .COMPUTE,
-						order = file_idx * 10000 + e.line,
+						order = file_idx * 10000 + entry_desc.line,
 					},
 				)
 				pass_count += 1
 			} else if gfx_line < 0 {
-				gfx_line = e.line
+				gfx_line = entry_desc.line
 			}
 		}
 		if gfx_line >= 0 {
+			kind := SgPassKind.GRAPHICS
+			title := base
+			if info.combine_op != "" {
+				kind = .COMBINE
+				title = info.combine_op
+			}
 			append(
 				&passes,
 				SgPassDesc {
-					key   = fmt.tprintf("gfx:%s", f),
-					title = base,
-					file  = f,
-					kind  = .GRAPHICS,
+					key   = fmt.tprintf("gfx:%s", file_name),
+					title = title,
+					file  = file_name,
+					kind  = kind,
 					order = file_idx * 10000 + gfx_line,
 				},
 			)
@@ -1232,63 +1438,31 @@ sg_sync :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor) {
 		}
 	}
 
-	// Inputs fed by saved pass edges must not receive the default image.
-	chain_fed := make(map[string]bool, 8, context.temp_allocator)
-	has_saved_pipeline := false
-	for link in ng.saved_links {
-		source_is_pass := false
-		for pass in passes {
-			if strings.has_prefix(link.from, fmt.tprintf("%s:", pass.key)) {
-				source_is_pass = true
-				break
-			}
-		}
-		if !source_is_pass do continue
-		if link.to == "show2d:frame" {
-			has_saved_pipeline = true
-			continue
-		}
-		for pass in passes {
-			prefix := fmt.tprintf("%s:", pass.key)
-			if !strings.has_prefix(link.to, prefix) do continue
-			input_name := link.to[len(prefix):]
-			for binding in infos[pass.file].bind_in {
-				if binding.kind == .TEXTURE && binding.name == input_name {
-					chain_fed[link.to] = true
-					has_saved_pipeline = true
-				}
-			}
-		}
-	}
-	if !has_saved_pipeline {
-		for i := 1; i < len(passes); i += 1 {
-			for binding in infos[passes[i].file].bind_in {
-				if binding.kind != .TEXTURE do continue
-				chain_fed[pipeline_endpoint(passes[i].key, binding.name)] = true
-				break
-			}
-		}
-	}
+	// When the saved graph is authoritative (graph.json version 1), the
+	// links are the source of truth: nothing is derived. Legacy/new
+	// documents (no version) keep the declaration-order chain below.
+	has_saved_pipeline := ng.graph_authoritative
 
 	// User-authored resource nodes (created via right-click, persisted in
 	// graph.json): rebuilt like the structural nodes so their pins exist
 	// for linking.
-	for un in ng.user_nodes {
-		key := sg_user_key(un.kind, un.path)
-		node := sg_upsert_node(ng, SgPassDesc{key = key, title = sg_base_title(un.path), kind = un.kind})
-		for &p in node.pins { delete(p.name); delete(p.label) }
+	for user_node in ng.user_nodes {
+		key := sg_user_key(user_node.kind, user_node.path)
+		node := sg_upsert_node(ng, SgPassDesc{key = key, title = sg_base_title(user_node.path), kind = user_node.kind})
+		for &pin in node.pins { delete(pin.name); delete(pin.label) }
 		clear(&node.pins)
-		#partial switch un.kind {
+		#partial switch user_node.kind {
 		case .IMAGE:
+			// One output pin: the texture. Samplers are implicit
+			// (resources.sampler) and never routed.
 			sg_add_pin(ng, node, "texture", .TEXTURE, false)
-			sg_add_pin(ng, node, "sampler", .SAMPLER, false)
 		case .OBJECT3D:
 			sg_add_pin(ng, node, "ModelVertex", .BUFFER, false)
 		}
 	}
 	sg_user_alive :: proc(ng: ^NodeGraph, key: string) -> bool {
-		for un in ng.user_nodes {
-			if sg_user_key(un.kind, un.path) == key do return true
+		for user_node in ng.user_nodes {
+			if sg_user_key(user_node.kind, user_node.path) == key do return true
 		}
 		return false
 	}
@@ -1298,13 +1472,11 @@ sg_sync :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor) {
 	// app-fed texture or sampler.
 	need_object3d := false
 	need_image := false
-	for pd in passes {
-		info := infos[pd.file]
+	for pass_desc in passes {
+		info := infos[pass_desc.file]
 		if info.uses_model do need_object3d = true
-		for b in info.bind_in {
-			if b.kind != .TEXTURE && b.kind != .SAMPLER do continue
-			if chain_fed[fmt.tprintf("%s:%s", pd.key, b.name)] do continue
-			need_image = true
+		for binding in info.bind_in {
+			if binding.kind == .TEXTURE || binding.kind == .SAMPLER do need_image = true
 		}
 	}
 
@@ -1322,15 +1494,22 @@ sg_sync :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor) {
 		case .IMAGE:
 			alive = strings.has_prefix(node.key, "uimg:") ? sg_user_alive(ng, node.key) : need_image
 		case .GRAPHICS, .COMPUTE:
-			for p in passes {
-				if p.key == node.key {
+			for pass in passes {
+				if pass.key == node.key {
+					alive = true
+					break
+				}
+			}
+		case .COMBINE:
+			for pass in passes {
+				if pass.key == node.key && pass.kind == .COMBINE {
 					alive = true
 					break
 				}
 			}
 		}
 		if !alive {
-			for &p in node.pins { delete(p.name); delete(p.label) }
+			for &pin in node.pins { delete(pin.name); delete(pin.label) }
 			delete(node.pins)
 			delete(node.key)
 			delete(node.title)
@@ -1349,16 +1528,16 @@ sg_sync :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor) {
 	for &p in params.pins { delete(p.name); delete(p.label) }
 	clear(&params.pins)
 	seen := make(map[string]bool, 16, context.temp_allocator)
-	for pd in passes {
-		info := infos[pd.file]
-		for b in info.bind_in {
-			if b.kind != .CBUFFER do continue
-			if seen[b.name] do continue
-			seen[b.name] = true
-			sg_add_pin(ng, params, b.name, b.kind, false)
-			if b.type_name != "" {
+	for pass_desc in passes {
+		info := infos[pass_desc.file]
+		for binding in info.bind_in {
+			if binding.kind != .CBUFFER do continue
+			if seen[binding.name] do continue
+			seen[binding.name] = true
+			sg_add_pin(ng, params, binding.name, binding.kind, false)
+			if binding.type_name != "" {
 				pin := &params.pins[len(params.pins) - 1]
-				pin.label = strings.clone(fmt.tprintf("%s (%s)", b.name, b.type_name))
+				pin.label = strings.clone(fmt.tprintf("%s (%s)", binding.name, binding.type_name))
 			}
 		}
 	}
@@ -1368,7 +1547,7 @@ sg_sync :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor) {
 	object3d: ^SgNode
 	if need_object3d {
 		object3d = sg_upsert_node(ng, SgPassDesc{key = "object3d", title = "3d object", kind = .OBJECT3D})
-		for &p in object3d.pins do delete(p.name)
+		for &pin in object3d.pins do delete(pin.name)
 		clear(&object3d.pins)
 		// The mesh leaves as the vertex stream the pass's stage_in
 		// parameter consumes (ModelVertex).
@@ -1377,57 +1556,55 @@ sg_sync :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor) {
 	image: ^SgNode
 	if need_image {
 		image = sg_upsert_node(ng, SgPassDesc{key = "image", title = "image", kind = .IMAGE})
-		for &p in image.pins { delete(p.name); delete(p.label) }
+		for &pin in image.pins { delete(pin.name); delete(pin.label) }
 		clear(&image.pins)
+		// Texture output only; samplers are implicit (resources.sampler).
 		sg_add_pin(ng, image, "texture", .TEXTURE, false)
-		sg_add_pin(ng, image, "sampler", .SAMPLER, false)
 	}
 
 	// Pass nodes: inputs are their bindings (plus vertex/index buffer for
 	// model passes), output is the frame they produce (graphics) or their
 	// RWTexture(s) (compute).
-	for pd, pi in passes {
-		node := sg_upsert_node(ng, pd)
-		node.pass_idx = pi
-		for &p in node.pins { delete(p.name); delete(p.label) }
+	for pass_desc, pass_i in passes {
+		node := sg_upsert_node(ng, pass_desc)
+		node.pass_idx = pass_i
+		for &pin in node.pins { delete(pin.name); delete(pin.label) }
 		clear(&node.pins)
-		info := infos[pd.file]
-		for b in info.bind_in do sg_add_pin(ng, node, b.name, b.kind, true)
+		info := infos[pass_desc.file]
+		for binding in info.bind_in do sg_add_pin(ng, node, binding.name, binding.kind, true)
 		if info.uses_model {
 			// The mesh input is not a vk::binding: it enters the vertex
 			// entry through the stage_in ModelVertex parameter, so it is
 			// a pin of the node like the bindings are.
 			sg_add_pin(ng, node, "ModelVertex", .BUFFER, true)
 		}
-		switch pd.kind {
-		case .GRAPHICS:
+		switch pass_desc.kind {
+		case .GRAPHICS, .COMBINE:
 			sg_add_pin(ng, node, "frame", .TEXTURE, false)
 		case .COMPUTE:
-			for b in info.bind_out do sg_add_pin(ng, node, b.name, b.kind, false)
+			for out_binding in info.bind_out do sg_add_pin(ng, node, out_binding.name, out_binding.kind, false)
 		case .PARAMS, .SHOW, .OBJECT3D, .IMAGE:
 			// Pins are assigned outside this loop.
 		}
-		// Resource nodes -> pass: uniforms from params, textures/samplers
-		// from image, geometry from 3d object (chain-fed texture inputs
-		// are linked from the previous pass instead).
+		// Legacy/new graphs only: resource nodes -> pass, textures/
+		// samplers from image, geometry from 3d object. When the saved
+		// graph is authoritative, links come solely from graph.json.
+		// Uniform cbuffer inputs are wireless in both cases.
+		if ng.graph_authoritative do continue
 		for &pin in node.pins {
 			if !pin.input do continue
-			if chain_fed[fmt.tprintf("%s:%s", pd.key, pin.name)] do continue
-			// SceneUniforms is app-injected: marked on the pin, no link.
-			if pin.kind == .CBUFFER && pin.name == "Uniforms" do continue
+			// Uniforms are wireless (the params node broadcasts; see the
+			// pin marks in ing_panel): every cbuffer input skips its link.
+			if pin.kind == .CBUFFER do continue
 			from := -1
-			flavor := SgLinkFlavor.UNIFORM
-			src_kind := SgPassKind.PARAMS
-			switch pin.kind {
-			case .CBUFFER:
-				from = sg_id(ng, fmt.tprintf("pin:params:%s", pin.name))
+			flavor := SgLinkFlavor.TEXTURE
+			src_kind := SgPassKind.IMAGE
+			#partial switch pin.kind {
 			case .TEXTURE:
 				from = sg_id(ng, "pin:image:texture")
-				flavor = .TEXTURE
 				src_kind = .IMAGE
 			case .SAMPLER:
 				from = sg_id(ng, "pin:image:sampler")
-				flavor = .TEXTURE
 				src_kind = .IMAGE
 			case .BUFFER:
 				from = sg_id(ng, fmt.tprintf("pin:object3d:%s", pin.name))
@@ -1458,20 +1635,24 @@ sg_sync :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor) {
 	sg_add_pin(ng, show, "frame", .TEXTURE, true)
 
 	if has_saved_pipeline {
+		// Authoritative graph.json: the saved links are the entire
+		// topology. Every endpoint kind participates (resource -> pass,
+		// pass -> pass, pass -> viewport); sampler endpoints are skipped
+		// silently (samplers are implicit, never routed). Rejected links
+		// record their first message and drop.
 		for saved in ng.saved_links {
+			if strings.has_prefix(saved.from, "image:sampler") ||
+			   strings.has_prefix(saved.to, "image:sampler") {
+				continue
+			}
 			from := sg_resolve_endpoint(ng, saved.from)
 			to := sg_resolve_endpoint(ng, saved.to)
 			if from < 0 || to < 0 do continue
-			source_node, _, source_ok := sg_node_pin(ng, from)
-			target_node, _, target_ok := sg_node_pin(ng, to)
-			if !source_ok || !target_ok || !sg_is_pass_kind(source_node.kind) ||
-			   (!sg_is_pass_kind(target_node.kind) && target_node.kind != .SHOW) {
-				continue
-			}
 			normalized_from, normalized_to, error_message, ok := sg_validate_connection(ng, from, to)
 			if !ok {
-				delete(ng.pipeline_error)
-				ng.pipeline_error = strings.clone(error_message)
+				if ng.pipeline_error == "" {
+					ng.pipeline_error = strings.clone(error_message)
+				}
 				continue
 			}
 			sg_append_pipeline_link(ng, normalized_from, normalized_to)
@@ -1507,8 +1688,8 @@ sg_sync :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor) {
 
 	if ng.sync_frame == 1 {
 		log.infof("[node-graph] %s: %d nodes, %d links", ng.scene, len(ng.nodes), len(ng.links))
-		for &n in ng.nodes {
-			log.infof("[node-graph]   %s (%s): %d pins", n.title, SG_KIND_TAGS[n.kind], len(n.pins))
+		for &node in ng.nodes {
+			log.infof("[node-graph]   %s (%s): %d pins", node.title, SG_KIND_TAGS[node.kind], len(node.pins))
 		}
 	}
 }
@@ -1532,29 +1713,31 @@ SG_LAYOUT_Y_GAP :: 260.0 // fits nodes with previews (~220px tall)
 // position yet (auto_pos) and have never been placed.
 sg_compute_layout :: proc(ng: ^NodeGraph) {
 	// Refresh the cached positions of placed nodes so the barycenter
-	// ordering below sees where the user actually left things.
+	// ordering below sees where the user actually left things. Outside
+	// the editor scope imnodes' pool may not hold the node (scene
+	// switch): keep the cached value instead of querying.
 	for &node in ng.nodes {
-		if node.placed {
-			p := ine_get_node_grid_pos(node.id)
-			node.cur = [2]f32{p.x, p.y}
+		if node.placed && ine_scope_active() {
+			grid_pos := ine_get_node_grid_pos(node.id)
+			node.cur = [2]f32{grid_pos.x, grid_pos.y}
 		}
 	}
 
 	clear(&ng.link_pairs)
-	for l in ng.links {
-		ai, bi := -1, -1
-		for &node, i in ng.nodes {
-			for &p in node.pins {
-				if p.id == l.from do ai = i
-				if p.id == l.to do bi = i
+	for link in ng.links {
+		source_idx, target_idx := -1, -1
+		for &node, node_i in ng.nodes {
+			for &pin in node.pins {
+				if pin.id == link.from do source_idx = node_i
+				if pin.id == link.to do target_idx = node_i
 			}
 		}
-		if ai >= 0 && bi >= 0 do append(&ng.link_pairs, [2]int{ai, bi})
+		if source_idx >= 0 && target_idx >= 0 do append(&ng.link_pairs, [2]int{source_idx, target_idx})
 	}
 
 	// Depth: 0 for sources, 1 + max(source depths) otherwise. The links
 	// form a DAG, so relaxation converges.
-	for &n in ng.nodes do n.layer = 0
+	for &node in ng.nodes do node.layer = 0
 	for _ in 0 ..< len(ng.nodes) {
 		changed := false
 		for pair in ng.link_pairs {
@@ -1570,27 +1753,27 @@ sg_compute_layout :: proc(ng: ^NodeGraph) {
 	// Within each layer: order by the barycenter of the inputs' current
 	// y (fewer crossings), then slot top-to-bottom.
 	max_layer := 0
-	for &n in ng.nodes do max_layer = max(max_layer, n.layer)
+	for &node in ng.nodes do max_layer = max(max_layer, node.layer)
 	for layer in 0 ..= max_layer {
 		Entry :: struct {
 			i: int,
 			b: f32,
 		}
 		entries := make([dynamic]Entry, 0, 8, context.temp_allocator)
-		for &n, i in ng.nodes {
-			if n.layer != layer do continue
+		for &node, node_i in ng.nodes {
+			if node.layer != layer do continue
 			sum := 0.0
 			cnt := 0
 			for pair in ng.link_pairs {
-				if pair[1] != i do continue
+				if pair[1] != node_i do continue
 				sum += f64(ng.nodes[pair[0]].cur.y)
 				cnt += 1
 			}
-			append(&entries, Entry{i = i, b = cnt > 0 ? f32(sum / f64(cnt)) : 0})
+			append(&entries, Entry{i = node_i, b = cnt > 0 ? f32(sum / f64(cnt)) : 0})
 		}
 		slice.sort_by(entries[:], proc(a, b: Entry) -> bool { return a.b < b.b })
-		for e, slot in entries {
-			ng.nodes[e.i].pref = {
+		for entry, slot in entries {
+			ng.nodes[entry.i].pref = {
 				SG_LAYOUT_X0 + f32(layer) * SG_LAYOUT_X_GAP,
 				SG_LAYOUT_Y0 + f32(slot) * SG_LAYOUT_Y_GAP,
 			}
@@ -1612,6 +1795,15 @@ sg_compute_layout :: proc(ng: ^NodeGraph) {
 // on the starting scene at startup; the panel then shows a 5-node chain.
 ing_selftest: bool
 
+// Click-test harness (--graph-click-test): drives the right-click →
+// "image" → "assets/parchment.jpg" flow with synthetic mouse events,
+// reproducing the user's broken create-node path end to end.
+ing_click_test: bool
+ing_click_test_frame: int
+// Set when the user image node actually appears (verified each frame).
+ing_click_test_ok := false
+ing_click_test_logged := false
+
 // Node previews: one stable texture per reflected pass plus the selected
 // viewport output. Set from main before the graph panel renders.
 ing_pass_tex:   []^sdl.GPUTexture
@@ -1632,70 +1824,76 @@ sg_preview_tex :: proc(i: int) -> ^sdl.GPUTexture {
 ing_runtime_pipeline_error: string
 
 ing_init :: proc() -> ^NodeGraph {
-	ng := new(NodeGraph)
-	ng.handle = ine_create()
-	ng.next_id = 1
-	ng.show_previews = true
-	return ng
+	graph := new(NodeGraph)
+	graph.handle = ine_create()
+	graph.next_id = 1
+	graph.show_previews = true
+	return graph
 }
 
 // Panel content; renders into the caller's window (the sidebar's GRAPH
 // mode panel). The graph follows the active scene unit: switching scenes
 // saves the outgoing graph.json and loads the incoming one. `maximized`
-// toggles the maximized panel width (the overlay button, top-right).
-ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximized: ^bool) {
-	if scene_title != ng.scene {
-		sg_save(ng)
-		sg_clear_graph(ng)
-		ng.scene = strings.clone(scene_title)
-		sg_load_layout(ng, scene_title)
+ing_panel :: proc(graph: ^NodeGraph, editor: ^ImGuiEditor, scene_title: string, maximized: ^bool) {
+	if scene_title != graph.scene {
+		sg_save(graph)
+		sg_clear_graph(graph)
+		graph.scene = strings.clone(scene_title)
+		sg_load_layout(graph, scene_title)
+		// Force a full resync on the next frame: sg_sync's modulo gate
+		// would otherwise leave the panel node-less for up to 119 frames
+		// while saves/layout queries hit imnodes' emptied node pool.
+		graph.sync_frame = 0
 	} else {
-		sg_reload_if_changed(ng)
+		sg_reload_if_changed(graph)
 	}
-	sg_sync(ng, ed)
-	if ng.sync_frame > 0 && ng.sync_frame % 600 == 2 do sg_save(ng)
-	if ng.save_pending {
-		sg_save(ng)
-		ng.save_pending = false
+	sg_sync(graph, editor)
+	if graph.sync_frame > 0 && graph.sync_frame % 600 == 2 do sg_save(graph)
+	if graph.save_pending {
+		sg_save(graph)
+		graph.save_pending = false
 	}
-	io := im.GetIO()
-	im.Checkbox(trc("previews"), &ng.show_previews)
-	// Zoom: Ctrl+scroll on the canvas zooms around the cursor; clicking the
+	// Zoom: scroll on the canvas zooms around the cursor; clicking the
 	// label resets to 100%.
+	imgui_io := im.GetIO()
+	im.Checkbox(trc("previews"), &graph.show_previews)
 	im.SameLine()
 	zoom := ine_get_zoom()
 	zoom_label := fmt.tprintf("zoom: %.0f%%", zoom * 100)
 	if im.SmallButton(strings_to_c(zoom_label)) {
 		ine_set_zoom(1.0)
 	}
-	if ng.pipeline_error != "" || ing_runtime_pipeline_error != "" {
-		message := ng.pipeline_error if ng.pipeline_error != "" else ing_runtime_pipeline_error
+	if graph.pipeline_error != "" || ing_runtime_pipeline_error != "" {
+		message := graph.pipeline_error if graph.pipeline_error != "" else ing_runtime_pipeline_error
 		im.TextColored({0.95, 0.42, 0.36, 1}, "pipeline: %s", strings_to_c(message))
 		im.TextDisabled(trc("last valid pipeline remains active"))
 	}
 	ine_editor_begin()
-	// Injected-pin bolt positions, collected while rendering the nodes and
-	// drawn after ine_editor_end: imnodes paints pin shapes at EndNodeEditor.
+	// Marks drawn after ine_editor_end, collected while rendering the
+	// nodes: imnodes paints pin shapes at EndNodeEditor, so anything that
+	// must sit over a socket (inject bolts, the wireless broadcast ball)
+	// queues its screen position here.
 	inject_marks := make([dynamic][2]f32, 0, 16, context.temp_allocator)
+	broadcast_marks := make([dynamic][2]f32, 0, 8, context.temp_allocator)
+	receive_marks := make([dynamic][2]f32, 0, 16, context.temp_allocator)
 	// Pin id -> screen-space socket center for wire decorations.
 	pin_pos := make(map[int][2]f32, 64, context.temp_allocator)
-
-	for &node in ng.nodes {
+	for &node in graph.nodes {
 		if !node.placed {
 			ine_set_node_grid_pos(node.id, im.Vec2{node.pos.x, node.pos.y})
 			node.placed = true
 		}
-		tc := SG_KIND_COLORS[node.kind]
-		ine_push_color_style(INE_COL_TITLE_BAR, tc)
-		ine_push_color_style(INE_COL_TITLE_BAR_HOVERED, tc)
-		ine_push_color_style(INE_COL_TITLE_BAR_SELECTED, tc)
+		title_color := SG_KIND_COLORS[node.kind]
+		ine_push_color_style(INE_COL_TITLE_BAR, title_color)
+		ine_push_color_style(INE_COL_TITLE_BAR_HOVERED, title_color)
+		ine_push_color_style(INE_COL_TITLE_BAR_SELECTED, title_color)
 		// Body tinted with the kind's color at low alpha; the output node
 		// also gets the bright safelight outline so it reads as the sink.
 		ine_push_color_style(INE_COL_NODE_BG, sg_kind_body(node.kind, 0.30))
 		ine_push_color_style(INE_COL_NODE_BG_HOVER, sg_kind_body(node.kind, 0.40))
 		ine_push_color_style(INE_COL_NODE_BG_SELECT, sg_kind_body(node.kind, 0.50))
 		if node.kind == .SHOW {
-			ine_push_color_style(INE_COL_NODE_OUTLINE, tc)
+			ine_push_color_style(INE_COL_NODE_OUTLINE, title_color)
 		}
 		ine_begin_node(node.id)
 		ine_title_bar_begin()
@@ -1714,13 +1912,19 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 		// titles clip: reserve the widest text in the node body: title
 		// (plus its icon) OR longest pin name, since pins longer than the
 		// title clip too (inputs on the right edge, outputs on the left).
-		node_w := im.CalcTextSize(title).x + 20 * node_zoom
+		node_width := im.CalcTextSize(title).x + 20 * node_zoom
 		for &pin in node.pins {
 			text := pin.label if pin.label != "" else pin.name
-			pin_w := im.CalcTextSize(strings_to_c(text)).x
-			if pin_w > node_w do node_w = pin_w
+			pin_width := im.CalcTextSize(strings_to_c(text)).x
+			if pin_width > node_width do node_width = pin_width
 		}
-		im.Dummy({node_w, 1})
+		im.Dummy({node_width, 1})
+		// imnodes paints pin sockets at the NODE body's left/right edges
+		// (helpers.get_screen_space_pin_coordinates: x = node.rect.min/max
+		// + pin_offset, y = attribute rect center), so capture the body
+		// rect here instead of deriving positions from the pin text.
+		body_min := im.GetItemRectMin()
+		body_max := im.GetItemRectMax()
 		// User-authored resource nodes show the asset they feed.
 		if strings.has_prefix(node.key, "uimg:") || strings.has_prefix(node.key, "uobj:") {
 			im.TextDisabled(strings_to_c(sg_file_name(node.key[5:])))
@@ -1730,10 +1934,21 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 		for want_input in ([?]bool{true, false}) {
 			for &pin in node.pins {
 				if pin.input != want_input do continue
-				pc: u32 = pin.input ? SG_PIN_IN_COLOR : SG_PIN_OUT_COLOR
-				ine_push_color_style(INE_COL_PIN, pc)
-				ine_push_color_style(INE_COL_PIN_HOVERED, pc)
+				pin_color: u32 = pin.input ? SG_PIN_IN_COLOR : SG_PIN_OUT_COLOR
+				// Wireless-uniform pins carry the wireless accent instead of
+				// the default in/out color so the ball/ring marks (drawn
+				// after EndNodeEditor over the socket) sit on a matching
+				// base instead of green/white remnants.
+				broadcast := node.kind == .PARAMS && !pin.input && pin.kind == .CBUFFER
+				receive := pin.input && pin.kind == .CBUFFER
+				if broadcast || receive do pin_color = SG_WIRELESS_COLOR
+				ine_push_color_style(INE_COL_PIN, pin_color)
+				ine_push_color_style(INE_COL_PIN_HOVERED, pin_color)
 				injected := pin.kind == .CBUFFER && pin.name == "Uniforms"
+				// Wireless uniforms: the params node's cbuffer outputs
+				// broadcast (ball + rings), every cbuffer input receives
+				// (converging rings). Both draw after EndNodeEditor so
+				// they sit over the imnodes pin sockets.
 				text := pin.label if pin.label != "" else pin.name
 				if pin.input {
 					ine_input_attr_begin(pin.id, shape)
@@ -1741,36 +1956,42 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 					im.TextUnformatted(strings_to_c(text))
 					ine_pop_attribute_flag()
 					ine_input_attr_end()
-					rmin := im.GetItemRectMin()
-					rmax := im.GetItemRectMax()
-					pin_pos[pin.id] = {rmin.x - 8 * node_zoom, (rmin.y + rmax.y) / 2}
+					rect_min := im.GetItemRectMin()
+					rect_max := im.GetItemRectMax()
+					pin_pos[pin.id] = {body_min.x - 8 * node_zoom, (rect_min.y + rect_max.y) / 2}
 					if injected do append(&inject_marks, pin_pos[pin.id])
+					if receive do append(&receive_marks, pin_pos[pin.id])
 				} else {
 					ine_output_attr_begin(pin.id, shape)
 					im.TextUnformatted(strings_to_c(text))
 					ine_output_attr_end()
-					rmin := im.GetItemRectMin()
-					rmax := im.GetItemRectMax()
-					pin_pos[pin.id] = {rmax.x + 8 * node_zoom, (rmin.y + rmax.y) / 2}
+					rect_min := im.GetItemRectMin()
+					rect_max := im.GetItemRectMax()
+					pin_pos[pin.id] = {body_max.x + 8 * node_zoom, (rect_min.y + rect_max.y) / 2}
+					if broadcast do append(&broadcast_marks, pin_pos[pin.id])
 				}
 				ine_pop_color_style()
 				ine_pop_color_style()
 			}
 		}
 		// Pass preview: the frame this pass produced (previous frame's
-		// content: the graph renders before this frame's submit).
-		if ng.show_previews && node.pass_idx >= 0 {
+		// content: the graph renders before this frame's submit). The
+		// source is a 128px square preview target (a low-res copy the
+		// submit blits every frame) holding the window-aspect image
+		// squeezed anisotropically; displaying at window aspect applies
+		// the inverse vertical factor and restores the geometry.
+		if graph.show_previews && node.pass_idx >= 0 {
 			if tex := sg_preview_tex(node.pass_idx); tex != nil {
-				ine_static_attr_begin(sg_id(ng, fmt.tprintf("pin:%s:prev", node.key)))
-				w := f32(128) * ine_get_zoom()
-				h := w * io.DisplaySize.y / io.DisplaySize.x
-				im.Image(im.TextureRef{_TexID = u64(uintptr(tex))}, {w, h})
+				ine_static_attr_begin(sg_id(graph, fmt.tprintf("pin:%s:prev", node.key)))
+				preview_w := f32(128) * ine_get_zoom()
+				preview_h := preview_w * imgui_io.DisplaySize.y / imgui_io.DisplaySize.x
+				im.Image(im.TextureRef{_TexID = u64(uintptr(tex))}, {preview_w, preview_h})
 				ine_static_attr_end()
 			}
 		}
 		if node.pass_idx >= 0 && node.pass_idx < DEBUG_WATCH_MAX_PASSES &&
 		   ing_provenance_valid[node.pass_idx] && ing_provenance_path[node.pass_idx] {
-			ine_static_attr_begin(sg_id(ng, fmt.tprintf("pin:%s:provenance", node.key)))
+			ine_static_attr_begin(sg_id(graph, fmt.tprintf("pin:%s:provenance", node.key)))
 			value := ing_provenance_rgba[node.pass_idx]
 			im.TextColored(
 				{value[0], value[1], value[2], 1},
@@ -1780,9 +2001,9 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 			ine_static_attr_end()
 		}
 		// "+" appends a pass to the chain (the popup below asks the kind).
-		ine_static_attr_begin(sg_id(ng, fmt.tprintf("pin:%s:+", node.key)))
+		ine_static_attr_begin(sg_id(graph, fmt.tprintf("pin:%s:+", node.key)))
 		if im.SmallButton("+") {
-			ng.create_open = true
+			graph.create_open = true
 		}
 		ine_static_attr_end()
 		ine_end_node()
@@ -1792,135 +2013,126 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 		}
 	}
 
-	// The native solid link drops to a faint base; the flavored wire
-	// decorations drawn after ine_editor_end carry the visual weight.
-	ine_push_color_style(INE_COL_LINK, 0x40 << 24 | 0x66 << 16 | 0x66 << 8 | 0x66)
-	ine_push_color_style(INE_COL_LINK_HOVER, 0x60 << 24 | 0x88 << 16 | 0x88 << 8 | 0x88)
-	ine_push_color_style(INE_COL_LINK_SELECT, 0x60 << 24 | 0x88 << 16 | 0x88 << 8 | 0x88)
-	for l in ng.links {
-		ine_link(l.id, l.from, l.to)
+	// Every link takes the source node's kind color, tinted: ~45% alpha
+	// base, brighter on hover/select, so links are distinguishable from
+	// each other (image teal, mesh green, pass/combinator own hue).
+	// UNIFORM keeps the reserved transparent base (uniforms are wireless).
+	for link in graph.links {
+		if link.flavor == .UNIFORM {
+			ine_push_color_style(INE_COL_LINK, 0x00)
+			ine_push_color_style(INE_COL_LINK_HOVER, 0x00)
+			ine_push_color_style(INE_COL_LINK_SELECT, 0x00)
+		} else {
+			rgb := link.col & 0x00FFFFFF
+			ine_push_color_style(INE_COL_LINK, 0x73 << 24 | rgb)
+			ine_push_color_style(INE_COL_LINK_HOVER, 0xC0 << 24 | rgb)
+			ine_push_color_style(INE_COL_LINK_SELECT, 0xE0 << 24 | rgb)
+		}
+		ine_link(link.id, link.from, link.to)
+		ine_pop_color_style()
+		ine_pop_color_style()
+		ine_pop_color_style()
 	}
-	ine_pop_color_style()
-	ine_pop_color_style()
-	ine_pop_color_style()
 
-	ine_minimap(0.15, .BottomRight)
 	ine_editor_end()
 
-	// Wire decorations over the dimmed base links: one styled wire per
-	// link on the same bezier imnodes drew, anchored at the pin socket
-	// centers captured while rendering the nodes.
+	// Post-editor marks over the pin sockets imnodes painted at
+	// EndNodeEditor: inject bolts, plus the animated wireless marks.
+	// Only plain links remain between nodes: a link is exactly "this
+	// output becomes that input", with no decoration on top of it.
 	{
-		wdl := im.GetWindowDrawList()
+		mark_dl := im.GetWindowDrawList()
 		now := im.GetTime()
-		for l in ng.links {
-			a, aok := pin_pos[l.from]
-			b, bok := pin_pos[l.to]
-			if !aok || !bok do continue
-			sg_draw_link_wire(wdl, l, a, b, now)
+		for mark in inject_marks {
+			sg_draw_injected(mark_dl, mark.x, mark.y)
+		}
+		for mark in broadcast_marks {
+			sg_draw_broadcast_mark(mark_dl, mark.x, mark.y, ine_get_zoom(), now)
+		}
+		for mark in receive_marks {
+			sg_draw_receive_mark(mark_dl, mark.x, mark.y, ine_get_zoom(), now)
 		}
 	}
 
 	// Link gestures are staged. The JSON changes only after confirmation.
 	created_a, created_b: int
 	if ine_is_link_created(&created_a, &created_b) {
-		from, to, error_message, ok := sg_validate_connection(ng, created_a, created_b)
+		from, to, error_message, ok := sg_validate_connection(graph, created_a, created_b)
 		if ok {
-			ng.pending_action = .CONNECT
-			ng.pending_from, ng.pending_to = from, to
-			ng.pending_link_id = -1
+			graph.pending_action = .CONNECT
+			graph.pending_from, graph.pending_to = from, to
+			graph.pending_link_id = -1
 		} else {
-			delete(ng.pipeline_error)
-			ng.pipeline_error = strings.clone(error_message)
+			delete(graph.pipeline_error)
+			graph.pipeline_error = strings.clone(error_message)
 			notify(.ERROR, "pipeline: %s", error_message)
 		}
 	}
 	destroyed_id: int
-	if ng.pending_action == .NONE && ine_is_link_destroyed(&destroyed_id) {
-		for link in ng.links {
+	if graph.pending_action == .NONE && ine_is_link_destroyed(&destroyed_id) {
+		for link in graph.links {
 			if link.id != destroyed_id || !link.editable do continue
-			ng.pending_action = .DISCONNECT
-			ng.pending_from, ng.pending_to = link.from, link.to
-			ng.pending_link_id = link.id
+			graph.pending_action = .DISCONNECT
+			graph.pending_from, graph.pending_to = link.from, link.to
+			graph.pending_link_id = link.id
 			break
 		}
 	}
-	if ng.pending_action != .NONE do im.OpenPopup("##pipeline_change")
+	if graph.pending_action != .NONE do im.OpenPopup("##pipeline_change")
 	if im.BeginPopup("##pipeline_change", {}) {
-		action := "connect" if ng.pending_action == .CONNECT else "disconnect"
+		action := "connect" if graph.pending_action == .CONNECT else "disconnect"
 		im.TextUnformatted(fmt.ctprintf("%s pipeline edge", action))
 		im.Separator()
-		im.TextDisabled(strings_to_c(sg_pin_endpoint(ng, ng.pending_from)))
+		im.TextDisabled(strings_to_c(sg_pin_endpoint(graph, graph.pending_from)))
 		im.TextUnformatted("→")
-		im.TextDisabled(strings_to_c(sg_pin_endpoint(ng, ng.pending_to)))
-		im.Spacing()
-		im.TextDisabled(trc("invalid changes keep the last valid pipeline"))
-		if im.Button(trc("apply")) {
-			if ng.pending_action == .CONNECT {
-				sg_append_pipeline_link(ng, ng.pending_from, ng.pending_to)
-			} else {
-				sg_remove_pipeline_link(ng, ng.pending_link_id)
-			}
-			delete(ng.pipeline_error)
-			ng.pipeline_error = ""
-			ng.save_pending = true
-			sg_compute_layout(ng)
-			ng.pending_action = .NONE
-			im.CloseCurrentPopup()
-		}
-		im.SameLine()
-		if im.Button(trc("cancel")) {
-			ng.pending_action = .NONE
-			im.CloseCurrentPopup()
-		}
-		im.EndPopup()
-	}
-
-	// Node drag trail: soft motes in the node's kind color while a node
-	// moves (hovered node + left button held + fast cursor). Must run
-	// AFTER ine_editor_end: imnodes asserts scope == None on queries.
-	if io.MouseDown[im.MouseButton.Left] {
-		moved := io.MouseDelta.x * io.MouseDelta.x + io.MouseDelta.y * io.MouseDelta.y
-		if moved > 64 {
-			if hovered, nid := ine_is_node_hovered(); hovered {
-				for &n in ng.nodes {
-					if n.id != nid do continue
-					pan := ine_get_panning()
-					// grid -> editor space: pos * zoom + panning
-					trail_zoom := ine_get_zoom()
-					kind_col := SG_KIND_COLORS[n.kind]
-					fx_trail(
-						&fx_settings^,
-						{n.pos.x * trail_zoom + pan.x, n.pos.y * trail_zoom + pan.y},
-						kind_col,
-					)
+		im.TextDisabled(strings_to_c(sg_pin_endpoint(graph, graph.pending_to)))
+		// CONNECT over an input that already has an editable producer:
+		// the apply below replaces it (one producer per input).
+		if graph.pending_action == .CONNECT {
+			for link in graph.links {
+				if link.editable && link.to == graph.pending_to && link.from != graph.pending_from {
+					im.TextDisabled(fmt.ctprintf("replaces %s", sg_pin_endpoint(graph, link.from)))
 					break
 				}
 			}
 		}
+		im.Spacing()
+		im.TextDisabled(trc("invalid changes keep the last valid pipeline"))
+		if im.Button(trc("apply")) {
+			if graph.pending_action == .CONNECT {
+				sg_connect(graph, graph.pending_from, graph.pending_to)
+			} else {
+				sg_remove_pipeline_link(graph, graph.pending_link_id)
+			}
+			delete(graph.pipeline_error)
+			graph.pipeline_error = ""
+			graph.save_pending = true
+			sg_compute_layout(graph)
+			graph.pending_action = .NONE
+			im.CloseCurrentPopup()
+		}
+		im.SameLine()
+		if im.Button(trc("cancel")) {
+			graph.pending_action = .NONE
+			im.CloseCurrentPopup()
+		}
+		im.EndPopup()
 	}
-
-	// Bolts over the pin shapes (see inject_marks above).
-	for m in inject_marks {
-		sg_draw_injected(im.GetWindowDrawList(), m.x, m.y)
-	}
-
 	// Click on a node opens its file's tab in the code editor (params
 	// jumps to the scene's entry shader; resource nodes have no file).
 	// Gated on release-without-drag so moving a node doesn't switch tabs.
 	if im.IsMouseReleased(.Left) && !im.IsMouseDragging(.Left) {
-		if hovered, nid := ine_is_node_hovered(); hovered {
-			for &n in ng.nodes {
-				if n.id != nid do continue
-				target := n.file
-				if target == "" && n.kind == .PARAMS {
-					target = fmt.tprintf("scenes/%s/%s", ng.scene, ng.scene)
+		if hovered, hovered_node_id := ine_is_node_hovered(); hovered {
+			for &node in graph.nodes {
+				if node.id != hovered_node_id do continue
+				target := node.file
+				if target == "" && node.kind == .PARAMS {
+					target = fmt.tprintf("scenes/%s/%s", graph.scene, graph.scene)
 				}
 				if target != "" {
-					ied_load_named(ed, target)
-					ed.open = true
+					ied_load_named(editor, target)
+					editor.open = true
 				}
-				break
 			}
 		}
 	}
@@ -1929,94 +2141,155 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 	// not in the binding's ButtonFlag enum) lets the button receive clicks
 	// although the imnodes child covers the area.
 	{
-		wp := im.GetWindowPos()
-		ws := im.GetWindowSize()
-		bx := wp.x + ws.x - 30
-		by := wp.y + 8
-		im.SetCursorScreenPos({bx, by})
+		window_pos := im.GetWindowPos()
+		window_size := im.GetWindowSize()
+		button_x := window_pos.x + window_size.x - 30
+		button_y := window_pos.y + 8
+		im.SetCursorScreenPos({button_x, button_y})
 		flatten := transmute(im.ButtonFlags)(i32(1) << 11)
 		if im.InvisibleButton("##graph_max", {22, 22}, flatten) {
 			maximized^ = !maximized^
 		}
-		hov := im.IsItemHovered()
-		dl := im.GetWindowDrawList()
-		col := im.GetColorU32Vec4(hov ? im.Vec4{0.87, 0.88, 0.90, 1} : im.Vec4{0.55, 0.57, 0.62, 1})
-		if hov {
-			im.DrawList_AddRectFilled(dl, {bx, by}, {bx + 22, by + 22}, im.GetColorU32Vec4({1, 1, 1, 0.07}), 5)
-		}
-		// Glyph: maximize = square near the corner; restore = smaller
-		// centered square.
-		if maximized^ {
-			im.DrawList_AddRect(dl, {bx + 7, by + 7}, {bx + 15, by + 15}, col, 0, 1.4)
-		} else {
-			im.DrawList_AddRect(dl, {bx + 5, by + 5}, {bx + 17, by + 17}, col, 0, 1.4)
+		hovered := im.IsItemHovered()
+		draw_list := im.GetWindowDrawList()
+		glyph_color := im.GetColorU32Vec4(hovered ? im.Vec4{0.87, 0.88, 0.90, 1} : im.Vec4{0.55, 0.57, 0.62, 1})
+		if hovered {
+			im.DrawList_AddRectFilled(draw_list, {button_x, button_y}, {button_x + 22, button_y + 22}, im.GetColorU32Vec4({1, 1, 1, 0.07}), 5)
 		}
 	}
-
 	// Right-click on empty canvas: open the create popup and spawn the new
 	// node at the clicked grid point (consumed by sg_upsert_node).
-	if im.IsWindowHovered({.ChildWindows}) && im.IsMouseClicked(.Right) {
-		if hovered, nid := ine_is_node_hovered(); hovered {
-			// Right-click on a user-authored node: context menu (delete).
-			for &n in ng.nodes {
-				if n.id != nid do continue
-				if strings.has_prefix(n.key, "uimg:") || strings.has_prefix(n.key, "uobj:") {
-					if ng.delete_key != "" do delete(ng.delete_key)
-					ng.delete_key = strings.clone(n.key)
+	if im.IsWindowHovered({.ChildWindows}) && im.IsMouseReleased(.Right) && !im.IsMouseDragging(.Right) {
+		hovered, hovered_node_id := ine_is_node_hovered()
+		log.infof("[graph-click] right-release: hovered=%v node=%d window_hovered=%v", hovered, hovered_node_id, im.IsWindowHovered({.ChildWindows}))
+		if hovered {
+			// Right-click on a node: context menu. User nodes offer
+			// swap file/delete; combine nodes delete (which removes the
+			// node's .slang file). Both actions key off the node.
+			graph.menu_node_id = hovered_node_id
+			for &node in graph.nodes {
+				if node.id != hovered_node_id do continue
+				if strings.has_prefix(node.key, "uimg:") || strings.has_prefix(node.key, "uobj:") {
+					if graph.delete_key != "" do delete(graph.delete_key)
+					graph.delete_key = strings.clone(node.key)
+					if graph.swap_key != "" do delete(graph.swap_key)
+					graph.swap_key = strings.clone(node.key)
+					im.OpenPopup("##node_user_menu")
+				} else if node.kind == .COMBINE {
 					im.OpenPopup("##node_user_menu")
 				}
 				break
 			}
 		} else {
-			ng.create_pos = ine_screen_to_grid(io.MousePos)
-			ng.create_pos_set = true
-			ng.create_open = true
+			graph.create_pos = ine_screen_to_grid(imgui_io.MousePos)
+			graph.create_pos_set = true
+			graph.create_open = true
+			log.infof("[graph-click] canvas hit: opening ##node_create at grid (%.0f, %.0f)", graph.create_pos.x, graph.create_pos.y)
 		}
 	}
 
 	// Create-node popup (opened by a node's "+" or canvas right-click):
 	// passes write a file into the scene's directory and append to the
 	// chain on the next sync; image/3d object open the file picker.
-	if ng.create_open {
+	if graph.create_open {
 		im.OpenPopup("##node_create")
-		ng.create_open = false
+		graph.create_open = false
 	}
 	if im.BeginPopup("##node_create") {
+		pmin := im.GetWindowPos()
+		psize := im.GetWindowSize()
+		log.infof("[graph-click] node_create popup rect (%.0f, %.0f) size (%.0f, %.0f)", pmin.x, pmin.y, psize.x, psize.y)
 		im.TextDisabled(trc("create pass"))
 		if im.Selectable(trc("graphics pass"), false, {}) {
-			sg_create_pass(ng, ed, .GRAPHICS)
+			sg_create_pass(graph, editor, .GRAPHICS)
 		}
 		if im.Selectable(trc("compute pass"), false, {}) {
-			sg_create_pass(ng, ed, .COMPUTE)
+			sg_create_pass(graph, editor, .COMPUTE)
+		}
+		im.TextDisabled(trc("create combine"))
+		if im.Selectable(trc("ADD"), false, {}) {
+			sg_create_combine(graph, editor, "ADD")
+		}
+		if im.Selectable(trc("MUL"), false, {}) {
+			sg_create_combine(graph, editor, "MUL")
+		}
+		if im.Selectable(trc("AND"), false, {}) {
+			sg_create_combine(graph, editor, "AND")
+		}
+		if im.Selectable(trc("OR"), false, {}) {
+			sg_create_combine(graph, editor, "OR")
+		}
+		if im.Selectable(trc("NOT"), false, {}) {
+			sg_create_combine(graph, editor, "NOT")
 		}
 		im.TextDisabled(trc("create resource"))
 		if im.Selectable(trc("image"), false, {}) {
-			ng.file_pick = .IMAGE
+			graph.file_pick = .IMAGE
 			im.OpenPopup("##node_pick_file")
 		}
+		irect := im.GetItemRectMin()
+		log.infof("[graph-click] image item rect min (%.0f, %.0f)", irect.x, irect.y)
 		if im.Selectable(trc("3d object"), false, {}) {
-			ng.file_pick = .OBJECT3D
+			graph.file_pick = .OBJECT3D
 			im.OpenPopup("##node_pick_file")
 		}
 		im.EndPopup()
+	} else {
+		// Popup not shown this frame: a closed/cancelled create clears
+		// the pending right-click spawn point.
+		graph.create_pos_set = false
 	}
 
-	// File picker for resource nodes: image nodes take an image from
-	// assets/ (root or skybox), 3d object nodes a model from
-	// assets/models/. The node spawns at the right-clicked grid point.
+	// User-node context menu: swap the asset file or delete the node.
+	// Combine nodes get only the delete entry (they own their .slang
+	// file, removed by sg_delete_combine).
+	if im.BeginPopup("##node_user_menu") {
+		menu_node: ^SgNode
+		for &node in graph.nodes {
+			if node.id == graph.menu_node_id {
+				menu_node = &node
+				break
+			}
+		}
+		if menu_node != nil && menu_node.kind == .COMBINE {
+			if im.Selectable(trc("delete node"), false, {}) {
+				sg_delete_combine(graph, editor, menu_node.key)
+			}
+		} else {
+			if im.Selectable(trc("swap file"), false, {}) {
+				// The swap target's kind drives the picker listing; derive
+				// it from the node key prefix (uobj: = model, uimg: = image).
+				graph.file_pick =
+					strings.has_prefix(graph.swap_key, "uobj:") ? .OBJECT3D : .IMAGE
+				im.OpenPopup("##node_pick_file")
+			}
+			if im.Selectable(trc("delete node"), false, {}) {
+				sg_delete_user_node(graph)
+			}
+		}
+		im.EndPopup()
+	}
 	if im.BeginPopup("##node_pick_file") {
-		im.TextDisabled(trc("choose model") if ng.file_pick == .OBJECT3D else trc("choose image"))
-		if ng.file_pick == .OBJECT3D {
+		im.TextDisabled(trc("choose model") if graph.file_pick == .OBJECT3D else trc("choose image"))
+		if graph.file_pick == .OBJECT3D {
 			for path in sg_asset_files("assets/models", ".glb") {
 				if im.Selectable(strings_to_c(path), false, {}) {
-					sg_create_user_node(ng, .OBJECT3D, path)
+					if graph.swap_key != "" {
+						sg_swap_user_node(graph, path)
+					} else {
+						sg_create_user_node(graph, .OBJECT3D, path)
+					}
 					im.CloseCurrentPopup()
 				}
 			}
 		} else {
 			for path in sg_image_files() {
 				if im.Selectable(strings_to_c(path), false, {}) {
-					sg_create_user_node(ng, .IMAGE, path)
+					if graph.swap_key != "" {
+						sg_swap_user_node(graph, path)
+					} else {
+						sg_create_user_node(graph, .IMAGE, path)
+					}
 					im.CloseCurrentPopup()
 				}
 			}
@@ -2024,61 +2297,52 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 		im.EndPopup()
 	}
 
-	// User-node context menu.
-	if im.BeginPopup("##node_user_menu") {
-		if im.Selectable(trc("delete node"), false, {}) {
-			sg_delete_user_node(ng)
-		}
-		im.EndPopup()
-	}
 
-	// Two-finger trackpad pan, momentum model ("ice"): while the fingers
-	// scroll, deltas move the panning 1:1 (interactive, no lag) and the
-	// gesture velocity is sampled; after release the velocity glides on
-	// with exponential friction until it dies. The sign is "viewport
-	// moves with the fingers" (scroll-down drags the graph down/left),
-	// the inverse of document scrolling. The hover test is ImGui's, not
-	// imnodes' IsEditorHovered: that one is evaluated with the editor
-	// child popped (current window is the panel again), and reports false
-	// over the canvas: gating on it killed every pan. ChildWindows counts
-	// the canvas child (and the minimap) as part of the panel.
-	// Ctrl+scroll zooms the node canvas around the cursor. Takes precedence
-	// over the two-finger pan. Ctrl state comes from SDL (reliable for
-	// wheel-modifier gestures, independent of imgui key routing).
-	ctrl_zoom := sdl.GetModState() & sdl.KMOD_CTRL != {}
-	if im.IsWindowHovered({.ChildWindows}) && ctrl_zoom && io.MouseWheel != 0 {
+	// SPACE-hold grab: the cursor reads as the grab hand for the whole
+	// hold (set every frame: ImGui resets io.MouseCursor to Arrow on
+	// NewFrame, so a branch-local set flickers between frames that pan
+	// and frames that don't).
+	if graph_grab_held do im.SetMouseCursor(.ResizeAll)
+	// Scroll always zooms the node canvas around the cursor (was
+	// two-finger pan with Ctrl+scroll zoom; pan now lives on the SPACE
+	// grab). Ctrl state comes from ImGui's IO (kept in sync by the event
+	// forwarder; the SDL mod state is glove-owned).
+	if im.IsWindowHovered({.ChildWindows}) && imgui_io.MouseWheel != 0 {
 		ZOOM_STEP :: 1.125
-		cur_zoom := ine_get_zoom()
+		current_zoom := ine_get_zoom()
 		ine_set_zoom(
-			cur_zoom * math.pow(f32(ZOOM_STEP), io.MouseWheel),
-			im.Vec2{io.MousePos.x, io.MousePos.y},
+			current_zoom * math.pow(f32(ZOOM_STEP), imgui_io.MouseWheel),
+			im.Vec2{imgui_io.MousePos.x, imgui_io.MousePos.y},
 		)
-	} else if im.IsWindowHovered({.ChildWindows}) && (io.MouseWheel != 0 || io.MouseWheelH != 0) {
-		d := [2]f32{io.MouseWheelH * 60, io.MouseWheel * 60}
-		cur := ine_get_panning()
-		// Velocity sample of the gesture (smoothed against jitter, capped
-		// so a hitch can't fling the canvas away).
-		dt := max(io.DeltaTime, 1e-4)
-		sample := [2]f32{d.x / dt, d.y / dt}
-		speed := math.sqrt(sample.x * sample.x + sample.y * sample.y)
+	} else if im.IsWindowHovered({.ChildWindows}) && graph_grab_held &&
+	          (imgui_io.MouseDelta.x != 0 || imgui_io.MouseDelta.y != 0) {
+		// SPACE-hold grab: drag moves the panning 1:1 with the cursor
+		// ("viewport moves with the mouse", same sign convention as the
+		// old two-finger pan) and the velocity is sampled so release
+		// glides on with the same exponential friction.
+		im.SetMouseCursor(.ResizeAll)
+		delta_time := max(imgui_io.DeltaTime, 1e-4)
+		velocity := [2]f32{-imgui_io.MouseDelta.x / delta_time, -imgui_io.MouseDelta.y / delta_time}
+		speed := math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y)
 		if speed > sg_pan_max_speed {
-			sample *= sg_pan_max_speed / speed
+			velocity *= sg_pan_max_speed / speed
 		}
-		ng.pan_vel = ng.pan_vel * 0.4 + sample * 0.6
-		ine_reset_panning(im.Vec2{cur.x + d.x, cur.y + d.y})
+		graph.pan_vel = graph.pan_vel * 0.4 + velocity * 0.6
+		panning := ine_get_panning()
+		ine_reset_panning(im.Vec2{panning.x - imgui_io.MouseDelta.x, panning.y - imgui_io.MouseDelta.y})
 		if pan_test_debug {
 			log.infof(
-				"[pan-debug] PANNED by (%.0f, %.0f) vel (%.0f, %.0f)",
-				d.x, d.y, ng.pan_vel.x, ng.pan_vel.y,
+				"[pan-debug] GRABBED by (%.0f, %.0f) vel (%.0f, %.0f)",
+				-imgui_io.MouseDelta.x, -imgui_io.MouseDelta.y, graph.pan_vel.x, graph.pan_vel.y,
 			)
 		}
-	} else if ng.pan_vel != {} {
+	} else if graph.pan_vel != {} {
 		// Inertia: friction eases the velocity to zero.
-		dt := io.DeltaTime
-		cur := ine_get_panning()
-		ine_reset_panning(im.Vec2{cur.x + ng.pan_vel.x * dt, cur.y + ng.pan_vel.y * dt})
-		ng.pan_vel *= math.exp(-sg_pan_friction * dt)
-		if abs(ng.pan_vel.x) < 1 && abs(ng.pan_vel.y) < 1 do ng.pan_vel = {}
+		delta_time := imgui_io.DeltaTime
+		panning := ine_get_panning()
+		ine_reset_panning(im.Vec2{panning.x + graph.pan_vel.x * delta_time, panning.y + graph.pan_vel.y * delta_time})
+		graph.pan_vel *= math.exp(-sg_pan_friction * delta_time)
+		if abs(graph.pan_vel.x) < 1 && abs(graph.pan_vel.y) < 1 do graph.pan_vel = {}
 	}
 }
 
@@ -2087,6 +2351,11 @@ ing_panel :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor, scene_title: string, maximiz
 // tighter) and the momentum sample is capped at sg_pan_max_speed px/s.
 sg_pan_friction:  f32 = 10
 sg_pan_max_speed: f32 = 1000
+
+// SPACE-hold grab on the node canvas (graph_grab action): while held,
+// dragging moves the panning and the cursor reads as a grab hand.
+// Set by input_bindings' handlers; read here.
+graph_grab_held: bool
 
 
 // Set by --pan-test (main.odin): logs the pan vector as wheel deltas move it.

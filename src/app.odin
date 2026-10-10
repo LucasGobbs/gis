@@ -18,7 +18,6 @@ import sdl "vendor:sdl3"
 SceneSelected   :: int
 SetMode         :: SidebarMode
 TogglePanel     :: struct {}
-ToggleZen       :: struct {} // SPACE: sidebar AND editor
 ToggleSidebar   :: struct {} // Cmd+B: sidebar only
 ToggleTheater   :: struct {} // F3
 ToggleMobile    :: struct {} // F4: 9:16 portrait recording mode
@@ -27,8 +26,6 @@ ToggleFx        :: FxKind
 SaveAll         :: struct {}
 ExportRequested :: ExportAction
 Quit            :: struct {}
-WindowMinimize  :: struct {}
-WindowFullscreen :: struct {} // green traffic light: true macOS fullscreen
 DevelopPreview  :: struct {} // EFFECTS panel preview button
 
 ExportAction :: struct {
@@ -40,7 +37,6 @@ Msg :: union {
 	SceneSelected,
 	SetMode,
 	TogglePanel,
-	ToggleZen,
 	ToggleSidebar,
 	ToggleTheater,
 	ToggleMobile,
@@ -49,17 +45,13 @@ Msg :: union {
 	SaveAll,
 	ExportRequested,
 	Quit,
-	WindowMinimize,
-	WindowFullscreen,
 	DevelopPreview,
 }
 
 FxKind :: enum {
 	DEVELOP,
-	PARTICLES,
 	SPRINGS,
 	GRAIN,
-	SOUND,
 }
 
 // Effects the interpreter (main.odin) executes. Pure state changes
@@ -67,9 +59,6 @@ FxKind :: enum {
 // one of these.
 Cmd :: enum {
 	QUIT,
-	MINIMIZE,
-	FULLSCREEN_ON,
-	FULLSCREEN_OFF,
 	MOBILE_ENTER,
 	MOBILE_EXIT,
 	SAVE_ALL,
@@ -105,20 +94,16 @@ emit :: proc(msg: Msg) {
 // Returns the effects for the interpreter to execute.
 update :: proc(app: ^App, msg: Msg) -> Cmds {
 	cmds: Cmds
-	switch m in msg {
+	switch message in msg {
 	case SceneSelected:
-		if m >= 0 && m < len(app.sm.scenes) {
-			app.sm.current = m
+		if message >= 0 && message < len(app.sm.scenes) {
+			app.sm.current = message
 		}
 	case SetMode:
-		app.ui.mode = m
+		app.ui.mode = message
 		app.ui.panel_open = true
 	case TogglePanel:
 		app.ui.panel_open = !app.ui.panel_open
-	case ToggleZen:
-		app.ui.open = !app.ui.open
-		app.ed.open = app.ui.open
-		fx_sfx_play(.ZEN)
 	case ToggleSidebar:
 		app.ui.open = !app.ui.open
 	case ToggleTheater:
@@ -175,42 +160,26 @@ update :: proc(app: ^App, msg: Msg) -> Cmds {
 			cmds += {.MOBILE_EXIT}
 		}
 	case SetFxIntensity:
-		app.ui.fx.intensity = m
+		app.ui.fx.intensity = message
 	case ToggleFx:
-		switch m {
+		switch message {
 		case .DEVELOP:
 			app.ui.fx.develop = !app.ui.fx.develop
-		case .PARTICLES:
-			app.ui.fx.particles = !app.ui.fx.particles
 		case .SPRINGS:
 			app.ui.fx.springs = !app.ui.fx.springs
 		case .GRAIN:
 			app.ui.fx.grain = !app.ui.fx.grain
-		case .SOUND:
-			app.ui.fx.sound = !app.ui.fx.sound
 		}
 	case SaveAll:
 		cmds += {.SAVE_ALL}
 	case ExportRequested:
-		// The burst is pure FX state; the file write is a Cmd.
-		n := 70 if m.kind == .GIF else 50
-		speed := f32(230) if m.kind == .GIF else f32(200)
-		fx_burst(&app.ui.fx, m.at, n, 24, speed)
-		if m.kind == .GIF {
+		if message.kind == .GIF {
 			cmds += {.EXPORT_GIF}
 		} else {
 			cmds += {.EXPORT_PNG}
 		}
 	case Quit:
 		cmds += {.QUIT}
-	case WindowMinimize:
-		cmds += {.MINIMIZE}
-	case WindowFullscreen:
-		if .FULLSCREEN in sdl.GetWindowFlags(app.win) {
-			cmds += {.FULLSCREEN_OFF}
-		} else {
-			cmds += {.FULLSCREEN_ON}
-		}
 	case DevelopPreview:
 		cmds += {.DEVELOP}
 	}

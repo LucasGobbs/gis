@@ -43,16 +43,16 @@ g_sdl_context: runtime.Context
 notify :: proc(kind: NotifyKind, fmt_str: string, args: ..any) {
 	sync.mutex_lock(&notify_mu)
 	defer sync.mutex_unlock(&notify_mu)
-	text := fmt.tprintf(fmt_str, ..args)
+	message := fmt.tprintf(fmt_str, ..args)
 	// Dedupe: same text seen recently -> refresh and count, no new card.
-	for &n in notices {
-		if n.text == text && n.age < NOTIFY_DEDUP_WINDOW {
-			n.age = 0
-			n.hits += 1
+	for &existing in notices {
+		if existing.text == message && existing.age < NOTIFY_DEDUP_WINDOW {
+			existing.age = 0
+			existing.hits += 1
 			return
 		}
 	}
-	append(&notices, Notice{text = strings.clone(text), kind = kind})
+	append(&notices, Notice{text = strings.clone(message), kind = kind})
 	for len(notices) > NOTIFY_MAX {
 		delete(notices[0].text)
 		ordered_remove(&notices, 0)
@@ -62,10 +62,10 @@ notify :: proc(kind: NotifyKind, fmt_str: string, args: ..any) {
 // Packs a color WITHOUT the style alpha that im.GetColorU32Vec4 bakes
 // in: toasts must stay opaque regardless of surrounding panel state.
 ncol :: proc(r, g, b, a: f32) -> u32 {
-	ci :: proc(v: f32) -> u32 {
-		return u32(clamp(v, 0, 1) * 255 + 0.5)
+	channel :: proc(channel_value: f32) -> u32 {
+		return u32(clamp(channel_value, 0, 1) * 255 + 0.5)
 	}
-	return ci(a) << 24 | ci(b) << 16 | ci(g) << 8 | ci(r)
+	return channel(a) << 24 | channel(b) << 16 | channel(g) << 8 | channel(r)
 }
 
 // Toast colors follow the darkroom palette: amber accent for warnings,
@@ -88,54 +88,54 @@ notify_draw :: proc(dt: f32) {
 	sync.mutex_lock(&notify_mu)
 	defer sync.mutex_unlock(&notify_mu)
 	if len(notices) == 0 do return
-	io := im.GetIO()
-	dl := im.GetForegroundDrawList()
-	w := f32(340)
-	pad := f32(10)
-	x1 := io.DisplaySize.x - w - 12
-	y := f32(TITLEBAR_H + 10)
+	imgui_io := im.GetIO()
+	draw_list := im.GetForegroundDrawList()
+	card_width := f32(340)
+	padding := f32(10)
+	left_x := imgui_io.DisplaySize.x - card_width - 12
+	top_y := f32(TITLEBAR_H + 10)
 	for i := len(notices) - 1; i >= 0; i -= 1 {
-		n := &notices[i]
-		n.age += dt
-		if n.age >= NOTIFY_LIFETIME {
-			delete(n.text)
+		notice := &notices[i]
+		notice.age += dt
+		if notice.age >= NOTIFY_LIFETIME {
+			delete(notice.text)
 			ordered_remove(&notices, i)
 			continue
 		}
 		// Entrance slide (first 0.25s) and exit fade (last NOTIFY_FADE).
-		slide := min(n.age / 0.25, 1)
-		xoff := (1 - slide * slide) * 40
-		alpha := 1 - math.smoothstep(NOTIFY_LIFETIME - NOTIFY_FADE, NOTIFY_LIFETIME, n.age)
-		idx := f32(len(notices) - 1 - i) // stack order: newest at top
-		h := pad * 2 + im.GetTextLineHeight() * 1.15
-		cy := y + idx * (h + 8)
-		min_p := im.Vec2{x1 + xoff, cy}
-		max_p := im.Vec2{x1 + w + xoff, cy + h}
+		slide := min(notice.age / 0.25, 1)
+		x_offset := (1 - slide * slide) * 40
+		alpha := 1 - math.smoothstep(NOTIFY_LIFETIME - NOTIFY_FADE, NOTIFY_LIFETIME, notice.age)
+		stack_index := f32(len(notices) - 1 - i) // stack order: newest at top
+		card_height := padding * 2 + im.GetTextLineHeight() * 1.15
+		card_y := top_y + stack_index * (card_height + 8)
+		card_min := im.Vec2{left_x + x_offset, card_y}
+		card_max := im.Vec2{left_x + card_width + x_offset, card_y + card_height}
 		// Click to dismiss.
-		mouse := io.MousePos
-		if io.MouseClicked[0] &&
-		   mouse.x >= min_p.x && mouse.x <= max_p.x &&
-		   mouse.y >= min_p.y && mouse.y <= max_p.y {
-			delete(n.text)
+		mouse := imgui_io.MousePos
+		if imgui_io.MouseClicked[0] &&
+		   mouse.x >= card_min.x && mouse.x <= card_max.x &&
+		   mouse.y >= card_min.y && mouse.y <= card_max.y {
+			delete(notice.text)
 			ordered_remove(&notices, i)
 			continue
 		}
-		accent := notify_kind_color(n.kind)
-		im.DrawList_AddRectFilled(dl, min_p, max_p, ncol(0.09, 0.09, 0.10, alpha), 6)
+		accent := notify_kind_color(notice.kind)
+		im.DrawList_AddRectFilled(draw_list, card_min, card_max, ncol(0.09, 0.09, 0.10, alpha), 6)
 		// Accent bar: square corners, clipped inside the card's rounding.
 		im.DrawList_AddRectFilled(
-			dl,
-			min_p,
-			{min_p.x + 3, max_p.y},
+			draw_list,
+			card_min,
+			{card_min.x + 3, card_max.y},
 			ncol(accent.x, accent.y, accent.z, alpha),
 		)
-		label := n.text
-		if n.hits > 1 {
-			label = fmt.tprintf("%s (×%d)", n.text, n.hits)
+		label := notice.text
+		if notice.hits > 1 {
+			label = fmt.tprintf("%s (×%d)", notice.text, notice.hits)
 		}
 		im.DrawList_AddText(
-			dl,
-			{min_p.x + pad + 4, min_p.y + pad - 1},
+			draw_list,
+			{card_min.x + padding + 4, card_min.y + padding - 1},
 			ncol(0.92, 0.92, 0.92, alpha),
 			strings_to_c(label),
 		)
@@ -147,9 +147,9 @@ notify_draw :: proc(dt: f32) {
 // with the previous frame's state; the log keeps the full condition.
 sdl_assert_notify :: proc "c" (data: ^sdl.AssertData, userdata: rawptr) -> sdl.AssertState {
 	context = g_sdl_context
-	cond := string(data.condition)
-	file := string(data.filename)
-	log.errorf("SDL assert: %s (%s:%s:%d, ×%d)", cond, file, string(data.function), data.linenum, data.trigger_count)
-	notify(.ERROR, "GPU: %s", cond)
+	condition := string(data.condition)
+	source_file := string(data.filename)
+	log.errorf("SDL assert: %s (%s:%s:%d, ×%d)", condition, source_file, string(data.function), data.linenum, data.trigger_count)
+	notify(.ERROR, "GPU: %s", condition)
 	return .IGNORE
 }
