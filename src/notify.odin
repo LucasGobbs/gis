@@ -73,11 +73,11 @@ ncol :: proc(r, g, b, a: f32) -> u32 {
 notify_kind_color :: proc(kind: NotifyKind) -> im.Vec4 {
 	switch kind {
 	case .INFO:
-		return {0.62, 0.76, 0.95, 1}
+		return SIGNATURE_BLUE
 	case .WARN:
-		return {0.91, 0.66, 0.34, 1}
+		return ACCENT
 	case .ERROR:
-		return {0.95, 0.42, 0.36, 1}
+		return ERROR_RED
 	}
 	return {1, 1, 1, 1}
 }

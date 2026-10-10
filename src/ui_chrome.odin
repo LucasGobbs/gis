@@ -169,6 +169,10 @@ ui_toolbar :: proc(ui: ^Ui, sm: ^SceneManager, window: ^sdl.Window, ied: ^ImGuiE
 			rect_min := im.GetItemRectMin()
 			rect_max := im.GetItemRectMax()
 			ui.scene_sel_rect = {rect_min.x, rect_min.y, rect_max.x, rect_max.y}
+			if im.IsItemHovered() {
+				im.SetTooltip("%s", strings_to_c(tr("switch scene")))
+				im.SetMouseCursor(.Hand)
+			}
 		}
 		im.PopStyleColor(3)
 
@@ -176,6 +180,9 @@ ui_toolbar :: proc(ui: ^Ui, sm: ^SceneManager, window: ^sdl.Window, ied: ^ImGuiE
 		im.SameLine(0, 8)
 		im.SetNextItemWidth(92)
 		if im.BeginCombo("##new_kind", trc("+ new"), {}) {
+			if im.IsItemHovered() {
+				im.SetTooltip("%s", strings_to_c(tr("create scene from template")))
+			}
 			if im.Selectable(trc("compute"), false, {}) {
 				if title, ok := scene_create(.COMPUTE); ok {
 					ui.pending_scene = title
@@ -194,6 +201,7 @@ ui_toolbar :: proc(ui: ^Ui, sm: ^SceneManager, window: ^sdl.Window, ied: ^ImGuiE
 			im.EndCombo()
 		}
 
+
 		// Save-all (floppy) left of pause: same drawn-icon style: the font
 		// has no 💾 glyph. Saves every dirty editor tab (ied_save_all).
 		size := f32(22)
@@ -205,6 +213,7 @@ ui_toolbar :: proc(ui: ^Ui, sm: ^SceneManager, window: ^sdl.Window, ied: ^ImGuiE
 		save_min := im.GetItemRectMin()
 		if im.IsItemHovered() {
 			im.DrawList_AddRectFilled(draw_list, save_min, {save_min.x + size, save_min.y + size}, im.GetColorU32Vec4({1, 1, 1, 0.08}), 4)
+			im.SetTooltip("%s", strings_to_c(tr("save all (Cmd+S)")))
 		}
 		save_color := im.GetColorU32(.Text, 1.0)
 		// Floppy: body outline, metal shutter top-right, label slot bottom.
@@ -222,7 +231,7 @@ ui_toolbar :: proc(ui: ^Ui, sm: ^SceneManager, window: ^sdl.Window, ied: ^ImGuiE
 				draw_list,
 				{save_min.x + 3, save_min.y + 3},
 				{save_min.x + size - 3, save_min.y + size - 3},
-				im.GetColorU32Vec4({0.91, 0.66, 0.34, 0.45 * flash}),
+				im.GetColorU32Vec4({ACCENT.x, ACCENT.y, ACCENT.z, 0.45 * flash}),
 				2,
 			)
 			check_progress := min(1, (1 - flash) * 3.3)
@@ -250,6 +259,7 @@ ui_toolbar :: proc(ui: ^Ui, sm: ^SceneManager, window: ^sdl.Window, ied: ^ImGuiE
 		pause_min := im.GetItemRectMin()
 		if im.IsItemHovered() {
 			im.DrawList_AddRectFilled(draw_list, pause_min, {pause_min.x + size, pause_min.y + size}, im.GetColorU32Vec4({1, 1, 1, 0.08}), 4)
+			im.SetTooltip("%s", strings_to_c(ui.params.paused ? tr("play") : tr("pause")))
 		}
 		icon_color := im.GetColorU32(.Text, 1.0)
 		if ui.params.paused {

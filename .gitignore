@@ -15,3 +15,5 @@ artefacts/
 builds/
 .DS_Store
 imgui.ini*
+/main_checklist
+assets/ui.prefs

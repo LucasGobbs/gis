@@ -22,7 +22,7 @@ import sdl "vendor:sdl3"
 //   scene color params  -> im.ColorEdit3 (was three sliders)
 //   grid overlay        -> im.GetBackgroundDrawList lines + text
 
-// Mobile theater (F4): when true, the editor docks to the bottom half
+// Mobile theater (F5): when true, the editor docks to the bottom half
 // of the portrait window. Package-level because ied_frame has no Ui.
 mobile_theater: bool
 
@@ -68,6 +68,17 @@ SidebarMode :: enum {
 	SHORTCUTS,
 }
 
+// Translated display names for the activity-strip tooltips (i18n keys).
+SIDEBAR_MODE_NAMES := [SidebarMode]string{
+	.CONTROLS  = "controls",
+	.FILES     = "file explorer",
+	.LEARN     = "learn",
+	.GRAPH     = "graph",
+	.EXPORT    = "export",
+	.EFFECTS   = "effects",
+	.SHORTCUTS = "shortcuts",
+}
+
 Ui :: struct {
 	params:         UiParams,
 	// Points at main's app_time: the controls panel shows it live and
@@ -82,7 +93,7 @@ Ui :: struct {
 	open:           bool, // whole sidebar (SPACE = zen mode hides it)
 	mode:           SidebarMode,
 	panel_open:     bool, // clicking the active mode's icon collapses the panel
-	// Theater mode (F3): one-shortcut recording composition: sidebar
+	// Theater mode (F4): one-shortcut recording composition: sidebar
 	// hidden, editor docked open, larger type. Saved state restores on
 	// exit.
 	theater:        bool,
@@ -90,7 +101,7 @@ Ui :: struct {
 	saved_ed_font:  f32,
 	saved_open:     bool,
 	saved_ed_open:  bool,
-	// Mobile theater (F4): 9:16 portrait recording mode. Own saved slots
+	// Mobile theater (F5): 9:16 portrait recording mode. Own saved slots
 	// (theater's saved_* would clobber if both modes nest).
 	mobile:              bool,
 	mobile_saved_ui_font: f32,
@@ -157,6 +168,26 @@ ui_init :: proc() -> ^Ui {
 	return ui
 }
 
+// Palette constants: one warm amber accent (selection/active state only,
+// never decoration) plus its alpha variants, the secondary text tone,
+// and the hyperlink blue. Single source of truth: every accent/link
+// literal in the UI files should reference these.
+ACCENT :: im.Vec4{0.91, 0.66, 0.34, 1}
+ACCENT_SEMITRANSPARENT :: im.Vec4{0.91, 0.66, 0.34, 0.22}
+ACCENT_SOFT :: im.Vec4{0.91, 0.66, 0.34, 0.9} // Cmd+hover underline
+ICON_HOVER :: im.Vec4{0.87, 0.88, 0.90, 1} // icon glyph when hovered
+ICON_IDLE :: im.Vec4{0.55, 0.57, 0.62, 1} // icon glyph at rest
+TEXT_MUTED :: im.Vec4{0.55, 0.57, 0.62, 1} // secondary text/icons: > 4.5:1 on WindowBg
+LINK_BLUE :: im.Vec4{0.55, 0.75, 0.95, 1} // hyperlinks in LEARN trails and docs tooltips
+DANGER_RED :: im.Vec4{0.95, 0.45, 0.45, 1} // destructive affordances (tab close ×)
+ERROR_RED :: im.Vec4{0.95, 0.42, 0.36, 1} // error text (pipeline errors, toasts)
+SIGNATURE_BLUE :: im.Vec4{0.62, 0.76, 0.95, 1} // hover-doc signatures, info toasts
+GRID_LABEL :: im.Vec4{0.92, 0.92, 0.90, 0.9} // grid overlay labels (over any scene)
+GRID_LABEL_HALO :: im.Vec4{0, 0, 0, 0.65} // 1px halo behind grid labels
+DEBUG_NAN :: im.Vec4{1.0, 0.1, 1.0, 1.0} // debug legend: NaN
+DEBUG_INF :: im.Vec4{1.0, 1.0, 0.1, 1.0} // debug legend: +Inf
+DEBUG_NEG_INF :: im.Vec4{0.1, 1.0, 1.0, 1.0} // debug legend: -Inf
+
 // Professional dark theme: tinted neutral layers (bar / panel / frame) so
 // scene colors stay true, and one warm amber accent reserved for selection
 // and active state. Restrained color strategy: the accent never decorates,
@@ -176,13 +207,11 @@ ui_apply_style :: proc() {
 	style.PopupRounding = 6
 	style.ScrollbarRounding = 6
 	style.GrabRounding = 5
-	style.WindowBorderSize = 1
-	style.FrameBorderSize = 0
-
-	accent := im.Vec4{0.91, 0.66, 0.34, 1}
+	accent := ACCENT
 	colors := &style.Colors
 	colors[im.Col.Text] = {0.87, 0.88, 0.90, 1}
-	colors[im.Col.TextDisabled] = {0.46, 0.48, 0.52, 1}
+	colors[im.Col.TextDisabled] = TEXT_MUTED
+
 	colors[im.Col.WindowBg] = {0.075, 0.079, 0.094, 0.97}
 	colors[im.Col.ChildBg] = {0, 0, 0, 0}
 	colors[im.Col.PopupBg] = {0.098, 0.103, 0.122, 0.98}
@@ -215,7 +244,7 @@ ui_apply_style :: proc() {
 	colors[im.Col.ResizeGripHovered] = {1, 1, 1, 0.20}
 	colors[im.Col.ResizeGripActive] = {1, 1, 1, 0.28}
 	colors[im.Col.TabHovered] = {1, 1, 1, 0.12}
-	colors[im.Col.TextSelectedBg] = {0.91, 0.66, 0.34, 0.35}
+	colors[im.Col.TextSelectedBg] = ACCENT_SEMITRANSPARENT
 	colors[im.Col.NavCursor] = accent
 }
 
@@ -351,8 +380,10 @@ ui_draw_grid :: proc(ui: ^Ui, frame_w, frame_h: i32) {
 	minor := im.GetColorU32Vec4({0, 0, 0, 0.09})
 	major := im.GetColorU32Vec4({0, 0, 0, 0.26})
 	axis := im.GetColorU32Vec4({0, 0, 0, 0.65})
-	text_col := im.GetColorU32Vec4({0, 0, 0, 0.83})
-
+	// Labels: light text with a dark halo, so they read over both bright
+	// and dark scenes (plain black labels vanished on dark scenes).
+	text_col := im.GetColorU32Vec4(GRID_LABEL)
+	text_halo := im.GetColorU32Vec4(GRID_LABEL_HALO)
 	// Vertical: normalized X grows left -> right.
 	for k in 0 ..= GRID_DIVISIONS {
 		x := f32(k) / GRID_DIVISIONS * width
@@ -383,12 +414,23 @@ ui_draw_grid :: proc(ui: ^Ui, frame_w, frame_h: i32) {
 		if k % GRID_LABEL_EVERY != 0 do continue
 		value := f32(k) / GRID_DIVISIONS
 		x := clamp(value * width + 3, 3, width - 18)
-		im.DrawList_AddText(draw_list, {x, height - 15}, text_col, fmt.ctprintf("%.1f", value))
+		label := fmt.ctprintf("%.1f", value)
+		// 1px dark halo in 4 directions keeps the label legible on any scene.
+		halo_offsets := [4]im.Vec2{im.Vec2{-1, 0}, im.Vec2{1, 0}, im.Vec2{0, -1}, im.Vec2{0, 1}}
+		for halo in halo_offsets {
+			im.DrawList_AddText(draw_list, {x + halo.x, height - 15 + halo.y}, text_halo, label)
+		}
+		im.DrawList_AddText(draw_list, {x, height - 15}, text_col, label)
 	}
 	for k := GRID_LABEL_EVERY; k <= GRID_DIVISIONS; k += GRID_LABEL_EVERY {
 		value := f32(k) / GRID_DIVISIONS
 		y := clamp(height - value * height - 14, 2, height - 16)
-		im.DrawList_AddText(draw_list, {4, y}, text_col, fmt.ctprintf("%.1f", value))
+		label := fmt.ctprintf("%.1f", value)
+		halo_offsets := [4]im.Vec2{im.Vec2{-1, 0}, im.Vec2{1, 0}, im.Vec2{0, -1}, im.Vec2{0, 1}}
+		for halo in halo_offsets {
+			im.DrawList_AddText(draw_list, {4 + halo.x, y + halo.y}, text_halo, label)
+		}
+		im.DrawList_AddText(draw_list, {4, y}, text_col, label)
 	}
 }
 

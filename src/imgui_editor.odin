@@ -345,6 +345,7 @@ ied_init :: proc() -> ^ImGuiEditor {
 
 	ied_scan_dir(editor, "")
 	ied_scan_scene_dirs(editor)
+	ui_prefs_editor = editor
 	log.infof("[imgui-editor] %d shaders under %s", len(editor.files), SHADER_DIR)
 	return editor
 }
@@ -635,6 +636,20 @@ ied_open_scene :: proc(editor: ^ImGuiEditor, scene_name: string) {
 	editor.lsp_change_frames = 18
 }
 
+// How many open tabs hold unsaved edits (the visible one's live undo
+// state included). Gates ESC-quit: unsaved work must not vanish on a
+// key the muscle memory reads as "close".
+ied_dirty_count :: proc(editor: ^ImGuiEditor) -> int {
+	dirty := 0
+	live_undo := ite_get_undo_index(editor.handle)
+	for tab_doc, i in editor.open_docs {
+		if tab_doc.dirty || (i == editor.current_open && live_undo != editor.saved_undo) {
+			dirty += 1
+		}
+	}
+	return dirty
+}
+
 // Save every modified open document. Shader files are the app's only
 // persistent state, so this IS the application-wide save (Cmd+S and the
 // toolbar's "save all"). The visible document's text is stashed first so
@@ -904,7 +919,7 @@ hover_builtin_of :: proc(editor: ^ImGuiEditor) -> ^IedBuiltinDoc {
 // Minimal inline markdown for the docs tooltip: `code` spans render in
 // the accent amber; lines without code spans wrap at the tooltip width.
 hover_render_md :: proc(text: string) {
-	code_col := im.Vec4{0.91, 0.66, 0.34, 1}
+	code_col := ACCENT
 	for line in strings.split_lines(text, context.temp_allocator) {
 		if !strings.contains(line, "`") {
 			im.TextWrapped(strings_to_c(line))
@@ -1173,330 +1188,337 @@ ied_request_goto_word :: proc(editor: ^ImGuiEditor, word: string) {
 // Per-frame non-UI work: self-test driver, deferred goto-definition, the
 // context-menu goto channel, the debounced LSP sync, and the diagnostics
 // push. Runs regardless of sidebar mode so diagnostics keep flowing.
-ied_tick :: proc(editor: ^ImGuiEditor) {
-	// Self-test: exercise the deferred goto mechanism without mouse input.
-	if ied_selftest {
-		ied_selftest_frame += 1
-		// Live hover drive: hold the injected mouse where the sweep found
-		// smoothstep so the real capture + dwell path runs (checked at 290).
-		if hover_inject_active && ied_selftest_frame > 250 && ied_selftest_frame < 290 {
-			imgui_io := im.GetIO()
-			im.IO_AddMousePosEvent(imgui_io, hover_inject.x, hover_inject.y)
+// Self-test driver: exercises goto/hover/docs/rename/glass/LSP flows
+// without mouse input (--ied-test). Split out of ied_tick (KISS).
+ied_selftest_tick :: proc(editor: ^ImGuiEditor) {
+	ied_selftest_frame += 1
+	// Live hover drive: hold the injected mouse where the sweep found
+	// smoothstep so the real capture + dwell path runs (checked at 290).
+	if hover_inject_active && ied_selftest_frame > 250 && ied_selftest_frame < 290 {
+		imgui_io := im.GetIO()
+		im.IO_AddMousePosEvent(imgui_io, hover_inject.x, hover_inject.y)
+	}
+	switch ied_selftest_frame {
+	case 30:
+		// Cross-file: hash21 lives in common.slang, used by scenes.
+		if editor.current >= 0 {
+			ied_request_goto_word(editor, "hash21")
 		}
-		switch ied_selftest_frame {
-		case 30:
-			// Cross-file: hash21 lives in common.slang, used by scenes.
-			if editor.current >= 0 {
-				ied_request_goto_word(editor, "hash21")
+	case 45:
+		cursor_line := ite_get_cursor_line(editor.handle)
+		current_file := editor.current >= 0 ? editor.files[editor.current] : "?"
+		// Expected: file switched to "common" at hash21's definition line.
+		text := string(ite_get_text(editor.handle))
+		want, found := ied_find_definition(text, "hash21")
+		goto_ok := current_file == "common" && found && int(cursor_line) == want
+		log.infof(
+			"[ied-test] cross-file goto: %s.slang line %d (want common %d) %s",
+			current_file,
+			cursor_line,
+			want,
+			goto_ok ? "PASS" : "FAIL",
+		)
+	case 47:
+		// Call-site resolution: words used at call sites must resolve
+		// cross-file (goto-definition and hover docs share this path).
+		words := [?]string{"fbm", "scene_uv", "appleDistances", "sdSegment", "is_outside", "frag_coord"}
+		for word in words {
+			_, _, found := ied_lookup_symbol(editor, word)
+			log.infof("[ied-test] lookup %s: %s", word, found ? "OK" : "MISS")
+		}
+		// Doc extraction: frag_coord carries a //-comment above it.
+		frag_sig, frag_doc, frag_found := ied_lookup_symbol(editor, "frag_coord")
+		docs_ok := frag_found && strings.contains(frag_sig, "frag_coord") && strings.contains(frag_doc, "y up")
+		log.infof("[ied-test] hover docs: sig=%q doc=%q %s", frag_sig, frag_doc, docs_ok ? "PASS" : "FAIL")
+		// Builtin docs resolve without any user definition; a project
+		// symbol still wins over the builtin table (clamp vs scene_uv).
+		for builtin in IED_BUILTIN_DOCS {
+			builtin_sig, builtin_doc, builtin_found := ied_lookup_symbol(editor, builtin.name)
+			builtin_ok := builtin_found && builtin_sig != "" && builtin_doc != ""
+			log.infof("[ied-test] builtin docs (%s): %s", builtin.name, builtin_ok ? "PASS" : "FAIL")
+		}
+	case 50:
+		// Rename helper: whole-word replace respects identifier
+		// boundaries (afbm/fbm2 untouched, comment + decl replaced).
+		sample_text := "fbm(x) + afbm + fbm2(y) + fbm( z ); // fbm\nfloat fbm = 1.0;"
+		out, n := text_replace_word(sample_text, "fbm", "noise_fbm")
+		replace_ok := n == 4 &&
+			strings.contains(out, "noise_fbm(x)") &&
+			strings.contains(out, "noise_fbm( z )") &&
+			strings.contains(out, "float noise_fbm = 1.0") &&
+			strings.contains(out, "afbm") &&
+			strings.contains(out, "fbm2(y)") &&
+			!strings.contains(out, "noise_fbm2")
+		log.infof("[ied-test] rename replace: %d replacements %s", n, replace_ok ? "PASS" : "FAIL")
+		if !replace_ok do log.infof("[ied-test]   got: %s", out)
+	case 70:
+		// Glass mode visual check: same call path as the toolbar button.
+		editor.bg_transparent = true
+		ite_set_glass(editor.handle, true, editor.glass_alpha)
+		log.info("[ied-test] glass enabled")
+	case 80:
+		// Glass toggle-spam regression (F3 pressed repeatedly across
+		// open/close animations used to compound the palette alpha
+		// until the text went invisible): toggle glass ON, force the
+		// fade machinery through a full open/close/reopen cycle, then
+		// toggle OFF — the palette must come back at full alpha.
+		editor.bg_transparent = true
+		ite_set_glass(editor.handle, true, editor.glass_alpha)
+		editor.open = false // start the close spring (fade_active)
+		log.info("[ied-test] glass toggle-spam: cycle 1")
+	case 85:
+		editor.open = true // reopen mid-spring: fade recapture path
+	case 86:
+		editor.bg_transparent = false
+		ite_set_glass(editor.handle, false, editor.glass_alpha)
+		editor.open = false // second cycle with glass OFF mid-anim
+		log.info("[ied-test] glass toggle-spam: cycle 2")
+	case 88:
+		editor.open = true
+	case 89:
+		// Glass toggle-spam regression check: the saved palette must
+		// have survived the spam cycles — background alpha back at
+		// full (255) once glass is off, not compounded downward.
+		editor.bg_transparent = true
+		ite_set_glass(editor.handle, true, editor.glass_alpha)
+		editor.bg_transparent = false
+		ite_set_glass(editor.handle, false, editor.glass_alpha)
+		editor.open = true
+		bg_alpha := ite_get_background_alpha(editor.handle)
+		log.infof("[ied-test] glass toggle-spam: bg alpha %d/255 %s", bg_alpha, bg_alpha == 255 ? "PASS" : "FAIL")
+	case 90:
+		// LSP chain check: completion straight from slangd for a known
+		// prefix in common.slang (hash21 lives at line 29).
+		if ied_lsp != nil {
+			data, _ := os.read_entire_file("src/shaders/common.slang", context.temp_allocator)
+			items := lsp_complete(ied_lsp, "file:///tmp/common.slang", string(data), 100, 4)
+			log.infof("[ied-test] lsp completions: %d items", len(items))
+			for item, i in items {
+				if i >= 5 do break
+				log.infof("[ied-test]   %s (%s)", item.label, item.detail)
 			}
-		case 45:
-			cursor_line := ite_get_cursor_line(editor.handle)
-			current_file := editor.current >= 0 ? editor.files[editor.current] : "?"
-			// Expected: file switched to "common" at hash21's definition line.
-			text := string(ite_get_text(editor.handle))
-			want, found := ied_find_definition(text, "hash21")
-			goto_ok := current_file == "common" && found && int(cursor_line) == want
-			log.infof(
-				"[ied-test] cross-file goto: %s.slang line %d (want common %d) %s",
-				current_file,
-				cursor_line,
-				want,
-				goto_ok ? "PASS" : "FAIL",
-			)
-		case 47:
-			// Call-site resolution: words used at call sites must resolve
-			// cross-file (goto-definition and hover docs share this path).
-			words := [?]string{"fbm", "scene_uv", "appleDistances", "sdSegment", "is_outside", "frag_coord"}
-			for word in words {
-				_, _, found := ied_lookup_symbol(editor, word)
-				log.infof("[ied-test] lookup %s: %s", word, found ? "OK" : "MISS")
-			}
-			// Doc extraction: frag_coord carries a //-comment above it.
-			frag_sig, frag_doc, frag_found := ied_lookup_symbol(editor, "frag_coord")
-			docs_ok := frag_found && strings.contains(frag_sig, "frag_coord") && strings.contains(frag_doc, "y up")
-			log.infof("[ied-test] hover docs: sig=%q doc=%q %s", frag_sig, frag_doc, docs_ok ? "PASS" : "FAIL")
-			// Builtin docs resolve without any user definition; a project
-			// symbol still wins over the builtin table (clamp vs scene_uv).
-			for builtin in IED_BUILTIN_DOCS {
-				builtin_sig, builtin_doc, builtin_found := ied_lookup_symbol(editor, builtin.name)
-				builtin_ok := builtin_found && builtin_sig != "" && builtin_doc != ""
-				log.infof("[ied-test] builtin docs (%s): %s", builtin.name, builtin_ok ? "PASS" : "FAIL")
-			}
-		case 50:
-			// Rename helper: whole-word replace respects identifier
-			// boundaries (afbm/fbm2 untouched, comment + decl replaced).
-			sample_text := "fbm(x) + afbm + fbm2(y) + fbm( z ); // fbm\nfloat fbm = 1.0;"
-			out, n := text_replace_word(sample_text, "fbm", "noise_fbm")
-			replace_ok := n == 4 &&
-				strings.contains(out, "noise_fbm(x)") &&
-				strings.contains(out, "noise_fbm( z )") &&
-				strings.contains(out, "float noise_fbm = 1.0") &&
-				strings.contains(out, "afbm") &&
-				strings.contains(out, "fbm2(y)") &&
-				!strings.contains(out, "noise_fbm2")
-			log.infof("[ied-test] rename replace: %d replacements %s", n, replace_ok ? "PASS" : "FAIL")
-			if !replace_ok do log.infof("[ied-test]   got: %s", out)
-		case 70:
-			// Glass mode visual check: same call path as the toolbar button.
-			editor.bg_transparent = true
-			ite_set_glass(editor.handle, true, editor.glass_alpha)
-			log.info("[ied-test] glass enabled")
-		case 80:
-			// Glass toggle-spam regression (F3 pressed repeatedly across
-			// open/close animations used to compound the palette alpha
-			// until the text went invisible): toggle glass ON, force the
-			// fade machinery through a full open/close/reopen cycle, then
-			// toggle OFF — the palette must come back at full alpha.
-			editor.bg_transparent = true
-			ite_set_glass(editor.handle, true, editor.glass_alpha)
-			editor.open = false // start the close spring (fade_active)
-			log.info("[ied-test] glass toggle-spam: cycle 1")
-		case 85:
-			editor.open = true // reopen mid-spring: fade recapture path
-		case 86:
-			editor.bg_transparent = false
-			ite_set_glass(editor.handle, false, editor.glass_alpha)
-			editor.open = false // second cycle with glass OFF mid-anim
-			log.info("[ied-test] glass toggle-spam: cycle 2")
-		case 88:
-			editor.open = true
-		case 89:
-			// Glass toggle-spam regression check: the saved palette must
-			// have survived the spam cycles — background alpha back at
-			// full (255) once glass is off, not compounded downward.
-			editor.bg_transparent = true
-			ite_set_glass(editor.handle, true, editor.glass_alpha)
-			editor.bg_transparent = false
-			ite_set_glass(editor.handle, false, editor.glass_alpha)
-			editor.open = true
-			bg_alpha := ite_get_background_alpha(editor.handle)
-			log.infof("[ied-test] glass toggle-spam: bg alpha %d/255 %s", bg_alpha, bg_alpha == 255 ? "PASS" : "FAIL")
-		case 90:
-			// LSP chain check: completion straight from slangd for a known
-			// prefix in common.slang (hash21 lives at line 29).
-			if ied_lsp != nil {
-				data, _ := os.read_entire_file("src/shaders/common.slang", context.temp_allocator)
-				items := lsp_complete(ied_lsp, "file:///tmp/common.slang", string(data), 100, 4)
-				log.infof("[ied-test] lsp completions: %d items", len(items))
-				for item, i in items {
-					if i >= 5 do break
-					log.infof("[ied-test]   %s (%s)", item.label, item.detail)
+		} else {
+			log.info("[ied-test] lsp unavailable")
+		}
+	case 94:
+		// Theme machinery check: monokai on screen for the screenshot.
+		editor.bg_transparent = false
+		ite_set_glass(editor.handle, false, editor.glass_alpha)
+		editor.theme = .MONOKAI
+		ied_apply_theme(editor)
+		log.info("[ied-test] monokai applied")
+	case 95:
+		// Member completion: right after "Uniforms." slangd must offer
+		// the SceneUniforms fields (struct member access).
+		if ied_lsp != nil {
+			data, _ := os.read_entire_file("src/shaders/scenes/apple/apple.slang", context.temp_allocator)
+			text := string(data)
+			cursor_line, cursor_col := -1, 0
+			if needle_idx := strings.index(text, "Uniforms.iResolution"); needle_idx >= 0 {
+				prefix := text[:needle_idx + len("Uniforms.")]
+				cursor_line = strings.count(prefix, "\n")
+				cursor_col = len(prefix)
+				if last_nl := strings.last_index(prefix, "\n"); last_nl >= 0 {
+					cursor_col = len(prefix) - last_nl - 1
 				}
+			}
+			// Real URI: imports ("../../common") must resolve for
+			// slangd to know SceneUniforms' members.
+			cwd, _ := os.get_working_directory(context.temp_allocator)
+			doc_uri := fmt.tprintf("file://%s/src/shaders/scenes/apple/apple.slang", cwd)
+			items := lsp_complete(ied_lsp, doc_uri, text, cursor_line, cursor_col)
+			has_field := false
+			for item in items {
+				if item.label == "iTime" || item.label == "iFbm" {
+					has_field = true
+					break
+				}
+			}
+			log.infof(
+				"[ied-test] member completion after '.': %d items %s",
+				len(items),
+				has_field ? "PASS" : "FAIL",
+			)
+			for item, i in items {
+				if i >= 5 do break
+				log.infof("[ied-test]   %s (%s)", item.label, item.detail)
+			}
+		}
+	case 100:
+		// Live diagnostics check: break the DOCUMENT (not the file,
+		// nothing is saved) and expect slangd to flag it. The goto test
+		// above left the editor on common.slang, so reload apple first.
+		if ied_lsp != nil {
+			ied_load_named(editor, ied_scene_rel(editor, "apple"))
+			text := string(ite_get_text(editor.handle))
+			broken, found := strings.replace(text, "float3 bg = paper_texture;", "float3 bg = paper_texture", 1, context.temp_allocator)
+			if found {
+				ite_set_text(editor.handle, strings.clone_to_cstring(broken, context.temp_allocator))
+				// Programmatic SetText may not fire the change callback;
+				// force the dirty flag the way typing would.
+				editor.lsp_dirty = true
+				log.infof("[ied-test] document broken, dirty=%v", editor.lsp_dirty)
 			} else {
-				log.info("[ied-test] lsp unavailable")
+				log.info("[ied-test] needle not found in document")
 			}
-		case 94:
-			// Theme machinery check: monokai on screen for the screenshot.
-			editor.bg_transparent = false
-			ite_set_glass(editor.handle, false, editor.glass_alpha)
-			editor.theme = .MONOKAI
-			ied_apply_theme(editor)
-			log.info("[ied-test] monokai applied")
-		case 95:
-			// Member completion: right after "Uniforms." slangd must offer
-			// the SceneUniforms fields (struct member access).
-			if ied_lsp != nil {
-				data, _ := os.read_entire_file("src/shaders/scenes/apple/apple.slang", context.temp_allocator)
-				text := string(data)
-				cursor_line, cursor_col := -1, 0
-				if needle_idx := strings.index(text, "Uniforms.iResolution"); needle_idx >= 0 {
-					prefix := text[:needle_idx + len("Uniforms.")]
-					cursor_line = strings.count(prefix, "\n")
-					cursor_col = len(prefix)
-					if last_nl := strings.last_index(prefix, "\n"); last_nl >= 0 {
-						cursor_col = len(prefix) - last_nl - 1
-					}
-				}
-				// Real URI: imports ("../../common") must resolve for
-				// slangd to know SceneUniforms' members.
-				cwd, _ := os.get_working_directory(context.temp_allocator)
-				doc_uri := fmt.tprintf("file://%s/src/shaders/scenes/apple/apple.slang", cwd)
-				items := lsp_complete(ied_lsp, doc_uri, text, cursor_line, cursor_col)
-				has_field := false
-				for item in items {
-					if item.label == "iTime" || item.label == "iFbm" {
-						has_field = true
-						break
-					}
-				}
-				log.infof(
-					"[ied-test] member completion after '.': %d items %s",
-					len(items),
-					has_field ? "PASS" : "FAIL",
-				)
-				for item, i in items {
-					if i >= 5 do break
-					log.infof("[ied-test]   %s (%s)", item.label, item.detail)
-				}
-			}
-		case 100:
-			// Live diagnostics check: break the DOCUMENT (not the file,
-			// nothing is saved) and expect slangd to flag it. The goto test
-			// above left the editor on common.slang, so reload apple first.
-			if ied_lsp != nil {
-				ied_load_named(editor, ied_scene_rel(editor, "apple"))
-				text := string(ite_get_text(editor.handle))
-				broken, found := strings.replace(text, "float3 bg = paper_texture;", "float3 bg = paper_texture", 1, context.temp_allocator)
-				if found {
-					ite_set_text(editor.handle, strings.clone_to_cstring(broken, context.temp_allocator))
-					// Programmatic SetText may not fire the change callback;
-					// force the dirty flag the way typing would.
-					editor.lsp_dirty = true
-					log.infof("[ied-test] document broken, dirty=%v", editor.lsp_dirty)
-				} else {
-					log.info("[ied-test] needle not found in document")
-				}
-			}
-		case 130:
-			if ied_lsp != nil {
-				log.infof(
-					"[ied-test] frame 130: dirty=%v diag_version=%d diag_files=%d",
-					editor.lsp_dirty,
-					ied_lsp.diag_version,
-					len(ied_lsp.diagnostics),
-				)
-			}
-		case 150:
-			// Hover docs visual check: force the hovered word so the
-			// signature + doc tooltip renders (screenshot target).
-			ied_debug_hover_word = "smoothstep"
-		case 155:
-			// Shortcuts tab visual check (screenshot target).
-			emit(SetMode(.SHORTCUTS))
-		case 156:
-			// Clear the forced hover word so later cases run clean.
-			ied_debug_hover_word = ""
-		case 160:
-			// Mobile theater visual check (screenshot target).
-			emit(ToggleMobile{})
-		case 248:
-			// The diagnostics case (100) leaves apple loaded; the sweep
-			// needs 01_hello_pixel (uses both smoothstep-less builtins and
-			// scene_uv) on screen, with a clean hover state.
-			ied_load_named(editor, ied_scene_rel(editor, "01_hello_pixel"))
-			ied_hover_close(editor)
-		case 249:
-			// Bring smoothstep's occurrence into the visible area.
-			text := string(ite_get_text(editor.handle))
-			if needle_idx := strings.index(text, "smoothstep"); needle_idx >= 0 {
-				line := 0
-				for char_idx := 0; char_idx < needle_idx; char_idx += 1 {
-					if text[char_idx] == '\n' do line += 1
-				}
-				ite_goto_line(editor.handle, c.size_t(line))
-			}
-		case 250:
-			// Sweep the text area until the component's own GetWordAt
-			// returns smoothstep and scene_uv; the injected mouse then
-			// dwells each one in turn.
-			found_smooth, found_uv := false, false
-			outer: for grid_y in 0 ..< 120 {
-				for grid_x in 0 ..< 100 {
-					x := editor.text_pos.x + f32(grid_x) * 6
-					y := editor.text_pos.y + f32(grid_y) * 4
-					word_buf: [128]u8
-					n := ite_get_word_at_mouse(editor.handle, x, y, cstring(&word_buf[0]), len(word_buf))
-					word := string(word_buf[:min(int(n), 127)])
-					if word == "smoothstep" && !found_smooth {
-						hover_inject = {x, y}
-						hover_inject_active = true
-						found_smooth = true
-						log.infof("[ied-test] sweep: smoothstep capturable at (%.0f, %.0f)", x, y)
-						word_rect: [4]f32
-						rect_ok := ite_word_rect_at_mouse(editor.handle, x, y, &word_rect[0])
-						log.infof(
-							"[ied-test] word rect: ok=%v (%.0f, %.0f)-(%.0f, %.0f) %s",
-							rect_ok, word_rect[0], word_rect[1], word_rect[2], word_rect[3],
-							rect_ok && word_rect[2] > word_rect[0] && word_rect[3] > word_rect[1] ? "PASS" : "FAIL",
-						)
-					}
-					if word == "scene_uv" && !found_uv {
-						goto_inject_pos = {x, y}
-						found_uv = true
-						log.infof("[ied-test] sweep: scene_uv capturable at (%.0f, %.0f)", x, y)
-					}
-					if found_smooth && found_uv do break outer
-				}
-			}
-			if !found_smooth do log.infof("[ied-test] sweep: smoothstep NOT capturable (FAIL)")
-			if !found_uv do log.infof("[ied-test] sweep: scene_uv NOT capturable (FAIL)")
-		case 251:
-			// Capture map: for each pixel row of the text area, the words
-			// the component returns at three x positions. Shows exactly
-			// which screen regions produce captures.
-			capture_out := strings.builder_make(context.temp_allocator)
-			for grid_y in 0 ..< 120 {
-				y := editor.text_pos.y + f32(grid_y) * 4
-				row_words: [dynamic]string
-				for grid_x in 0 ..< 3 {
-					x := editor.text_pos.x + 80 + f32(grid_x) * 120
-					word_buf: [128]u8
-					n := ite_get_word_at_mouse(editor.handle, x, y, cstring(&word_buf[0]), len(word_buf))
-					if n > 0 {
-						word := string(word_buf[:min(int(n), 127)])
-						if len(row_words) == 0 || row_words[len(row_words) - 1] != word {
-							append(&row_words, strings.clone(word, context.temp_allocator))
-						}
-					}
-				}
-				if len(row_words) > 0 {
-					strings.write_string(&capture_out, fmt.tprintf("y%.0f:%v | ", y, row_words))
-				}
-			}
-			log.infof("[ied-test] capture map: %s", strings.to_string(capture_out))
-		case 290:
-			hover_ok := editor.hover_sig != "" && strings.contains(editor.hover_sig, "smoothstep")
-			log.infof("[ied-test] live hover smoothstep: sig=%q %s", editor.hover_sig, hover_ok ? "PASS" : "FAIL")
-			hover_inject_active = false
-		case 291:
-			// Live hover for scene_uv (defined only in common.slang).
-			ied_hover_close(editor)
-			hover_inject = goto_inject_pos
-			hover_inject_active = true
-		case 330:
-			hover_ok := editor.hover_sig != "" && strings.contains(editor.hover_sig, "scene_uv")
-			log.infof("[ied-test] live hover scene_uv: sig=%q %s", editor.hover_sig, hover_ok ? "PASS" : "FAIL")
-			hover_inject_active = false
-		case 331:
-			// Cmd+click path: goto with the captured word, check landing.
-			ied_request_goto_word(editor, "scene_uv")
-		case 335:
-			file := editor.current >= 0 ? editor.files[editor.current] : "?"
-			line := ite_get_cursor_line(editor.handle)
-			log.infof(
-				"[ied-test] goto scene_uv landed: %s line %d (want common line 77) %s",
-				file, line,
-				file == "common" && int(line) == 77 ? "PASS" : "FAIL",
-			)
-		case 340:
-			// Cmd+hover underline visual check (screenshot target): hold
-			// Cmd over the last swept word.
-			ied_gui_held = true
-			hover_inject_active = true
-		case 400:
-			if ied_lsp != nil {
-				diags, has_diags := ied_lsp.diagnostics[ied_scene_rel(editor, "apple")]
-				log.infof(
-					"[ied-test] live diagnostics: %d for scenes/apple %s (diag_version=%d, files=%d)",
-					has_diags ? len(diags) : 0,
-					has_diags && len(diags) > 0 ? "PASS" : "FAIL",
-					ied_lsp.diag_version,
-					len(ied_lsp.diagnostics),
-				)
-				for diag, diag_idx in diags {
-					if diag_idx >= 3 do break
-					log.infof("[ied-test]   line %d: %s", diag.line + 1, diag.msg)
-				}
-			}
-		case 420:
-			restored := ied_restore_last_good(editor)
-			matches := false
-			if restored && editor.current_open >= 0 {
-				restored_doc := &editor.open_docs[editor.current_open]
-				matches = string(ite_get_text(editor.handle)) == restored_doc.last_good
-			}
-			log.infof("[ied-test] restore last compiled: %s", restored && matches ? "PASS" : "FAIL")
 		}
+	case 130:
+		if ied_lsp != nil {
+			log.infof(
+				"[ied-test] frame 130: dirty=%v diag_version=%d diag_files=%d",
+				editor.lsp_dirty,
+				ied_lsp.diag_version,
+				len(ied_lsp.diagnostics),
+			)
+		}
+	case 150:
+		// Hover docs visual check: force the hovered word so the
+		// signature + doc tooltip renders (screenshot target).
+		ied_debug_hover_word = "smoothstep"
+	case 155:
+		// Shortcuts tab visual check (screenshot target).
+		emit(SetMode(.SHORTCUTS))
+	case 156:
+		// Clear the forced hover word so later cases run clean.
+		ied_debug_hover_word = ""
+	case 160:
+		// Mobile theater visual check (screenshot target).
+		emit(ToggleMobile{})
+	case 248:
+		// The diagnostics case (100) leaves apple loaded; the sweep
+		// needs 01_hello_pixel (uses both smoothstep-less builtins and
+		// scene_uv) on screen, with a clean hover state.
+		ied_load_named(editor, ied_scene_rel(editor, "01_hello_pixel"))
+		ied_hover_close(editor)
+	case 249:
+		// Bring smoothstep's occurrence into the visible area.
+		text := string(ite_get_text(editor.handle))
+		if needle_idx := strings.index(text, "smoothstep"); needle_idx >= 0 {
+			line := 0
+			for char_idx := 0; char_idx < needle_idx; char_idx += 1 {
+				if text[char_idx] == '\n' do line += 1
+			}
+			ite_goto_line(editor.handle, c.size_t(line))
+		}
+	case 250:
+		// Sweep the text area until the component's own GetWordAt
+		// returns smoothstep and scene_uv; the injected mouse then
+		// dwells each one in turn.
+		found_smooth, found_uv := false, false
+		outer: for grid_y in 0 ..< 120 {
+			for grid_x in 0 ..< 100 {
+				x := editor.text_pos.x + f32(grid_x) * 6
+				y := editor.text_pos.y + f32(grid_y) * 4
+				word_buf: [128]u8
+				n := ite_get_word_at_mouse(editor.handle, x, y, cstring(&word_buf[0]), len(word_buf))
+				word := string(word_buf[:min(int(n), 127)])
+				if word == "smoothstep" && !found_smooth {
+					hover_inject = {x, y}
+					hover_inject_active = true
+					found_smooth = true
+					log.infof("[ied-test] sweep: smoothstep capturable at (%.0f, %.0f)", x, y)
+					word_rect: [4]f32
+					rect_ok := ite_word_rect_at_mouse(editor.handle, x, y, &word_rect[0])
+					log.infof(
+						"[ied-test] word rect: ok=%v (%.0f, %.0f)-(%.0f, %.0f) %s",
+						rect_ok, word_rect[0], word_rect[1], word_rect[2], word_rect[3],
+						rect_ok && word_rect[2] > word_rect[0] && word_rect[3] > word_rect[1] ? "PASS" : "FAIL",
+					)
+				}
+				if word == "scene_uv" && !found_uv {
+					goto_inject_pos = {x, y}
+					found_uv = true
+					log.infof("[ied-test] sweep: scene_uv capturable at (%.0f, %.0f)", x, y)
+				}
+				if found_smooth && found_uv do break outer
+			}
+		}
+		if !found_smooth do log.infof("[ied-test] sweep: smoothstep NOT capturable (FAIL)")
+		if !found_uv do log.infof("[ied-test] sweep: scene_uv NOT capturable (FAIL)")
+	case 251:
+		// Capture map: for each pixel row of the text area, the words
+		// the component returns at three x positions. Shows exactly
+		// which screen regions produce captures.
+		capture_out := strings.builder_make(context.temp_allocator)
+		for grid_y in 0 ..< 120 {
+			y := editor.text_pos.y + f32(grid_y) * 4
+			row_words: [dynamic]string
+			for grid_x in 0 ..< 3 {
+				x := editor.text_pos.x + 80 + f32(grid_x) * 120
+				word_buf: [128]u8
+				n := ite_get_word_at_mouse(editor.handle, x, y, cstring(&word_buf[0]), len(word_buf))
+				if n > 0 {
+					word := string(word_buf[:min(int(n), 127)])
+					if len(row_words) == 0 || row_words[len(row_words) - 1] != word {
+						append(&row_words, strings.clone(word, context.temp_allocator))
+					}
+				}
+			}
+			if len(row_words) > 0 {
+				strings.write_string(&capture_out, fmt.tprintf("y%.0f:%v | ", y, row_words))
+			}
+		}
+		log.infof("[ied-test] capture map: %s", strings.to_string(capture_out))
+	case 290:
+		hover_ok := editor.hover_sig != "" && strings.contains(editor.hover_sig, "smoothstep")
+		log.infof("[ied-test] live hover smoothstep: sig=%q %s", editor.hover_sig, hover_ok ? "PASS" : "FAIL")
+		hover_inject_active = false
+	case 291:
+		// Live hover for scene_uv (defined only in common.slang).
+		ied_hover_close(editor)
+		hover_inject = goto_inject_pos
+		hover_inject_active = true
+	case 330:
+		hover_ok := editor.hover_sig != "" && strings.contains(editor.hover_sig, "scene_uv")
+		log.infof("[ied-test] live hover scene_uv: sig=%q %s", editor.hover_sig, hover_ok ? "PASS" : "FAIL")
+		hover_inject_active = false
+	case 331:
+		// Cmd+click path: goto with the captured word, check landing.
+		ied_request_goto_word(editor, "scene_uv")
+	case 335:
+		file := editor.current >= 0 ? editor.files[editor.current] : "?"
+		line := ite_get_cursor_line(editor.handle)
+		log.infof(
+			"[ied-test] goto scene_uv landed: %s line %d (want common line 77) %s",
+			file, line,
+			file == "common" && int(line) == 77 ? "PASS" : "FAIL",
+		)
+	case 340:
+		// Cmd+hover underline visual check (screenshot target): hold
+		// Cmd over the last swept word.
+		ied_gui_held = true
+		hover_inject_active = true
+	case 400:
+		if ied_lsp != nil {
+			diags, has_diags := ied_lsp.diagnostics[ied_scene_rel(editor, "apple")]
+			log.infof(
+				"[ied-test] live diagnostics: %d for scenes/apple %s (diag_version=%d, files=%d)",
+				has_diags ? len(diags) : 0,
+				has_diags && len(diags) > 0 ? "PASS" : "FAIL",
+				ied_lsp.diag_version,
+				len(ied_lsp.diagnostics),
+			)
+			for diag, diag_idx in diags {
+				if diag_idx >= 3 do break
+				log.infof("[ied-test]   line %d: %s", diag.line + 1, diag.msg)
+			}
+		}
+	case 420:
+		restored := ied_restore_last_good(editor)
+		matches := false
+		if restored && editor.current_open >= 0 {
+			restored_doc := &editor.open_docs[editor.current_open]
+			matches = string(ite_get_text(editor.handle)) == restored_doc.last_good
+		}
+		log.infof("[ied-test] restore last compiled: %s", restored && matches ? "PASS" : "FAIL")
+	}
+}
+
+ied_tick :: proc(editor: ^ImGuiEditor) {
+	// Self-test driver: exercises goto/hover/docs/rename/glass/LSP flows
+	// without mouse input (--ied-test). Split out of ied_tick (KISS).
+	if ied_selftest {
+		ied_selftest_tick(editor)
 	}
 
 	// Deferred goto-definition (recorded last frame by Cmd+click or the
@@ -1616,7 +1638,7 @@ ied_panel :: proc(editor: ^ImGuiEditor) {
 	if ied_has_current_build_error(editor) && editor.current_open >= 0 {
 		visible_doc := &editor.open_docs[editor.current_open]
 		if visible_doc.last_good != "" {
-			im.TextColored({0.95, 0.45, 0.30, 1}, "%s", strings_to_c(tr("build failed")))
+			im.TextColored(ERROR_RED, "%s", strings_to_c(tr("build failed")))
 			im.SameLine()
 			if im.Button(trc("restore last compiled")) {
 				_ = ied_restore_last_good(editor)
@@ -1639,7 +1661,7 @@ ied_panel :: proc(editor: ^ImGuiEditor) {
 		}
 		label := fmt.ctprintf("%s%s", tab_dirty ? "• " : "", base)
 		pad_x := f32(8)
-		close_w := f32(18) // the × zone inside the tab's right edge
+		close_w := f32(24) // the × zone inside the tab's right edge
 		tab_height := f32(22)
 		tab_width := pad_x * 2 + im.CalcTextSize(label).x + close_w
 		tab_pos := im.GetCursorScreenPos()
@@ -1649,11 +1671,11 @@ ied_panel :: proc(editor: ^ImGuiEditor) {
 
 		box_col: im.Vec4 = {1, 1, 1, 0.04}
 		if hovered do box_col = {1, 1, 1, 0.07}
-		if i == editor.current_open do box_col = {0.91, 0.66, 0.34, 0.22}
+		if i == editor.current_open do box_col = ACCENT_SEMITRANSPARENT
 		im.DrawList_AddRectFilled(tab_draw_list, tab_pos, {tab_pos.x + tab_width, tab_pos.y + tab_height}, im.GetColorU32Vec4(box_col), 5)
 		text_y := tab_pos.y + (tab_height - im.GetTextLineHeight()) / 2
 		im.DrawList_AddText(tab_draw_list, {tab_pos.x + pad_x, text_y}, im.GetColorU32(.Text, 1.0), label)
-		x_col: im.Vec4 = in_close ? {0.95, 0.45, 0.45, 1} : {0.55, 0.57, 0.62, 1}
+		x_col: im.Vec4 = in_close ? DANGER_RED : ICON_IDLE
 		im.DrawList_AddText(tab_draw_list, {tab_pos.x + tab_width - close_w + 5, text_y}, im.GetColorU32Vec4(x_col), "×")
 
 		if clicked {
@@ -1688,7 +1710,7 @@ ied_panel :: proc(editor: ^ImGuiEditor) {
 		word_rect: [4]f32
 		if ite_word_rect_at_mouse(editor.handle, imgui_io.MousePos.x, imgui_io.MousePos.y, &word_rect[0]) {
 			fg_draw_list := im.GetForegroundDrawList()
-			underline_col := im.GetColorU32Vec4({0.91, 0.66, 0.34, 0.9})
+			underline_col := im.GetColorU32Vec4(ACCENT_SOFT)
 			im.DrawList_AddLine(fg_draw_list, {word_rect[0], word_rect[3] - 1.5}, {word_rect[2], word_rect[3] - 1.5}, underline_col, 1.2)
 		}
 	}
@@ -1765,6 +1787,26 @@ ied_panel :: proc(editor: ^ImGuiEditor) {
 			{text_pos.x + avail.x, text_pos.y + avail.y},
 			im.GetColorU32(.WindowBg, editor.tab_flash),
 		)
+	}
+
+	// Status row: the last editor action ("saved N file(s) at HH:MM:SS",
+	// "definition in common.slang:77", ...). Fades out after a few
+	// seconds; a new status re-fades in. The 6s lifetime matches the
+	// transient nature of these messages.
+	if editor.status != "" {
+		if editor.last_status != string(editor.status) {
+			editor.status_fade = 1
+		}
+		editor.status_fade = max(0, editor.status_fade - imgui_io.DeltaTime * (editor.status_fade > 0.98 ? 0.0 : 0.35))
+		if editor.status_fade <= 0 {
+			editor.status = ""
+		} else {
+			im.Separator()
+			im.PushStyleColorVec4(.Text, {TEXT_MUTED.x, TEXT_MUTED.y, TEXT_MUTED.z, editor.status_fade})
+			im.TextWrapped("%s", strings_to_c(editor.status))
+			im.PopStyleColor()
+		}
+		editor.last_status = strings.clone(string(editor.status))
 	}
 
 	// Hover symbol docs: dwell ~0.4 s on a word over the text, then show
@@ -1892,7 +1934,7 @@ ied_panel :: proc(editor: ^ImGuiEditor) {
 				// Cap the tooltip: unwrapped docs used to grow right
 				// without limit, and tall doc blocks had no scroll.
 				im.PushTextWrapPos(im.GetCursorPosX() + 440)
-				im.TextColored({0.62, 0.76, 0.95, 1}, "%s", strings_to_c(editor.hover_sig))
+				im.TextColored(SIGNATURE_BLUE, "%s", strings_to_c(editor.hover_sig))
 				if editor.hover_doc != "" {
 					im.Separator()
 					line_h := im.GetTextLineHeightWithSpacing()
@@ -1908,7 +1950,7 @@ ied_panel :: proc(editor: ^ImGuiEditor) {
 					if len(builtin.params) > 0 {
 						im.SeparatorText("params")
 						for builtin_param in builtin.params {
-							im.TextColored({0.91, 0.66, 0.34, 1}, "%s", strings_to_c(builtin_param.name))
+							im.TextColored(ACCENT, "%s", strings_to_c(builtin_param.name))
 							im.SameLine(0, 10)
 							im.TextWrapped(strings_to_c(builtin_param.desc))
 						}
@@ -1916,7 +1958,7 @@ ied_panel :: proc(editor: ^ImGuiEditor) {
 					// Footer: tag plus clickable see-also links; clicking
 					// swaps the tooltip to that builtin in place.
 					im.Separator()
-					im.TextDisabled("slang builtin · see also:")
+					im.TextDisabled("%s", strings_to_c(tr("slang builtin · see also:")))
 					rest := builtin.also
 					for len(rest) > 0 {
 						im.SameLine(0, 6)
@@ -1961,7 +2003,7 @@ ied_frame :: proc(editor: ^ImGuiEditor, fx_state: ^Fx) {
 	dock_pos := im.Vec2{imgui_io.DisplaySize.x - win_w - 8 + xoff, TITLEBAR_H + 8}
 	dock_size := im.Vec2{win_w, imgui_io.DisplaySize.y - TITLEBAR_H - 16}
 	if mobile_theater {
-		// Mobile theater (F4): editor docked to the bottom half of the
+		// Mobile theater (F5): editor docked to the bottom half of the
 		// portrait window; the scene plays in the top half.
 		dock_pos = {8, imgui_io.DisplaySize.y * 0.55}
 		dock_size = {imgui_io.DisplaySize.x - 16, imgui_io.DisplaySize.y * 0.45 - 8}

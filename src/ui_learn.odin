@@ -70,7 +70,7 @@ learn_render_rich_line :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor, lin
 	// X where the next SameLine(0, 0) segment would land: the last
 	// drawn item's rect max, or the entry cursor before any segment.
 	cursor_x := im.GetCursorScreenPos().x
-	link_color := im.Vec4{0.55, 0.75, 0.95, 1}
+	link_color := LINK_BLUE
 
 	for {
 		open_bracket := strings.index(remaining, "[")
@@ -97,6 +97,7 @@ learn_render_rich_line :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor, lin
 		}
 		learn_text_wrapped(strings_to_c(label), link_color)
 		if im.IsItemHovered() {
+			im.SetMouseCursor(.Hand)
 			link_min := im.GetItemRectMin()
 			link_max := im.GetItemRectMax()
 			im.DrawList_AddLine(
@@ -178,7 +179,7 @@ learn_render_page :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor) {
 			im.Spacing()
 		case strings.has_prefix(trimmed, "## "):
 			im.Spacing()
-			learn_text_wrapped(strings_to_c(trimmed[3:]), {0.91, 0.66, 0.34, 1})
+			learn_text_wrapped(strings_to_c(trimmed[3:]), ACCENT)
 		case strings.has_prefix(trimmed, "# "):
 			learn_text_wrapped(strings_to_c(trimmed[2:]), {0.95, 0.92, 0.88, 1})
 			im.Separator()
@@ -197,10 +198,22 @@ ui_learn_panel :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor) {
 	im.TextDisabled(trc("learn"))
 	if learn_page != "index" {
 		// Back to the trail index.
-		im.TextColored({0.55, 0.75, 0.95, 1}, "%s", strings_to_c(tr("← all trails")))
-		if im.IsItemHovered() && im.IsMouseClicked(.Left) {
-			learn_load("index")
-			return
+		im.TextColored(LINK_BLUE, "%s", strings_to_c(tr("← all trails")))
+		if im.IsItemHovered() {
+			im.SetMouseCursor(.Hand)
+			link_min := im.GetItemRectMin()
+			link_max := im.GetItemRectMax()
+			im.DrawList_AddLine(
+				im.GetWindowDrawList(),
+				{link_min.x, link_max.y - 1},
+				{link_max.x, link_max.y - 1},
+				im.GetColorU32Vec4(LINK_BLUE),
+				1,
+			)
+			if im.IsMouseClicked(.Left) {
+				learn_load("index")
+				return
+			}
 		}
 		im.Separator()
 	}
