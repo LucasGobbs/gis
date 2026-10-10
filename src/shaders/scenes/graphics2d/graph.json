@@ -1,0 +1,1 @@
+{"version":1,"scene":"graphics2d","nodes":[{"key":"params","kind":"params","x":40.0,"y":40.0},{"key":"gfx:scenes/graphics2d/graphics2d","kind":"graphics","x":40.0,"y":300.0},{"key":"show2d","kind":"output","x":340.0,"y":40.0}],"links":[{"from":"gfx:scenes/graphics2d/graphics2d:frame","to":"show2d:frame"}]}

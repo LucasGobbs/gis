@@ -36,5 +36,6 @@ float4 pixelMain(VsOut input) : SV_Target0 {
     float3 color = lerp(a, b, uv.x);
     debug_watch_fragment(0, uv, uint2(input.gl_FragCoord.xy), Uniforms);
     debug_watch_fragment(1, color, uint2(input.gl_FragCoord.xy), Uniforms);
+    
     return float4(color, 1.0);
 }
