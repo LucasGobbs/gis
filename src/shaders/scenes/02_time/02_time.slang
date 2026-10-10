@@ -33,6 +33,6 @@ float4 pixelMain(VsOut input) : SV_Target0 {
     float t = Uniforms.iTime * Params.speed;
     // Rings expanding from the center: distance drives a sine wave.
     float d = length(uv - 0.5);
-    float v = 0. + 0.5 * sin(20.0 * d - t * 3.0);
+    float v = 0.5 + 0.5 * sin(20.0 * d - t * 3.0);
     return float4(float3(0.1, 0.4, 0.7) * v + 0.05, 1.0);
 }
