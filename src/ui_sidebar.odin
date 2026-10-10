@@ -30,14 +30,19 @@ ui_strip_button :: proc(ui: ^Ui, mode: SidebarMode, index: int) -> bool {
 	active := ui.mode == mode && ui.panel_open
 	center_x := pos.x + 17
 	center_y := pos.y + 17
+	if hovered {
+		// VS Code-style affordance: tooltip naming the panel, hand cursor.
+		im.SetTooltip("%s", strings_to_c(tr(SIDEBAR_MODE_NAMES[mode])))
+		im.SetMouseCursor(.Hand)
+	}
 	// The active tint is the strip's animated pill (ui_activity_strip);
 	// buttons only draw the hover wash.
 	if !active && hovered {
 		im.DrawList_AddRectFilled(draw_list, pos, {pos.x + 34, pos.y + 34}, im.GetColorU32Vec4({1, 1, 1, 0.07}), 8)
 	}
 	icon_col := im.GetColorU32Vec4(
-		active ? im.Vec4{0.91, 0.66, 0.34, 1} :
-		hovered ? im.Vec4{0.87, 0.88, 0.90, 1} : im.Vec4{0.55, 0.57, 0.62, 1},
+		active ? ACCENT :
+		hovered ? ICON_HOVER : ICON_IDLE,
 	)
 	switch mode {
 	case .CONTROLS:
@@ -132,7 +137,7 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 		if ui.panel_open {
 			win_pos := im.GetWindowPos()
 			pill_y := win_pos.y + ui.pill.value
-			im.DrawList_AddRectFilled(draw_list, {win_pos.x + 6, pill_y - 17}, {win_pos.x + 40, pill_y + 17}, im.GetColorU32Vec4({0.91, 0.66, 0.34, 0.22}), 8)
+			im.DrawList_AddRectFilled(draw_list, {win_pos.x + 6, pill_y - 17}, {win_pos.x + 40, pill_y + 17}, im.GetColorU32Vec4(ACCENT_SEMITRANSPARENT), 8)
 		}
 
 		for m, i in modes {
@@ -158,7 +163,7 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 		}
 		gear_center := im.Vec2{gear_pos.x + 17, gear_pos.y + 17}
 		gear_color := im.GetColorU32Vec4(
-			gear_hovered ? im.Vec4{0.87, 0.88, 0.90, 1} : im.Vec4{0.55, 0.57, 0.62, 1},
+			gear_hovered ? ICON_HOVER : ICON_IDLE,
 		)
 		im.DrawList_AddCircle(draw_list, gear_center, 3.2, gear_color, 0, 1.4)
 		for i in 0 ..< 8 {
@@ -173,9 +178,12 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 		// on their own rows: trailing slider labels overflowed the
 		// auto-sized popup.
 		// Tall enough for every row (language, theme, two fonts, glass,
-		// transparency, two pan knobs): open with the bottom inside the
-		// window instead of overflowing past it.
-		im.SetNextWindowPos({STRIP_W + 6, imgui_io.DisplaySize.y - 480}, .Appearing)
+		// transparency, two pan knobs): anchored to the window bottom
+		// (the gear sits there), clamped so short windows keep it fully
+		// on screen below the title bar.
+		settings_h := min(f32(480), imgui_io.DisplaySize.y - TITLEBAR_H - 12)
+		im.SetNextWindowPos({STRIP_W + 6, imgui_io.DisplaySize.y - settings_h}, .Appearing)
+		im.SetNextWindowSizeConstraints({0, 0}, {f32(360), settings_h})
 		if im.BeginPopup("##settings", {}) {
 			im.TextDisabled(trc("language"))
 			im.SetNextItemWidth(130)
@@ -194,20 +202,25 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 					if im.Selectable(strings_to_c(name), theme_value == ied.theme, {}) {
 						ied.theme = theme_value
 						ied_apply_theme(ied)
+						ui_prefs_dirty = true
 					}
 				}
 				im.EndCombo()
 			}
 			im.TextDisabled(trc("editor font"))
 			im.SetNextItemWidth(130)
-			im.SliderFloat("##edfont", &ied.font_size, 10, 28, "%.0f")
+			if im.SliderFloat("##edfont", &ied.font_size, 10, 28, "%.0f") {
+				ui_prefs_dirty = true
+			}
 			im.TextDisabled(trc("ui font"))
 			im.SetNextItemWidth(130)
 			if im.SliderFloat("##uifont", &ui.font_size, 12, 22, "%.0f") {
 				im.GetStyle().FontSizeBase = ui.font_size
+				ui_prefs_dirty = true
 			}
 			if im.Checkbox(trc("glass"), &ied.bg_transparent) {
 				ite_set_glass(ied.handle, ied.bg_transparent, ied.glass_alpha)
+				ui_prefs_dirty = true
 			}
 			im.TextDisabled(trc("transparency"))
 			im.SetNextItemWidth(130)
@@ -217,6 +230,7 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 				if ied.bg_transparent {
 					ite_set_glass(ied.handle, true, ied.glass_alpha)
 				}
+				ui_prefs_dirty = true
 			}
 			im.TextDisabled(trc("graph pan friction"))
 			im.SetNextItemWidth(130)
@@ -225,6 +239,14 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 			im.SetNextItemWidth(130)
 			im.SliderFloat("##panspeed", &sg_pan_max_speed, 1000, 12000, "%.0f")
 			im.EndPopup()
+		}
+		// Flush deferred prefs once per settings-popup close (not per
+		// slider tick): one file write per settings session, not 60/s.
+		if ui_prefs_dirty && !im.IsPopupOpen("##settings") {
+			if ui_prefs_editor != nil {
+				ui_prefs_save(ui, ui_prefs_editor)
+			}
+			ui_prefs_dirty = false
 		}
 		// 1 px separator between the strip and the panel/scene.
 		im.DrawList_AddLine(
@@ -282,11 +304,11 @@ ui_controls_panel :: proc(ui: ^Ui, sm: ^SceneManager) {
 
 	if im.CollapsingHeader(trc("debug"), {}) {
 		im.TextDisabled(trc("return debug_* from the shader"))
-		im.TextColored({1.0, 0.1, 1.0, 1.0}, "%s", "NaN")
+		im.TextColored(DEBUG_NAN, "%s", "NaN")
 		im.SameLine()
-		im.TextColored({1.0, 1.0, 0.1, 1.0}, "%s", "+Inf")
+		im.TextColored(DEBUG_INF, "%s", "+Inf")
 		im.SameLine()
-		im.TextColored({0.1, 1.0, 1.0, 1.0}, "%s", "-Inf")
+		im.TextColored(DEBUG_NEG_INF, "%s", "-Inf")
 		im.Checkbox(trc("pixel inspector"), &ui.pixel_inspect_enabled)
 		if ui.pixel_inspect_enabled {
 			im.TextDisabled(trc("click the scene to sample"))
@@ -344,12 +366,11 @@ ui_controls_panel :: proc(ui: ^Ui, sm: ^SceneManager) {
 							if !watch.valid do continue
 							slot := record_index % DEBUG_WATCH_COUNT
 							found = true
-							label := fmt.tprintf("watch %d", slot)
+							label := fmt.tprintf(tr("watch %d"), slot)
 							if int(watch.pass) < len(scene.passes) {
 								pass := &scene.passes[watch.pass]
 								if pass.debug_watch_labels[slot] != "" do label = pass.debug_watch_labels[slot]
 								if len(scene.passes) > 1 {
-									im.TextDisabled(fmt.ctprintf("%s ·", pass.name))
 									im.SameLine()
 								}
 							}
@@ -411,8 +432,9 @@ ui_controls_panel :: proc(ui: ^Ui, sm: ^SceneManager) {
 }
 
 // EXPORT mode: frame and animation capture. PNG grabs the current frame
-// at the current app_time; the GIF re-renders [gif_start, gif_end] frame
-// by frame and assembles it with ffmpeg (blocking, a few seconds).
+// at the current app_time; the GIF renders [gif_start, gif_end] one
+// frame per app frame (progress below) and assembles with ffmpeg on a
+// worker thread.
 ui_export_panel :: proc(ui: ^Ui) {
 	im.TextDisabled(trc("export"))
 	if im.Button(trc("export png")) {
@@ -432,10 +454,19 @@ ui_export_panel :: proc(ui: ^Ui) {
 	ui.gif_end = max(ui.gif_end, ui.gif_start)
 	frames := max(1, int((ui.gif_end - ui.gif_start) * GIF_FPS))
 	im.TextUnformatted(fmt.ctprintf(tr("%d frames @ %d fps"), frames, GIF_FPS))
-	if im.Button(trc("export gif")) {
+	// Output size is fixed by the ffmpeg filter (scale=480:-1); surface it
+	// so the panel doesn't hide what the artifact will be.
+	im.TextDisabled(fmt.ctprintf(tr("output: %d px wide"), GIF_OUT_W))
+	// Live capture progress + disabled button while a capture runs.
+	if gif_capture.active {
+		im.ProgressBar(min(1, f32(gif_capture.frame) / f32(max(1, gif_capture.frames))), {-1, 0}, fmt.ctprintf("%d / %d", gif_capture.frame, gif_capture.frames))
+	} else if im.Button(trc("export gif")) {
 		button_min := im.GetItemRectMin()
 		button_max := im.GetItemRectMax()
 		emit(ExportAction{kind = .GIF, at = {(button_min.x + button_max.x) / 2, (button_min.y + button_max.y) / 2}})
+	}
+	if gif_capture.done {
+		im.TextDisabled(trc("assembling gif..."))
 	}
 }
 
@@ -504,6 +535,9 @@ ui_files_panel :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor) {
 	// Only the open scene's files: the unit's entry shader plus its
 	// modules (passes). Other scenes switch from the title-bar combo.
 	im.TextDisabled(fmt.ctprintf("%s · %s", tr("file explorer"), active_title))
+	if im.IsItemHovered() {
+		im.SetTooltip("%s", strings_to_c(tr("switch scenes from the title-bar combo")))
+	}
 	// "+ new file" right-aligned on the caption row: creates a module in
 	// the active scene's directory, first free mod_N.slang index.
 	if active_title != "" {
@@ -542,14 +576,17 @@ ui_files_panel :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor) {
 	}
 }
 
-// Create mod_N.slang (first free N) in the active scene's directory, seed
-// it with a header comment, rescan the editor and open the new tab.
+// Create mod_N.slang (first free N) in the active scene's directory
+// (its real root: src/shaders/scenes for built-ins, gis_scenes for
+// user scenes), seed it with a header comment, rescan the editor and
+// open the new tab.
 files_new_scene_module :: proc(ed: ^ImGuiEditor, scene: string) {
-	scene_dir := fmt.tprintf("src/shaders/scenes/%s", scene)
+	scene_dir := fmt.tprintf("%s/%s", scene_root_dir(scene), scene)
 	base := ""
 	for n := 1; ; n += 1 {
 		candidate := fmt.tprintf("mod_%d.slang", n)
 		if !os.exists(fmt.tprintf("%s/%s", scene_dir, candidate)) {
+			base = candidate
 			break
 		}
 	}
@@ -561,7 +598,7 @@ files_new_scene_module :: proc(ed: ^ImGuiEditor, scene: string) {
 		return
 	}
 	ied_rescan(ed)
-	ied_load_named(ed, fmt.tprintf("scenes/%s/%s", scene, name))
+	ied_load_named(ed, fmt.tprintf("%s/%s/%s", scene_root_dir(scene), scene, name))
 	ed.open = true
 	notify(.INFO, "created %s", path)
 }
@@ -623,6 +660,13 @@ ui_panel_edge :: proc(ui: ^Ui, panel_x: f32) {
 				220,
 				imgui_io.DisplaySize.x * 0.85,
 			)
+			ui_prefs_dragging = true
+		} else if ui_prefs_dragging {
+			// Release: persist the final dragged width once (not per frame).
+			ui_prefs_dragging = false
+			if ied := ui_prefs_editor; ied != nil {
+				ui_prefs_save(ui, ied)
+			}
 		}
 		if edge_hovered || edge_active {
 			draw_list := im.GetWindowDrawList()
@@ -631,7 +675,7 @@ ui_panel_edge :: proc(ui: ^Ui, panel_x: f32) {
 				draw_list,
 				{edge_x, TITLEBAR_H},
 				{edge_x, imgui_io.DisplaySize.y},
-				im.GetColorU32Vec4({0.91, 0.66, 0.34, 0.8}),
+				im.GetColorU32Vec4(ACCENT_SOFT),
 			)
 		}
 	}
@@ -642,20 +686,19 @@ ui_panel_edge :: proc(ui: ^Ui, panel_x: f32) {
 // One shortcuts-table row: the key/chord as an amber chip, then the
 // translated description. Keys stay raw (not i18n vocabulary).
 ui_key_row :: proc(key, desc: string) {
-	im.TextColored({0.91, 0.66, 0.34, 1}, "%s", strings_to_c(key))
+	im.TextColored(ACCENT, "%s", strings_to_c(key))
 	im.SameLine(0, 12)
 	im.TextWrapped(strings_to_c(desc))
 }
 
 // SHORTCUTS mode: every command the app answers to, grouped by context.
-// The reference for rebinding discussions; keep in sync with main.odin
-// (function keys, Cmd chords, digits), imgui_editor.odin (editor chords)
-// and ui_chrome.odin (title-bar mouse actions).
+// Mirrors assets/input.ini (window keys) plus editor chords and mouse
+// actions; keep the three in sync.
 ui_shortcuts_panel :: proc(ui: ^Ui) {
 	im.TextDisabled(trc("shortcuts"))
 
 	im.SeparatorText(trc("window"))
-	ui_key_row("F1", tr("toggle sidebar"))
+	ui_key_row("F1", tr("zen mode: toggle sidebar + editor"))
 	ui_key_row("F2", tr("toggle shader editor"))
 	ui_key_row("F3", tr("toggle editor glass"))
 	ui_key_row("F4", tr("theater mode"))
@@ -669,7 +712,11 @@ ui_shortcuts_panel :: proc(ui: ^Ui) {
 	ui_key_row("Cmd+Shift+D", tr("duplicate line"))
 	ui_key_row("Alt+-", tr("navigate back"))
 	ui_key_row("Ctrl+Z/Y", tr("undo / redo"))
-	ui_key_row("Ctrl+F", tr("find in file"))
+
+	im.SeparatorText(trc("graph"))
+	ui_key_row("SPACE (hold)", tr("pan the node graph; release glides"))
+	ui_key_row("scroll", tr("zoom around the cursor"))
+	ui_key_row("right-click", tr("new node on empty canvas; menu on a node"))
 
 	im.SeparatorText(trc("scene"))
 	ui_key_row("click", tr("pixel inspector: click the scene to sample"))
