@@ -1,0 +1,299 @@
+package main
+
+import glove "./glove"
+import im "../vendor/odin-imgui"
+import im_sdl "../vendor/odin-imgui/backends/sdl3"
+import "core:math"
+import sdl "vendor:sdl3"
+
+// The single file that binds input to behavior: named actions, their
+// capture masks, and the handlers that run them. No keys here — which
+// physical key or button triggers each action lives in
+// assets/input.ini, parsed by the glove keymap loader (ini format).
+
+INPUT_KEYMAP_FILE :: "assets/input.ini"
+
+// App-side input state. Odin has no closures, so handlers receive this
+// through their user_data pointer.
+Input_Context :: struct {
+	ui:        ^Ui,
+	editor:    ^ImGuiEditor, // nil in headless
+	scene_mgr: ^SceneManager,
+	window:    ^sdl.Window,
+	quit:      bool, // read by main to break main_loop
+
+	// 3D heightfield orbit
+	orbiting:    bool,
+	orbit_yaw:   f32,
+	orbit_pitch: f32,
+	orbit_dist:  f32,
+	// Model viewer orbit
+	model_orbiting: bool,
+	model_yaw:      f32,
+	model_pitch:    f32,
+
+	// Shader iMouse
+	mouse_pixel: [2]f32, // pixel coords, y up
+	mouse_click: bool,
+
+}
+
+imgui_forward_event :: proc(user_data: rawptr, event: ^sdl.Event) {
+	_ = user_data
+	im_sdl.ProcessEvent(event)
+}
+
+input_bindings_init :: proc(inputs: ^glove.System, input_ctx: ^Input_Context) {
+	save_all := glove.add_button(inputs, "save_all")
+	toggle_sidebar := glove.add_button(inputs, "toggle_sidebar")
+	nav_back := glove.add_button(inputs, "nav_back")
+	toggle_editor := glove.add_button(inputs, "toggle_editor")
+	toggle_glass := glove.add_button(inputs, "toggle_glass")
+	toggle_theater := glove.add_button(inputs, "toggle_theater")
+	toggle_mobile := glove.add_button(inputs, "toggle_mobile")
+	dismiss_or_quit := glove.add_button(inputs, "dismiss_or_quit")
+	toggle_zen := glove.add_button(inputs, "toggle_zen")
+	graph_grab := glove.add_button(inputs, "graph_grab")
+	hold_gui := glove.add_button(inputs, "hold_gui")
+	hold_shift := glove.add_button(inputs, "hold_shift")
+	primary := glove.add_button(inputs, "primary")
+
+	glove.set_action_respects(inputs, toggle_zen, {.Keyboard})
+	glove.set_action_respects(inputs, graph_grab, {.Keyboard})
+	// dismiss_or_quit and primary have no action-level mask: their
+	// handlers branch on captures themselves (hover-close must work
+	// while typing; the title-bar unzoom drag must work over UI).
+
+	glove.on_button(inputs, graph_grab, .Pressed, input_handle_graph_grab_pressed, input_ctx)
+	glove.on_button(inputs, graph_grab, .Released, input_handle_graph_grab_released, input_ctx)
+
+	glove.on_button(inputs, save_all, .Pressed, input_handle_save_all, input_ctx)
+	glove.on_button(inputs, toggle_sidebar, .Pressed, input_handle_toggle_sidebar, input_ctx)
+	glove.on_button(inputs, nav_back, .Pressed, input_handle_nav_back, input_ctx)
+	glove.on_button(inputs, toggle_editor, .Pressed, input_handle_toggle_editor, input_ctx)
+	glove.on_button(inputs, toggle_glass, .Pressed, input_handle_toggle_glass, input_ctx)
+	glove.on_button(inputs, toggle_theater, .Pressed, input_handle_toggle_theater, input_ctx)
+	glove.on_button(inputs, toggle_mobile, .Pressed, input_handle_toggle_mobile, input_ctx)
+	glove.on_button(inputs, dismiss_or_quit, .Pressed, input_handle_dismiss_or_quit, input_ctx)
+	glove.on_button(inputs, toggle_zen, .Pressed, input_handle_toggle_zen, input_ctx)
+	glove.on_button(inputs, hold_gui, .Pressed, input_handle_gui_pressed, input_ctx)
+	glove.on_button(inputs, hold_gui, .Released, input_handle_gui_released, input_ctx)
+	glove.on_button(inputs, hold_shift, .Pressed, input_handle_shift_pressed, input_ctx)
+	glove.on_button(inputs, hold_shift, .Released, input_handle_shift_released, input_ctx)
+	glove.on_button(inputs, primary, .Pressed, input_handle_primary_pressed, input_ctx)
+	glove.on_button(inputs, primary, .Released, input_handle_primary_released, input_ctx)
+
+	glove.on_quit(inputs, input_handle_quit, input_ctx)
+
+	glove.keymap_load(inputs, INPUT_KEYMAP_FILE)
+}
+
+// Continuous input read per frame after dispatch: orbit deltas, wheel
+// zoom and the shader iMouse uniform. Runs in headless too (it only
+// reads glove state).
+input_frame :: proc(
+	inputs: ^glove.System,
+	input_ctx: ^Input_Context,
+	pixel_scale: f32,
+	pixel_height: i32,
+) {
+	ui := input_ctx.ui
+
+	delta := glove.mouse_delta(inputs)
+	if input_ctx.orbiting {
+		input_ctx.orbit_yaw += delta.x * 0.012
+		input_ctx.orbit_pitch = math.clamp(input_ctx.orbit_pitch + delta.y * 0.012, 0.1, 1.5)
+	}
+	if input_ctx.model_orbiting {
+		input_ctx.model_yaw -= delta.x * 0.012
+		input_ctx.model_pitch = math.clamp(input_ctx.model_pitch + delta.y * 0.012, -1.45, 1.45)
+	}
+
+	// Wheel zoom (3D view only, not over UI or while inspecting pixels).
+	if ui.params.view3d && !ui.pixel_inspect_enabled && !ui.captures_mouse {
+		wheel := glove.mouse_wheel(inputs)
+		input_ctx.orbit_dist = math.clamp(
+			input_ctx.orbit_dist * (1 - wheel.y * 0.1),
+			0.8,
+			8.0,
+		)
+	}
+
+	// Mouse in pixel coordinates, y up to match frag_coord; clicks
+	// landing on UI widgets do not count as scene clicks.
+	pos := glove.mouse_position(inputs)
+	input_ctx.mouse_pixel = [2]f32{pos.x * pixel_scale, f32(pixel_height) - pos.y * pixel_scale}
+	input_ctx.mouse_click = glove.mouse_down(inputs, .Left) && !ui.captures_mouse && !ui.pixel_inspect_enabled
+}
+
+// Button handlers ------------------------------------------------------
+
+input_handle_save_all :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = user_data
+	_ = system
+	_ = action
+	emit(SaveAll{})
+}
+
+input_handle_toggle_sidebar :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = user_data
+	_ = system
+	_ = action
+	emit(ToggleSidebar{})
+}
+
+input_handle_nav_back :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = system
+	_ = action
+	ctx := cast(^Input_Context)user_data
+	if ctx.editor != nil do ied_nav_back(ctx.editor)
+}
+
+input_handle_toggle_editor :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = system
+	_ = action
+	ctx := cast(^Input_Context)user_data
+	// The shader editor is a floating window, separate from the sidebar
+	// by design. Reopening re-docks it (drops a user-dragged position).
+	ctx.editor.open = !ctx.editor.open
+	ctx.editor.moved = false
+}
+
+input_handle_toggle_glass :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = system
+	_ = action
+	ctx := cast(^Input_Context)user_data
+	ctx.editor.bg_transparent = !ctx.editor.bg_transparent
+	ite_set_glass(ctx.editor.handle, ctx.editor.bg_transparent, ctx.editor.glass_alpha)
+}
+
+input_handle_toggle_theater :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = user_data
+	_ = system
+	_ = action
+	emit(ToggleTheater{})
+}
+
+input_handle_toggle_mobile :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = user_data
+	_ = system
+	_ = action
+	emit(ToggleMobile{})
+}
+
+input_handle_dismiss_or_quit :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = action
+	ctx := cast(^Input_Context)user_data
+	// ESC dismisses the pinned hover docs first; only then quits — and
+	// quitting is suppressed while ImGui captures the keyboard (typing
+	// in the editor must not close the app).
+	if ctx.editor != nil && ctx.editor.hover_shown {
+		ied_hover_close(ctx.editor)
+	} else if !glove.captured(system, {.Keyboard}) {
+		ctx.quit = true
+	}
+}
+
+input_handle_graph_grab_pressed :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = user_data
+	_ = system
+	_ = action
+	graph_grab_held = true
+}
+
+input_handle_graph_grab_released :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = user_data
+	_ = system
+	_ = action
+	graph_grab_held = false
+}
+
+input_handle_toggle_zen :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = system
+	_ = action
+	// F1 (was Tab, which the editor needs for indent): toggles the
+	// sidebar (the same state Cmd+B flips) AND the floating code editor
+	// in step — one key clears the chrome and one key brings it back.
+	emit(ToggleSidebar{})
+	ctx := cast(^Input_Context)user_data
+	if ctx.editor != nil {
+		ctx.editor.open = !ctx.editor.open
+		ctx.editor.moved = false // re-dock on reopen, like F2 does
+	}
+}
+
+input_handle_gui_pressed :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = user_data
+	_ = system
+	_ = action
+	ied_gui_held = true
+}
+
+input_handle_gui_released :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = user_data
+	_ = system
+	_ = action
+	ied_gui_held = false
+}
+
+input_handle_shift_pressed :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = user_data
+	_ = system
+	_ = action
+	ied_shift_held = true
+}
+
+input_handle_shift_released :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = user_data
+	_ = system
+	_ = action
+	ied_shift_held = false
+}
+
+input_handle_quit :: proc(user_data: rawptr, system: ^glove.System) {
+	_ = system
+	ctx := cast(^Input_Context)user_data
+	ctx.quit = true
+}
+
+// primary (left mouse button) press: pixel inspect, 3D orbit, model
+// orbit. Every scene-facing branch skips captured clicks.
+input_handle_primary_pressed :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = action
+	ctx := cast(^Input_Context)user_data
+	ui := ctx.ui
+	pos := glove.mouse_position(system)
+
+	if glove.captured(system, {.Mouse}) do return
+
+	// Pixel inspect: a scene click requests an async 1x1 GPU readback.
+	if ui.pixel_inspect_enabled && !ui.pixel_inspect_pending && !ui.captures_mouse {
+		ui.pixel_request_pos = pos
+		ui.pixel_inspect_request = true
+		ui.pixel_inspect_valid = false
+		return
+	}
+
+	// Orbit camera (3D view only; left-drag rotates, wheel zooms).
+	if ui.params.view3d && !ui.pixel_inspect_enabled && !ui.captures_mouse {
+		ctx.orbiting = true
+		return
+	}
+
+	// Model camera: only active in mouse rotation mode.
+	if !ui.params.view3d &&
+	   !ui.pixel_inspect_enabled &&
+	   ui.params.interaction == .MOUSE_ROTATE &&
+	   ctx.scene_mgr.scenes[ctx.scene_mgr.current].uses_model &&
+	   !ui.captures_mouse {
+		ctx.model_orbiting = true
+	}
+}
+
+input_handle_primary_released :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
+	_ = system
+	_ = action
+	ctx := cast(^Input_Context)user_data
+	ctx.orbiting = false
+	ctx.model_orbiting = false
+}
