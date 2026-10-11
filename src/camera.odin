@@ -175,3 +175,15 @@ camera_orbit :: proc(camera_yaw, camera_pitch, aspect: f32) -> CameraUniforms {
 	camera.projection = linalg.MATRIX4F32_IDENTITY
 	return camera_uniforms(&camera, aspect)
 }
+
+// Free flycam: same projection and flattening as the orbit camera, but
+// positioned/yaw/pitched by the user (WASD + drag). Looking direction
+// follows the yaw/pitch convention of camera_create (atan2(z,x) yaw,
+// asin(y) pitch).
+camera_flycam :: proc(fly_pos: Vec3, fly_yaw, fly_pitch, aspect: f32) -> CameraUniforms {
+	cos_pitch, sin_pitch := math.cos(fly_pitch), math.sin(fly_pitch)
+	forward := [3]f32{cos_pitch*math.sin(fly_yaw), sin_pitch, cos_pitch*math.cos(fly_yaw)}
+	camera := camera_create(.ORBIT, fly_pos, fly_pos + forward)
+	camera.projection = linalg.MATRIX4F32_IDENTITY
+	return camera_uniforms(&camera, aspect)
+}

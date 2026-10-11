@@ -29,6 +29,7 @@ set_window_title :: proc(window: ^sdl.Window, title: string) {
 Host :: struct {
 	options:   Options,
 	selftest:  Selftest,
+	ui_test:   UiTest,
 	benchmark: Benchmark,
 	gfx:       gfx.Gfx,
 	inputs:    glove.System,
@@ -58,6 +59,7 @@ host_init :: proc(h: ^Host, o: Options) -> bool {
 	h.options = o
 	h.headless = o.headless
 	h.selftest = selftest_init(o)
+	h.ui_test = ui_test_init(o.ui_test)
 	h.benchmark = benchmark_init(o)
 	h.develop = develop_init()
 
@@ -68,9 +70,8 @@ host_init :: proc(h: ^Host, o: Options) -> bool {
 	g_sdl_context = context
 	sdl.SetAssertionHandler(sdl_assert_notify, nil)
 
-	// Native window frame (gfx.create): the OS draws the title bar and
-	// its window controls; the app toolbar renders inside the client
-	// area below it.
+	// Borderless window (gfx.create): the app owns all chrome; the
+	// activity strip + side panel are the app UI.
 	if !gfx.create(&h.gfx, "gis", 800, 600) {
 		log.errorf("failed to create window/GPU device: %s", sdl.GetError())
 		return false

@@ -149,16 +149,14 @@ host_present :: proc(h: ^Host, width, height: i32, scene_tex: ^sdl.GPUTexture, a
 				if h.develop.t < 1 {
 					sdl.BindGPUGraphicsPipeline(render_pass, h.blit.develop_pipeline)
 					variant := develop_variant(&h.ui.fx)
-					sel_rect := h.ui.scene_sel_rect
+					// The develop burst expands from the window center (the
+					// old selector rect died with the title bar).
 					develop_uniform := shader_glue.DevelopFragmentU {
 						t       = h.develop.t,
 						time    = app_time,
 						res     = {f32(width), f32(height)},
 						variant = variant,
-						origin  = {
-							(sel_rect[0] + sel_rect[2]) * 0.5 / f32(width),
-							(sel_rect[1] + sel_rect[3]) * 0.5 / f32(height),
-						},
+						origin  = {0.5, 0.5},
 					}
 					sdl.PushGPUFragmentUniformData(
 						command_buffer,
@@ -202,6 +200,16 @@ host_present :: proc(h: ^Host, width, height: i32, scene_tex: ^sdl.GPUTexture, a
 	return true
 }
 
+// Quit-time persistence: node positions only autosave on scene switches
+// and the 600-frame tick, so every quit path (window close, Cmd+Q, ESC)
+// saves the graph.json before the loop breaks — closing before either
+// autosave lands loses the last drags.
+quit_save_graph :: proc(h: ^Host) {
+	if h.graph != nil && h.graph.scene != "" {
+		sg_save(h.graph)
+	}
+}
+
 host_frame :: proc(h: ^Host) -> bool {
 	o := &h.options
 	// 1. Reset the temp allocator every frame: every tprintf, file scan
@@ -239,9 +247,14 @@ host_frame :: proc(h: ^Host) -> bool {
 	glove_sdl.pump_poll(&h.input_pump, &h.inputs)
 	// Window close / Cmd+Q: gated by the unsaved-work guard. The quit
 	// latch stays set when suppressed, so it must be consumed here or
-	// the app can never close.
+	// the app can never close. Quitting persists the node graph first:
+	// node positions only autosave on scene switches and the 600-frame
+	// tick, so closing before either lands loses the last drags.
 	if glove.quit_requested(&h.inputs) {
-		if input_quit_allowed(&h.input_ctx) do return false
+		if input_quit_allowed(&h.input_ctx) {
+			quit_save_graph(h)
+			return false
+		}
 	}
 	pixel_size := glove.window_pixel_size(&h.inputs)
 	width, height := pixel_size.x, pixel_size.y
@@ -262,6 +275,7 @@ host_frame :: proc(h: ^Host) -> bool {
 		im_sdlgpu.NewFrame()
 		im_sdl.NewFrame()
 		selftest_pan_inject(&h.selftest, &h.inputs)
+		ui_test_inject(&h.ui_test)
 		im.NewFrame()
 		// Capture filter from ImGui's wants, then run the action handlers:
 		// keymap-bound actions fire here, gated by what the UI captures.
@@ -282,17 +296,30 @@ host_frame :: proc(h: ^Host) -> bool {
 		ing_runtime_pipeline_error = h.scene_mgr.scenes[h.scene_mgr.current].pipeline_error
 		ing_n_passes = int(pass_count)
 		ui_build(h.ui, &h.scene_mgr, h.gfx.window, h.editor, h.graph, width, height)
+		if ui_test_tick(&h.ui_test, h.ui, &h.scene_mgr) {
+			h.ui_test.finished = true
+		}
 		// The editor follows the active scene (its tab plus every imported
 		// module) and keeps its background work (LSP sync, diagnostics)
 		ied_open_scene(h.editor, h.scene_mgr.scenes[h.scene_mgr.current].title)
 		ied_tick(h.editor)
 		ied_frame(h.editor, &h.ui.fx)
+		// The sidebar's resize strip submits AFTER the editor window so
+		// it wins hover where the two overlap (the editor docks over the
+		// seam; submitted earlier, the strip never received the cursor).
+		if h.ui.open && h.ui.panel_w.value >= 4 {
+			ui_panel_edge(h.ui, h.ui.panel_x)
+		}
 	}
 
 	// 8. Run the keymap-bound action handlers (capture-gated); ESC quit
 	// and OS close requests break the loop here.
 	if !h.headless do glove.dispatch(&h.inputs)
-	if h.input_ctx.quit do return false
+	if h.input_ctx.quit {
+		quit_save_graph(h)
+		return false
+	}
+	if h.ui_test.finished do return false
 
 	// 9. Drain + interpret messages.
 	cmds := host_drain(h)
@@ -345,8 +372,8 @@ host_frame :: proc(h: ^Host) -> bool {
 				h.app_time,
 			)
 			dl := im.GetForegroundDrawList()
-			im.DrawList_AddRectFilled(dl, {8, TITLEBAR_H + 8}, {8 + im.CalcTextSize(hud).x + 12, TITLEBAR_H + 30}, im.GetColorU32Vec4({0, 0, 0, 0.75}), 4)
-			im.DrawList_AddText(dl, {14, TITLEBAR_H + 12}, im.GetColorU32Vec4({0.95, 0.85, 0.55, 1}), hud)
+			im.DrawList_AddRectFilled(dl, {8, 8}, {8 + im.CalcTextSize(hud).x + 12, 30}, im.GetColorU32Vec4({0, 0, 0, 0.75}), 4)
+			im.DrawList_AddText(dl, {14, 12}, im.GetColorU32Vec4({0.95, 0.85, 0.55, 1}), hud)
 		}
 		im.Render()
 	}
@@ -374,7 +401,7 @@ host_frame :: proc(h: ^Host) -> bool {
 	// 16. Input + camera.
 	logical := glove.window_size(&h.inputs)
 	scale := f32(width) / f32(logical.x)
-	input_frame(&h.inputs, &h.input_ctx, scale, height)
+	input_frame(&h.inputs, &h.input_ctx, scale, height, delta_time)
 	mouse_pos := h.input_ctx.mouse_pixel
 	mouse_click := h.input_ctx.mouse_click
 
@@ -384,7 +411,9 @@ host_frame :: proc(h: ^Host) -> bool {
 		camera_yaw = h.input_ctx.model_yaw
 		camera_pitch = h.input_ctx.model_pitch
 	}
-	camera := camera_orbit(camera_yaw, camera_pitch, f32(width) / f32(height))
+	camera := h.input_ctx.flycam_active \
+		? camera_flycam(h.input_ctx.fly_pos, h.input_ctx.fly_yaw, h.input_ctx.fly_pitch, f32(width) / f32(height)) \
+		: camera_orbit(camera_yaw, camera_pitch, f32(width) / f32(height))
 
 	// 17. Debug watch buffer: created once, on the first scene with watches.
 	debug_watch_buffer: ^sdl.GPUBuffer

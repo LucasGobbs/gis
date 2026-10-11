@@ -40,14 +40,13 @@ create :: proc(
 	window_height: int        = 780,
 ) -> bool {
 	succeeded := sdl.Init(sdl.INIT_VIDEO); assert(succeeded)
-	// Native window frame: the OS owns the title bar and its window
-	// controls (traffic lights on macOS, min/max/close on Windows). The
-	// app draws its toolbar below the frame (ui_chrome.ui_toolbar).
+	// Borderless: the app owns all chrome (the activity strip + side
+	// panel); no OS title bar, so the scene canvas runs edge to edge.
 	main_window := sdl.CreateWindow(
 		strings.clone_to_cstring(window_title, context.temp_allocator),
 		c.int(window_width),
 		c.int(window_height),
-		{.RESIZABLE},
+		{.RESIZABLE, .BORDERLESS},
 	); assert(main_window != nil)
 	gpu_device := sdl.CreateGPUDevice({.MSL, .SPIRV}, true, nil); assert(gpu_device != nil)
 	succeeded = sdl.ClaimWindowForGPUDevice(gpu_device, main_window); assert(succeeded)
