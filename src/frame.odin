@@ -421,7 +421,7 @@ host_frame :: proc(h: ^Host) -> bool {
 	// (submit → GPU completion, includes queue wait) into an EMA and feed
 	// the benchmark's GPU samples.
 	if sample, ok := gen_timer_poll(&h.gen, h.gfx.gpu, h.ui); ok {
-		if benchmark_active(&h.benchmark) && benchmark_wants_sample(&h.benchmark) {
+		if benchmark_active(&h.benchmark) && benchmark_wants_gpu_sample(&h.benchmark) {
 			append(&h.benchmark.gpu, sample)
 		}
 	}

@@ -70,9 +70,17 @@ benchmark_active :: proc(b: ^Benchmark) -> bool {
 	return b.frames > 0
 }
 
-// Same gate for CPU and GPU samples, matching today's condition.
+// CPU gate: sample the loop iteration while the cpu buffer has room.
 benchmark_wants_sample :: proc(b: ^Benchmark) -> bool {
 	return b.frame >= b.warmup && len(b.cpu) < b.frames
+}
+
+// GPU gate (original behavior): independent of the cpu buffer — the fence
+// poll skips frames whose previous submit is still in flight, so the gpu
+// buffer needs more frames to fill. A shared gate would deadlock: once
+// cpu is full the gpu window closes and completion can never fire.
+benchmark_wants_gpu_sample :: proc(b: ^Benchmark) -> bool {
+	return b.frame >= b.warmup && len(b.gpu) < b.frames
 }
 
 // Appends the CPU sample when wanted, bumps the frame counter, and logs +
