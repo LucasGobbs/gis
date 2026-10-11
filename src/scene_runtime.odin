@@ -1631,6 +1631,7 @@ submit_scene_frame :: proc(
 				push_scene_uniforms(cmd_buffer, pass, false)
 				sdl.DrawGPUIndexedPrimitives(render_pass, model.index_count, 1, 0, 0, 0)
 			} else {
+				push_scene_uniforms(cmd_buffer, pass, false)
 				sdl.DrawGPUPrimitives(render_pass, 3, 1, 0, 0)
 			}
 			sdl.EndGPURenderPass(render_pass)
