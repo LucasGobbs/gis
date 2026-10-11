@@ -38,6 +38,7 @@ pixel_readback_poll :: proc(
 	if !readback.pending || !gfx.staging_ready(uploader, readback.staging) do return
 	staged_bytes := gfx.staging_read(readback.staging)
 	for channel in 0 ..< 4 do rgba[channel] = f32(staged_bytes[channel]) / 255.0
+	x, y = readback.x, readback.y
 	gfx.staging_release(uploader, readback.staging)
 	readback^ = {}
 	ready = true
