@@ -4,6 +4,7 @@ import glove "./glove"
 import im "../vendor/odin-imgui"
 import im_sdl "../vendor/odin-imgui/backends/sdl3"
 import "core:math"
+import "core:text/i18n"
 import sdl "vendor:sdl3"
 
 // The single file that binds input to behavior: named actions, their
@@ -12,6 +13,27 @@ import sdl "vendor:sdl3"
 // assets/input.ini, parsed by the glove keymap loader (ini format).
 
 INPUT_KEYMAP_FILE :: "assets/input.ini"
+
+// Shared quit guard: unsaved editor tabs block every quit path (Esc,
+// window close, Cmd+Q). First request toasts a warning and is absorbed;
+// a second request within the window quits for real. Returns true when
+// quitting may proceed.
+quit_warn_until: f64 = -1
+QUIT_CONFIRM_WINDOW :: 4.0 // seconds between warning and accepted quit
+
+input_quit_allowed :: proc(ctx: ^Input_Context) -> bool {
+	now := f64(sdl.GetPerformanceCounter()) / f64(sdl.GetPerformanceFrequency())
+	if ctx.editor != nil && ied_dirty_count(ctx.editor) > 0 {
+		if now < quit_warn_until {
+			quit_warn_until = -1 // consumed: let this one through
+			return true
+		}
+		quit_warn_until = now + QUIT_CONFIRM_WINDOW
+		notify(.WARN, tr("unsaved changes: repeat to quit, or save (Cmd+S)"))
+		return false
+	}
+	return true
+}
 
 // App-side input state. Odin has no closures, so handlers receive this
 // through their user_data pointer.
@@ -184,12 +206,12 @@ input_handle_toggle_mobile :: proc(user_data: rawptr, system: ^glove.System, act
 input_handle_dismiss_or_quit :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {
 	_ = action
 	ctx := cast(^Input_Context)user_data
-	// ESC dismisses the pinned hover docs first; only then quits — and
-	// quitting is suppressed while ImGui captures the keyboard (typing
-	// in the editor must not close the app).
+	// ESC dismisses the pinned hover docs first; quitting is suppressed
+	// while ImGui captures the keyboard (typing in the editor must not
+	// close the app) and gated by the shared unsaved-work guard.
 	if ctx.editor != nil && ctx.editor.hover_shown {
 		ied_hover_close(ctx.editor)
-	} else if !glove.captured(system, {.Keyboard}) {
+	} else if !glove.captured(system, {.Keyboard}) && input_quit_allowed(ctx) {
 		ctx.quit = true
 	}
 }
@@ -253,9 +275,10 @@ input_handle_shift_released :: proc(user_data: rawptr, system: ^glove.System, ac
 input_handle_quit :: proc(user_data: rawptr, system: ^glove.System) {
 	_ = system
 	ctx := cast(^Input_Context)user_data
-	ctx.quit = true
+	if input_quit_allowed(ctx) {
+		ctx.quit = true
+	}
 }
-
 // primary (left mouse button) press: pixel inspect, 3D orbit, model
 // orbit. Every scene-facing branch skips captured clicks.
 input_handle_primary_pressed :: proc(user_data: rawptr, system: ^glove.System, action: glove.Button_Action) {

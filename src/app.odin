@@ -12,6 +12,7 @@
 package main
 
 import im "../vendor/odin-imgui"
+import "core:text/i18n"
 import sdl "vendor:sdl3"
 
 // Union variants in Odin are types, declared before the union.
@@ -19,8 +20,8 @@ SceneSelected   :: int
 SetMode         :: SidebarMode
 TogglePanel     :: struct {}
 ToggleSidebar   :: struct {} // Cmd+B: sidebar only
-ToggleTheater   :: struct {} // F3
-ToggleMobile    :: struct {} // F4: 9:16 portrait recording mode
+ToggleTheater   :: struct {} // F4
+ToggleMobile    :: struct {} // F5: 9:16 portrait recording mode
 SetFxIntensity  :: FxIntensity
 ToggleFx        :: FxKind
 SaveAll         :: struct {}
@@ -96,7 +97,11 @@ update :: proc(app: ^App, msg: Msg) -> Cmds {
 	cmds: Cmds
 	switch message in msg {
 	case SceneSelected:
-		if message >= 0 && message < len(app.sm.scenes) {
+		// A GIF capture holds a pointer into sm.scenes; a switch mid-capture
+		// would let scene_ensure_loaded/reload reallocate the slice under it.
+		if gif_capture.active {
+			notify(.WARN, tr("gif capture running: wait for it to finish"))
+		} else if message >= 0 && message < len(app.sm.scenes) {
 			app.sm.current = message
 		}
 	case SetMode:

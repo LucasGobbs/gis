@@ -1,0 +1,1 @@
+{"version":1,"scene":"05_sdf_ops","nodes":[{"key":"params","kind":"params","x":40.0,"y":40.0},{"key":"gfx:scenes/05_sdf_ops/05_sdf_ops","kind":"graphics","x":40.0,"y":300.0},{"key":"show2d","kind":"output","x":340.0,"y":40.0}],"links":[{"from":"gfx:scenes/05_sdf_ops/05_sdf_ops:frame","to":"show2d:frame"}]}
