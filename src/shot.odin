@@ -151,9 +151,9 @@ gif_ffmpeg_worker :: proc() {
 	filters := fmt.tprintf("fps=%d,scale=%d:-1:flags=lanczos", GIF_FPS, GIF_OUT_W)
 	palette := fmt.tprintf("%s/palette.png", GIF_DIR)
 	cmdline := fmt.tprintf(
-		`ffmpeg -v warning -framerate %d -i %s/frame_%%03d.png -vf "%%s,palettegen" -update 1 -y %s` +
+		`ffmpeg -v warning -framerate %d -i %s/frame_%%03d.png -vf "%s,palettegen" -update 1 -y %s` +
 		` && ffmpeg -v warning -framerate %d -i %s/frame_%%03d.png -i %s` +
-		` -lavfi "%%s [x]; [x][1:v] paletteuse" -y %s`,
+		` -lavfi "%s [x]; [x][1:v] paletteuse" -y %s`,
 		GIF_FPS, GIF_DIR, filters, palette, GIF_FPS, GIF_DIR, palette, filters, gif_capture.out_path,
 	)
 	status := libc.system(strings.clone_to_cstring(cmdline, context.temp_allocator))
