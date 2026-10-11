@@ -291,6 +291,11 @@ draw_link :: proc(editor: ^Editor_Context, link_idx: int) {
 	start_pin := &editor.pins.pool[link.start_pin_idx]
 	end_pin := &editor.pins.pool[link.end_pin_idx]
 
+	// A link can outlive its endpoints for a frame: the app rebuilds the
+	// graph between frames (scene switch), and a resubmitted link whose
+	// pin slot was recycled holds a pin never begun this frame
+	// (type == .None). Skip it — the next sync drops the dead link.
+	if start_pin.type == .None || end_pin.type == .None do return
 	cubic_bezier := get_cubic_bezier(start_pin^, end_pin^, start_pin.type)
 	num_segments := cubic_bezier_num_segments(
 		cubic_bezier,
@@ -529,6 +534,7 @@ mini_map_draw_link :: proc(editor: ^Editor_Context, link_idx: int) {
 	start_pin := &editor.pins.pool[link.start_pin_idx]
 	end_pin := &editor.pins.pool[link.end_pin_idx]
 
+	if start_pin.type == .None || end_pin.type == .None do return
 	cubic_bezier := get_cubic_bezier(
 		screen_space_to_mini_map_space(editor, start_pin.pos),
 		screen_space_to_mini_map_space(editor, end_pin.pos),

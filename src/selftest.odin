@@ -44,6 +44,9 @@ selftest_before_window :: proc(o: Options) {
 // Startup, after ui_init/editor/graph exist: put every panel in the state
 // its harness expects.
 selftest_after_ui_init :: proc(st: ^Selftest, o: Options, ui: ^Ui, editor: ^ImGuiEditor, graph: ^NodeGraph, scene_mgr: ^SceneManager) {
+	// Headless runs have no editor/graph (ImGui-only objects): every
+	// harness state below would nil-deref, so skip it entirely.
+	if editor == nil || graph == nil do return
 	if st.pan do editor.open = false
 	if o.start_graph {
 		ui.mode = .GRAPH

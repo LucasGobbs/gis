@@ -1064,6 +1064,16 @@ click_interaction_update :: proc(editor: ^Editor_Context) {
 	case .LinkCreation:
 		start_pin := editor.pins.pool[editor.click_interaction.link_creation.start_pin_idx]
 
+		// The dragged pin can vanish mid-drag: the app may rebuild the
+		// whole graph between frames (scene switch clears and resyncs
+		// every node), leaving click_interaction pointing at a pool slot
+		// whose pin was never begun this frame (type == .None). Drawing
+		// the drag bezier would hit an internal invariant; the drag is
+		// meaningless without its origin pin, so cancel it instead.
+		if start_pin.type != .Input && start_pin.type != .Output {
+			editor.click_interaction.type = .None
+			break
+		}
 		maybe_duplicate_link_idx: Maybe(int)
 		hovered_pin_idx, hovered_pin_ok := g_imnodes.hovered_pin_idx.?
 		if hovered_pin_ok {

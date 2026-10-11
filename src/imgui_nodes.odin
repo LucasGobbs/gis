@@ -1595,17 +1595,17 @@ sg_sync :: proc(ng: ^NodeGraph, ed: ^ImGuiEditor) {
 			if !pin.input do continue
 			// Uniforms are wireless (the params node broadcasts; see the
 			// pin marks in ing_panel): every cbuffer input skips its link.
-			if pin.kind == .CBUFFER do continue
+			// Samplers are implicit too (resources.sampler): the image node
+			// has no sampler pin, and a link to a pin no node renders
+			// creates an imnodes pool pin with type None — draw_link then
+			// panics on the bezier. Skip them like the saved-link path does.
+			if pin.kind == .CBUFFER || pin.kind == .SAMPLER do continue
 			from := -1
 			flavor := SgLinkFlavor.TEXTURE
 			src_kind := SgPassKind.IMAGE
 			#partial switch pin.kind {
 			case .TEXTURE:
 				from = sg_id(ng, "pin:image:texture")
-				src_kind = .IMAGE
-			case .SAMPLER:
-				from = sg_id(ng, "pin:image:sampler")
-				src_kind = .IMAGE
 			case .BUFFER:
 				from = sg_id(ng, fmt.tprintf("pin:object3d:%s", pin.name))
 				flavor = .MESH
