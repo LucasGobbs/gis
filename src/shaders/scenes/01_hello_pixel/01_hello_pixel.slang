@@ -32,7 +32,7 @@ float4 pixelMain(VsOut input) : SV_Target0 {
     // uv goes (0,0) bottom-left to (1,1) top-right, aspect-corrected.
     float2 uv = scene_uv(input.gl_FragCoord, Uniforms.iResolution);
     float3 a = Params.tint;
-    float3 b = float3(0.95, 0.93, 0.88); // paper white
+    float3 b = float3(0.2, 0.93, 0.88); // paper white
     float3 color = lerp(a, b, uv.x);
     debug_watch_fragment(0, uv, uint2(input.gl_FragCoord.xy), Uniforms);
     debug_watch_fragment(1, color, uint2(input.gl_FragCoord.xy), Uniforms);

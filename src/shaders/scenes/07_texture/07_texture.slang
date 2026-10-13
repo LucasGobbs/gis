@@ -12,6 +12,7 @@
 //   3. Use the paper's brightness to jitter the circle's edge (add
 //      0.02 * paper.r to d) for a hand-drawn look.
 import "../../common";
+import "../../space";
 
 public struct InkParams {
     [UiColor(0.12, 0.12, 0.15)]
@@ -40,7 +41,7 @@ VsOut vertMain(uint vertexIndex : SV_VertexID) {
 
 [shader("fragment")]
 float4 pixelMain(VsOut input) : SV_Target0 {
-    float2 uv = scene_uv(input.gl_FragCoord, Uniforms.iResolution);
+    float2 uv = Space::pixel_to_uv(input.gl_FragCoord, Uniforms.iResolution);
     float3 paper = paper_tex.Sample(paper_sampler, uv).rgb;
     float d = length(uv - 0.5) - Params.radius;
     float fill = 1.0 - smoothstep(-0.01, 0.01, d);

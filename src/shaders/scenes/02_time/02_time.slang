@@ -10,6 +10,7 @@
 //      and watch white light split into color.
 //   3. Replace sin with fract(t): what does the motion become?
 import "../../common";
+import "../../space";
 
 public struct TimeParams {
     [UiSlider(0.1, 5.0, 0.05, 1.0)]
@@ -22,6 +23,9 @@ ConstantBuffer<SceneUniforms> Uniforms;
 [[vk::binding(1, 0)]]
 ConstantBuffer<TimeParams> Params;
 
+[[vk::binding(2, 0)]]
+Texture2D<float4> tex;
+
 [shader("vertex")]
 VsOut vertMain(uint vertexIndex : SV_VertexID) {
     return fullscreen_vertex(vertexIndex, Uniforms.iResolution.xy);
@@ -29,10 +33,11 @@ VsOut vertMain(uint vertexIndex : SV_VertexID) {
 
 [shader("fragment")]
 float4 pixelMain(VsOut input) : SV_Target0 {
-    float2 uv = scene_uv(input.gl_FragCoord, Uniforms.iResolution);
+    float2 uv = Space::pixel_to_uv(input.gl_FragCoord, Uniforms.iResolution);
     float t = Uniforms.iTime * Params.speed;
     // Rings expanding from the center: distance drives a sine wave.
     float d = length(uv - 0.5);
     float v = 0.5 + 0.5 * sin(20.0 * d - t * 3.0);
     return float4(float3(0.1, 0.4, 0.7) * v + 0.05, 1.0);
 }
+

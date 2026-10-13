@@ -3,6 +3,7 @@
 // the first pass's out_tex to it; editing that edge changes the real runtime
 // pipeline. This pass maps the pattern to a palette and darkens the edges.
 import "../../common";
+import "../../space";
 
 public struct GradeParams {
     [UiSlider(0.0, 1.0, 0.01, 0.35)]
@@ -32,7 +33,7 @@ RWTexture2D<float4> out_tex;
 void computeMain(uint3 id : SV_DispatchThreadID) {
     if (is_outside(id, Uniforms.iResolution)) return;
     float2 fragCoord = frag_coord(id, Uniforms.iResolution);
-    float2 uv = scene_uv(fragCoord, Uniforms.iResolution);
+    float2 uv = Space::pixel_to_uv(fragCoord, Uniforms.iResolution);
 
     float v = input_tex.Sample(input_sampler, uv).r;
     debug_watch_compute(0, v, id.xy, Uniforms);

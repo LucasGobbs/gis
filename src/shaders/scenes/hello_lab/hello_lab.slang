@@ -10,6 +10,7 @@
 //   3. Pick your own color in the inspector (the tint parameter
 //      appeared there automatically when this file declared it).
 import "../../common";
+import "../../space";
 
 public struct HelloParams {
     [UiColor(0.15, 0.35, 0.75)]
@@ -30,7 +31,7 @@ VsOut vertMain(uint vertexIndex : SV_VertexID) {
 [shader("fragment")]
 float4 pixelMain(VsOut input) : SV_Target0 {
     // uv goes (0,0) bottom-left to (1,1) top-right, aspect-corrected.
-    float2 uv = scene_uv(input.gl_FragCoord, Uniforms.iResolution);
+    float2 uv = Space::pixel_to_uv(input.gl_FragCoord, Uniforms.iResolution);
     float3 a = Params.tint;
     float3 b = float3(0.95, 0.93, 0.88); // paper white
     return float4(lerp(a, b, uv.x), 1.0);

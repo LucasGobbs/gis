@@ -13,6 +13,7 @@
 //   4. Change the pattern here; pass_1 follows without source changes.
 //
 import "../../common";
+import "../../space";
 
 public struct PatternParams {
     [UiSlider(0.1, 5.0, 0.05, 1.0)]
@@ -36,7 +37,7 @@ RWTexture2D<float4> out_tex;
 void computeMain(uint3 id : SV_DispatchThreadID) {
     if (is_outside(id, Uniforms.iResolution)) return;
     float2 fragCoord = frag_coord(id, Uniforms.iResolution);
-    float2 uv = scene_uv(fragCoord, Uniforms.iResolution);
+    float2 uv = Space::pixel_to_uv(fragCoord, Uniforms.iResolution);
 
     float t = Uniforms.iTime * Params.speed;
     float d = length(uv - 0.5);

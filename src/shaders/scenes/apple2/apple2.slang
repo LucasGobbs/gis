@@ -6,6 +6,7 @@
 // print-like palette. Single gather pass per pixel: no depth buffer.
 
 import "../../common";
+import "../../space";
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<SceneUniforms> Uniforms;
@@ -131,7 +132,7 @@ float3 lighting(float3 pos, float3 n, float3 rd, float3 albedo, float gloss) {
 void computeMain(uint3 id : SV_DispatchThreadID) {
     if (is_outside(id, Uniforms.iResolution)) return;
     float2 fragCoord = frag_coord(id, Uniforms.iResolution);
-    float2 uv = scene_uv(fragCoord, Uniforms.iResolution);
+    float2 uv = Space::pixel_to_uv(fragCoord, Uniforms.iResolution);
 
     float2 paper_uv = float2(id.xy) / Uniforms.iResolution.xy;
     float3 paper = paper_tex.SampleLevel(paper_sampler, paper_uv, 0).rgb;

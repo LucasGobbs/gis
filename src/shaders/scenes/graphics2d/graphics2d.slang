@@ -1,5 +1,6 @@
 // New 2D graphics scene: fullscreen triangle, per-pixel fragment.
 import "../../common";
+import "../../space";
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<SceneUniforms> Uniforms;
@@ -11,7 +12,7 @@ VsOut vertMain(uint vertexIndex : SV_VertexID) {
 
 [shader("fragment")]
 float4 pixelMain(VsOut input) : SV_Target0 {
-    float2 p = scene_uv(input.gl_FragCoord, Uniforms.iResolution);
+    float2 p = Space::pixel_to_uv(input.gl_FragCoord, Uniforms.iResolution);
     float v = 0.5 + 0.5 * sin(10.0 * length(p) - Uniforms.iTime);
     return float4(float3(v), 1.0);
 }

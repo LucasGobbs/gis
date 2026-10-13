@@ -5,6 +5,7 @@
 // only the light keeps breathing. Temporal subdivision as the arc of
 // showing: the scene is built in front of you, then holds.
 import "../../common";
+import "../../space";
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<SceneUniforms> Uniforms;
@@ -135,7 +136,7 @@ float softShadow(float3 ro, float3 rd) {
 void computeMain(uint3 id : SV_DispatchThreadID) {
     if (is_outside(id, Uniforms.iResolution)) return;
     float2 fragCoord = frag_coord(id, Uniforms.iResolution);
-    float2 uv = scene_uv(fragCoord, Uniforms.iResolution);
+    float2 uv = Space::pixel_to_uv(fragCoord, Uniforms.iResolution);
 
     float t = Uniforms.iTime;
     gTime = t;

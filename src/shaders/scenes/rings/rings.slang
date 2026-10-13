@@ -3,6 +3,7 @@
 // code change or restart.
 
 import "../../common";
+import "../../space";
 
 public struct RingsParams {
     [UiSlider(2, 60, 1, 6)]
@@ -23,7 +24,7 @@ RWTexture2D<float4> out_tex;
 void computeMain(uint3 id : SV_DispatchThreadID) {
     if (is_outside(id, Uniforms.iResolution)) return;
     float2 fragCoord = frag_coord(id, Uniforms.iResolution);
-    float2 p = scene_uv(fragCoord, Uniforms.iResolution);
+    float2 p = Space::pixel_to_uv(fragCoord, Uniforms.iResolution);
 
     float r = length(p) * Params.rings - Uniforms.iTime;
     float v = smoothstep(0.4, 0.6, frac(r));

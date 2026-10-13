@@ -1,5 +1,6 @@
 
 import "../../common";
+import "../../space";
 
 public struct WavesParams {
     [UiSlider(1, 40, 0.5, 13)]
@@ -38,7 +39,7 @@ VsOut vertMain(uint vertexIndex : SV_VertexID) {
 [shader("fragment")]
 float4 pixelMain(VsOut input) : SV_Target0 {
     // Always [0,1] in both dimensions, independent of aspect/resize.
-    float2 p = normalized_screen_coord(input.gl_FragCoord, Uniforms.iResolution);
+    float2 p = Space::pixel_to_unit(input.gl_FragCoord, Uniforms.iResolution);
     float3 red = float3(1,0,0);
     float3 blue = float3(0, 0, 1);
     float3 color = Params.tint;

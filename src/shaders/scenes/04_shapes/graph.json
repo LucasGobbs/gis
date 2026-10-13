@@ -1,0 +1,30 @@
+{
+    "links": [
+        {
+            "from": "gfx:scenes/04_shapes/04_shapes:frame",
+            "to": "show2d:frame"
+        }
+    ],
+    "nodes": [
+        {
+            "key": "params",
+            "kind": "params",
+            "x": 0,
+            "y": 40
+        },
+        {
+            "key": "gfx:scenes/04_shapes/04_shapes",
+            "kind": "graphics",
+            "x": 180,
+            "y": 40
+        },
+        {
+            "key": "show2d",
+            "kind": "output",
+            "x": 420,
+            "y": 40
+        }
+    ],
+    "scene": "04_shapes",
+    "version": 1
+}

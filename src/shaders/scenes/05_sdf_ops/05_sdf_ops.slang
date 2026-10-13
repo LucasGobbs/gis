@@ -12,6 +12,7 @@
 //   2. Chain a third shape with another min().
 //   3. Subtraction order matters: swap max(d1,-d2) to max(d2,-d1).
 import "../../common";
+import "../../space";
 
 public struct OpsParams {
     [UiSlider(0.0, 1.0, 0.01, 0.0)]
@@ -38,7 +39,7 @@ VsOut vertMain(uint vertexIndex : SV_VertexID) {
 
 [shader("fragment")]
 float4 pixelMain(VsOut input) : SV_Target0 {
-    float2 uv = scene_uv(input.gl_FragCoord, Uniforms.iResolution) - 0.5;
+    float2 uv = Space::pixel_to_uv(input.gl_FragCoord, Uniforms.iResolution) - 0.5;
 
     // The box orbits slowly; the circle stays centered.
     float a = Uniforms.iTime * 0.7;

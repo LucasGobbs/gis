@@ -6,6 +6,8 @@
 // print-like palette.
 
 import "../../common";
+import "../../space";
+import "../../noise";
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<SceneUniforms> Uniforms;
@@ -41,7 +43,7 @@ void computeMain(uint3 id : SV_DispatchThreadID) {
     if (is_outside(id, Uniforms.iResolution)) return;
     float2 fragCoord = frag_coord(id, Uniforms.iResolution);
 
-    float2 p = scene_uv(fragCoord, Uniforms.iResolution);
+    float2 p = Space::pixel_to_uv(fragCoord, Uniforms.iResolution);
     float t = Uniforms.iTime;
     uint2 uv = id.xy;
     float2 norm_uv = float2(uv) / Uniforms.iResolution.xy;
@@ -58,7 +60,7 @@ void computeMain(uint3 id : SV_DispatchThreadID) {
     float lacunarity = Uniforms.iFbm.y;
     float gain = Uniforms.iFbm.z;
 
-    float grain = fbm(fragCoord * 0.35 / Uniforms.iResolution.y * 40.0,
+    float grain = Noise::fbm(fragCoord * 0.35 / Uniforms.iResolution.y * 40.0,
                       octaves, lacunarity, gain);
 
     bg += grain*0.2;
@@ -66,10 +68,10 @@ void computeMain(uint3 id : SV_DispatchThreadID) {
 
 
     float wobbleAmp = 0.035;
-    float dryness = fbm(p * 2.0 + 7.0, octaves, lacunarity, gain);
+    float dryness = Noise::fbm(p * 2.0 + 7.0, octaves, lacunarity, gain);
     wobbleAmp = 0.015 + 0.06 * dryness;
     // Hand-drawn wobble: perturb the ink edge with low-frequency noise.
-    float wobble = fbm(p * 6.0 + float2(3.7, 1.3), octaves, lacunarity, gain) - 0.25;
+    float wobble = Noise::fbm(p * 6.0 + float2(3.7, 1.3), octaves, lacunarity, gain) - 0.25;
     float dInk = d.all + wobbleAmp * wobble;
 
     float aa = 1.5 / Uniforms.iResolution.y;
@@ -85,7 +87,7 @@ void computeMain(uint3 id : SV_DispatchThreadID) {
 
     float inkFill = smoothstep(aa, -aa, dInk);
 
-    float dryBrush = 0.7 + 0.3 * fbm(p * float2(6.0, 45.0), octaves, lacunarity, gain);
+    float dryBrush = 0.7 + 0.3 * Noise::fbm(p * float2(6.0, 45.0), octaves, lacunarity, gain);
 
     float3 ink = float3(0.10) * dryBrush;
 
@@ -96,11 +98,11 @@ void computeMain(uint3 id : SV_DispatchThreadID) {
     float rim = smoothstep(0.025, 0.0, abs(dInk));
     col = lerp(col, ink * 0.4, rim * inkFill * 0.8);
 
-    float speck = step(0.79, fbm(p * 10.0, octaves, lacunarity, gain)) * inkFill;
+    float speck = step(0.79, Noise::fbm(p * 10.0, octaves, lacunarity, gain)) * inkFill;
     col = lerp(col, bg, speck * 0.01);
 
     float bleed = smoothstep(aa * 16.0, aa, dInk) * (1.0 - inkFill);
-    float fibers = fbm(p * 25.0, octaves, lacunarity, gain);
+    float fibers = Noise::fbm(p * 25.0, octaves, lacunarity, gain);
     col = lerp(col, bg * 0.52, bleed * 0.35 * fibers);
 
     out_tex[uv] = float4(col, 1.0);

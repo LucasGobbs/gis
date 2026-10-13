@@ -10,6 +10,7 @@
 //   2. min(d1, d2) unions two shapes: draw both at once.
 //   3. Use abs(d) instead of d in the fill: you get a ring.
 import "../../common";
+import "../../space";
 
 public struct ShapeParams {
     [UiSlider(0.05, 0.45, 0.005, 0.25)]
@@ -40,7 +41,7 @@ VsOut vertMain(uint vertexIndex : SV_VertexID) {
 [shader("fragment")]
 float4 pixelMain(VsOut input) : SV_Target0 {
     // Centered coordinates: (0,0) is the middle of the screen.
-    float2 uv = scene_uv(input.gl_FragCoord, Uniforms.iResolution) - 0.5;
+    float2 uv = Space::pixel_to_uv(input.gl_FragCoord, Uniforms.iResolution) - 0.5;
     float d = sdCircle(uv, Params.radius);
     // smoothstep turns the distance into an antialiased mask:
     // 1 inside the circle, 0 outside, soft across `softness`.

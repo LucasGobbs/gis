@@ -5,6 +5,8 @@
 // the chalk floats in frame: no ground, deep-ink backdrop, tangerine
 // cut faces.
 import "../../common";
+import "../../space";
+import "../../noise";
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<SceneUniforms> Uniforms;
@@ -76,7 +78,7 @@ float raymarch(float3 ro, float3 rd) {
 void computeMain(uint3 id : SV_DispatchThreadID) {
     if (is_outside(id, Uniforms.iResolution)) return;
     float2 fragCoord = frag_coord(id, Uniforms.iResolution);
-    float2 uv = scene_uv(fragCoord, Uniforms.iResolution);
+    float2 uv = Space::pixel_to_uv(fragCoord, Uniforms.iResolution);
 
     // Fixed orbit camera, tilted down to expose the top rim cut.
     float3 ro = float3(1.2, 1.15, 1.9);
@@ -119,7 +121,7 @@ void computeMain(uint3 id : SV_DispatchThreadID) {
             // Porcelain chalk body: cool white with a soft key.
             col = float3(0.93, 0.93, 0.95) * (0.28 * sky + 0.72 * dif);
             // Fine chalk grain.
-            col += hash21(fragCoord) * 0.03;
+            col += Noise::hash21(fragCoord) * 0.03;
             // Cool rim against the dark backdrop.
             float rim = pow(1.0 - saturate(dot(n, -rd)), 3.0);
             col += rim * float3(0.55, 0.65, 0.85) * 0.25;

@@ -18,11 +18,13 @@ Texture2D<float4> b_tex;
 SamplerState b_sampler;
 
 [shader("vertex")]
-VsOut vertMain(uint vertexIndex : SV_VertexID) %!(MISSING CLOSE BRACE)    return fullscreen_vertex(vertexIndex, Uniforms.iResolution.xy);
+VsOut vertMain(uint vertexIndex : SV_VertexID) {
+    return fullscreen_vertex(vertexIndex, Uniforms.iResolution.xy);
 }
 
 [shader("fragment")]
-float4 pixelMain(VsOut input) : SV_Target0 %!(MISSING CLOSE BRACE)    float2 uv = input.gl_FragCoord / Uniforms.iResolution.xy;
+float4 pixelMain(VsOut input) : SV_Target0 {
+    float2 uv = input.gl_FragCoord / Uniforms.iResolution.xy;
     float4 a = a_tex.Sample(a_sampler, uv);
     float4 b = b_tex.Sample(b_sampler, uv);
     return min(a, b);

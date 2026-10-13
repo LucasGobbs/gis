@@ -7,9 +7,10 @@
 //
 // Try:
 //   1. One octave = blocky. Slide octaves up and watch detail appear.
-//   2. Animate: add 0.3 * Uniforms.iTime to the fbm() input.
+//   2. Animate: add 0.3 * Uniforms.iTime to the Noise::fbm() input.
 //   3. Feed noise into a color ramp instead of grayscale.
 import "../../common";
+import "../../space";
 
 public struct NoiseParams {
     [UiSlider(1.0, 12.0, 0.1, 4.0)]
@@ -61,7 +62,7 @@ VsOut vertMain(uint vertexIndex : SV_VertexID) {
 
 [shader("fragment")]
 float4 pixelMain(VsOut input) : SV_Target0 {
-    float2 uv = scene_uv(input.gl_FragCoord, Uniforms.iResolution);
+    float2 uv = Space::pixel_to_uv(input.gl_FragCoord, Uniforms.iResolution);
     float v = fbm(uv * Params.frequency, Params.octaves);
     float3 col = lerp(float3(0.1, 0.15, 0.25), float3(0.9, 0.85, 0.7), v);
     return float4(col, 1.0);

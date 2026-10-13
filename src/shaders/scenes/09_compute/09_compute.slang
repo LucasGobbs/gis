@@ -11,6 +11,7 @@
 //   3. Write to a NEIGHBORING pixel instead (id.xy + int2(1,0))
 //      and watch the image shift.
 import "../../common";
+import "../../space";
 
 public struct ComputeParams {
     [UiSlider(0.1, 5.0, 0.05, 1.0)]
@@ -32,7 +33,7 @@ void computeMain(uint3 id : SV_DispatchThreadID) {
     // Threads cover the whole window in 8x8 blocks; edge threads exit.
     if (is_outside(id, Uniforms.iResolution)) return;
     float2 fragCoord = frag_coord(id, Uniforms.iResolution);
-    float2 uv = scene_uv(fragCoord, Uniforms.iResolution);
+    float2 uv = Space::pixel_to_uv(fragCoord, Uniforms.iResolution);
     debug_watch_compute(0, uv, id.xy, Uniforms);
 
     float t = Uniforms.iTime * Params.speed;

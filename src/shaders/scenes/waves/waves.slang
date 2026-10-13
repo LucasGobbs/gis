@@ -1,5 +1,6 @@
 
 import "../../common";
+import "../../space";
 
 public struct WavesParams {
     [UiSlider(1, 40, 0.5, 13)]
@@ -38,7 +39,7 @@ VsOut vertMain(uint vertexIndex : SV_VertexID) {
 [shader("fragment")]
 float4 pixelMain(VsOut input) : SV_Target0 {
     float2 fragCoord = input.uv * Uniforms.iResolution.xy;
-    float2 p = scene_uv(fragCoord, Uniforms.iResolution);
+    float2 p = Space::pixel_to_uv(fragCoord, Uniforms.iResolution);
 
     float w = sin(p.x * Params.frequency + Uniforms.iTime * Params.speed)
             * sin(p.y * Params.frequency * 0.8 - Uniforms.iTime * Params.speed);
