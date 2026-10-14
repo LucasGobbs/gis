@@ -9,7 +9,25 @@ import im "../vendor/odin-imgui"
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "core:slice"
 import "core:strings"
+
+// Trail page base names for the scene combo's third group: every
+// assets/trails/*.md, sorted, extension stripped. Temp-allocated; built
+// per frame the combo popup is open. Picking one opens the LEARN panel
+// on the trail instead of switching the render scene.
+files_trail_names :: proc() -> [dynamic]string {
+	names := make([dynamic]string, 0, 8, context.temp_allocator)
+	entries, err := os.read_directory_by_path(LEARN_DIR, 0, context.temp_allocator)
+	if err != nil do return names
+	for entry in entries {
+		if entry.type != .Regular do continue
+		if !strings.has_suffix(entry.name, ".md") do continue
+		append(&names, strings.trim_suffix(entry.name, ".md"))
+	}
+	slice.sort(names[:])
+	return names
+}
 
 // ---------------------------------------------------------------------------
 // Sidebar: a VS Code-style activity strip (narrow icon column) plus a
@@ -18,18 +36,29 @@ import "core:strings"
 
 STRIP_W :: 46
 
+// Strip glyph geometry: the drawings are authored from these numbers, so
+// every icon shares one bounding square and reads optically centered in
+// its 34 px slot. The old glyphs were 14-16 px hand-offsets; at 34 px
+// slots they floated small and off-center.
+STRIP_BUTTON :: 34
+STRIP_CENTER :: f32(STRIP_BUTTON / 2)
+GLYPH_R      :: f32(10)  // glyph bounding half-extent (20 px art in 34 px slot)
+GLYPH_STROKE :: f32(1.7) // stroke weight matching the larger art
+STRIP_STEP   :: 42       // vertical slot pitch (button + 8 px gap)
+STRIP_TOP    :: 10       // inset from the strip's top edge
+
 // One activity-strip button: 34 px slot with a glyph drawn via the draw
 // list (the font has no icon glyphs). The active mode gets the accent
 // tint; hover brightens. Returns true when clicked.
 ui_strip_button :: proc(ui: ^Ui, mode: SidebarMode, index: int) -> bool {
 	draw_list := im.GetWindowDrawList()
-	im.SetCursorPos({(STRIP_W - 34) / 2, 10 + f32(index) * 42})
+	im.SetCursorPos({(STRIP_W - STRIP_BUTTON) / 2, STRIP_TOP + f32(index) * STRIP_STEP})
 	pos := im.GetCursorScreenPos()
-	clicked := im.InvisibleButton(fmt.ctprintf("##strip%d", index), {34, 34})
+	clicked := im.InvisibleButton(fmt.ctprintf("##strip%d", index), {STRIP_BUTTON, STRIP_BUTTON})
 	hovered := im.IsItemHovered()
 	active := ui.mode == mode && ui.panel_open
-	center_x := pos.x + 17
-	center_y := pos.y + 17
+	cx := pos.x + STRIP_CENTER
+	cy := pos.y + STRIP_CENTER
 	if hovered {
 		// VS Code-style affordance: tooltip naming the panel, hand cursor.
 		im.SetTooltip("%s", strings_to_c(tr(SIDEBAR_MODE_NAMES[mode])))
@@ -38,61 +67,62 @@ ui_strip_button :: proc(ui: ^Ui, mode: SidebarMode, index: int) -> bool {
 	// The active tint is the strip's animated pill (ui_activity_strip);
 	// buttons only draw the hover wash.
 	if !active && hovered {
-		im.DrawList_AddRectFilled(draw_list, pos, {pos.x + 34, pos.y + 34}, im.GetColorU32Vec4({1, 1, 1, 0.07}), 8)
+		im.DrawList_AddRectFilled(draw_list, pos, {pos.x + STRIP_BUTTON, pos.y + STRIP_BUTTON}, im.GetColorU32Vec4({1, 1, 1, 0.07}), 8)
 	}
 	icon_col := im.GetColorU32Vec4(
 		active ? ACCENT :
 		hovered ? ICON_HOVER : ICON_IDLE,
 	)
+	R := GLYPH_R // glyph half-extent; all art spans cx±R, cy±R
 	switch mode {
 	case .CONTROLS:
 		// Sliders: three rails with knobs at different offsets.
-		knobs := [3]f32{-2, 3, -4}
+		knobs := [3]f32{-4, 3, -5}
 		for k, i in knobs {
-			y := center_y - 6 + f32(i) * 6
-			im.DrawList_AddLine(draw_list, {center_x - 7, y}, {center_x + 7, y}, icon_col, 1.4)
-			im.DrawList_AddCircleFilled(draw_list, {center_x + k, y}, 2.2, icon_col)
+			y := cy - R + 3 + f32(i) * (R - 1)
+			im.DrawList_AddLine(draw_list, {cx - R, y}, {cx + R, y}, icon_col, GLYPH_STROKE)
+			im.DrawList_AddCircleFilled(draw_list, {cx + k, y}, 2.8, icon_col)
 		}
 	case .FILES:
 		// Folder: body outline with a raised tab on the top edge.
-		im.DrawList_AddRect(draw_list, {center_x - 8, center_y - 4}, {center_x + 8, center_y + 7}, icon_col, 2, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x - 8, center_y - 4}, {center_x - 8, center_y - 6}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x - 8, center_y - 6}, {center_x - 3, center_y - 6}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x - 3, center_y - 6}, {center_x - 1, center_y - 4}, icon_col, 1.4)
+		im.DrawList_AddRect(draw_list, {cx - R, cy - 4}, {cx + R, cy + R}, icon_col, 2.5, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx - R, cy - 4}, {cx - R, cy - R + 1}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx - R, cy - R + 1}, {cx - 3, cy - R + 1}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx - 3, cy - R + 1}, {cx - 1, cy - 4}, icon_col, GLYPH_STROKE)
 	case .LEARN:
 		// Open book: two page halves around a spine.
-		im.DrawList_AddLine(draw_list, {center_x, center_y - 7}, {center_x, center_y + 6}, icon_col, 1.4) // spine
-		im.DrawList_AddLine(draw_list, {center_x, center_y - 7}, {center_x - 8, center_y - 4}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x - 8, center_y - 4}, {center_x - 8, center_y + 5}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x - 8, center_y + 5}, {center_x, center_y + 6}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x, center_y - 7}, {center_x + 8, center_y - 4}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x + 8, center_y - 4}, {center_x + 8, center_y + 5}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x + 8, center_y + 5}, {center_x, center_y + 6}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {cx, cy - R}, {cx, cy + R}, icon_col, GLYPH_STROKE) // spine
+		im.DrawList_AddLine(draw_list, {cx, cy - R}, {cx - R, cy - 4}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx - R, cy - 4}, {cx - R, cy + R - 1}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx - R, cy + R - 1}, {cx, cy + R}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx, cy - R}, {cx + R, cy - 4}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx + R, cy - 4}, {cx + R, cy + R - 1}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx + R, cy + R - 1}, {cx, cy + R}, icon_col, GLYPH_STROKE)
 	case .GRAPH:
 		// Graph: two nodes linked by an edge.
-		im.DrawList_AddLine(draw_list, {center_x - 2, center_y - 2}, {center_x + 3, center_y + 3}, icon_col, 1.4)
-		im.DrawList_AddCircle(draw_list, {center_x - 5, center_y - 4}, 3.2, icon_col)
-		im.DrawList_AddCircle(draw_list, {center_x + 6, center_y + 5}, 3.2, icon_col)
+		im.DrawList_AddLine(draw_list, {cx - 3, cy - 3}, {cx + 3, cy + 3}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddCircle(draw_list, {cx - 6, cy - 6}, 4, icon_col, 0, GLYPH_STROKE)
+		im.DrawList_AddCircle(draw_list, {cx + 6, cy + 6}, 4, icon_col, 0, GLYPH_STROKE)
 	case .EXPORT:
 		// Export: an arrow dropping into a tray.
-		im.DrawList_AddLine(draw_list, {center_x, center_y - 7}, {center_x, center_y + 1}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x - 4, center_y - 3}, {center_x, center_y + 1}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x + 4, center_y - 3}, {center_x, center_y + 1}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x - 7, center_y + 3}, {center_x - 7, center_y + 7}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x + 7, center_y + 3}, {center_x + 7, center_y + 7}, icon_col, 1.4)
-		im.DrawList_AddLine(draw_list, {center_x - 7, center_y + 7}, {center_x + 7, center_y + 7}, icon_col, 1.4)
+		im.DrawList_AddLine(draw_list, {cx, cy - R}, {cx, cy}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx - 5, cy - 5}, {cx, cy}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx + 5, cy - 5}, {cx, cy}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx - R, cy + 3}, {cx - R, cy + R}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx + R, cy + 3}, {cx + R, cy + R}, icon_col, GLYPH_STROKE)
+		im.DrawList_AddLine(draw_list, {cx - R, cy + R}, {cx + R, cy + R}, icon_col, GLYPH_STROKE)
 	case .EFFECTS:
 		// Ink droplet: teardrop.
-		im.DrawList_AddCircleFilled(draw_list, {center_x, center_y + 2.5}, 4.6, icon_col)
-		im.DrawList_AddTriangleFilled(draw_list, {center_x - 4, center_y + 1}, {center_x + 4, center_y + 1}, {center_x, center_y - 7}, icon_col)
+		im.DrawList_AddCircleFilled(draw_list, {cx, cy + 3}, 5.4, icon_col)
+		im.DrawList_AddTriangleFilled(draw_list, {cx - 5, cy + 1}, {cx + 5, cy + 1}, {cx, cy - R}, icon_col)
 	case .SHORTCUTS:
 		// Keyboard: deck outline with two rows of keycaps.
-		im.DrawList_AddRect(draw_list, {center_x - 9, center_y - 5.5}, {center_x + 9, center_y + 5.5}, icon_col, 2, 1.4)
+		im.DrawList_AddRect(draw_list, {cx - R, cy - 7}, {cx + R, cy + 7}, icon_col, 2.5, GLYPH_STROKE)
 		for r in 0 ..< 2 {
 			for k in 0 ..< 3 {
-				kx := center_x - 5.5 + f32(k) * 5.5
-				ky := center_y - 2.2 + f32(r) * 4.4
-				im.DrawList_AddRectFilled(draw_list, {kx - 1.6, ky - 1.4}, {kx + 1.6, ky + 1.4}, icon_col, 1)
+				kx := cx - 6.5 + f32(k) * 6.5
+				ky := cy - 2.6 + f32(r) * 5.2
+				im.DrawList_AddRectFilled(draw_list, {kx - 1.9, ky - 1.6}, {kx + 1.9, ky + 1.6}, icon_col, 1)
 			}
 		}
 	}
@@ -100,13 +130,13 @@ ui_strip_button :: proc(ui: ^Ui, mode: SidebarMode, index: int) -> bool {
 }
 
 // The icon column. Clicking a different mode selects it; clicking the
-// active mode's icon collapses/expands the panel (VS Code behavior). A
-// settings gear sits at the bottom: editor theme, font scale, and glass
-// mode (moved out of the editor toolbar).
+// active mode's icon collapses/expands the panel (VS Code behavior).
+// Save and pause sit under the modes (the actions the old title bar
+// owned); the settings gear pins to the bottom edge.
 ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 	imgui_io := im.GetIO()
-	im.SetNextWindowPos({x_off, TITLEBAR_H}, .Always)
-	im.SetNextWindowSize({STRIP_W, imgui_io.DisplaySize.y - TITLEBAR_H}, .Always)
+	im.SetNextWindowPos({x_off, 0}, .Always)
+	im.SetNextWindowSize({STRIP_W, imgui_io.DisplaySize.y}, .Always)
 	flags := im.WindowFlags {
 		.NoTitleBar,
 		.NoResize,
@@ -133,11 +163,11 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 				break
 			}
 		}
-		anim_step(&ui.pill, f32(27 + active_idx * 42), imgui_io.DeltaTime, &ui.fx)
+		anim_step(&ui.pill, f32(STRIP_TOP) + STRIP_CENTER + f32(active_idx * STRIP_STEP), imgui_io.DeltaTime, &ui.fx)
 		if ui.panel_open {
 			win_pos := im.GetWindowPos()
 			pill_y := win_pos.y + ui.pill.value
-			im.DrawList_AddRectFilled(draw_list, {win_pos.x + 6, pill_y - 17}, {win_pos.x + 40, pill_y + 17}, im.GetColorU32Vec4(ACCENT_SEMITRANSPARENT), 8)
+			im.DrawList_AddRectFilled(draw_list, {win_pos.x + 6, pill_y - STRIP_CENTER}, {win_pos.x + 40, pill_y + STRIP_CENTER}, im.GetColorU32Vec4(ACCENT_SEMITRANSPARENT), 8)
 		}
 
 		for m, i in modes {
@@ -150,26 +180,51 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 			}
 		}
 
+		// Save + pause cluster, one step under the last mode: the two
+		// window actions the old title bar owned. Buttons record hover
+		// into Ui fields; the glyphs draw after with the same data.
+		cluster_top := STRIP_TOP + f32(len(modes)) * STRIP_STEP + 6
+		im.SetCursorPos({(STRIP_W - STRIP_BUTTON) / 2, cluster_top})
+		if im.InvisibleButton("##strip_save", {STRIP_BUTTON, STRIP_BUTTON}) {
+			emit(SaveAll{})
+		}
+		ui.save_hover = im.IsItemHovered()
+		if ui.save_hover {
+			im.SetTooltip("%s", strings_to_c(tr("save all (Cmd+S)")))
+			im.SetMouseCursor(.Hand)
+		}
+		im.SetCursorPos({(STRIP_W - STRIP_BUTTON) / 2, cluster_top + STRIP_BUTTON + 8})
+		if im.InvisibleButton("##strip_pause", {STRIP_BUTTON, STRIP_BUTTON}) {
+			emit(TogglePause{})
+		}
+		ui.pause_hover = im.IsItemHovered()
+		if ui.pause_hover {
+			im.SetTooltip("%s", strings_to_c(ui.params.paused ? tr("play") : tr("pause")))
+			im.SetMouseCursor(.Hand)
+		}
+		ui_strip_save_glyph(draw_list, ui, imgui_io)
+		ui_strip_pause_glyph(draw_list, ui)
+
 		// Settings gear pinned to the bottom edge. Glyph: ring + 8 spokes.
-		gear_y := imgui_io.DisplaySize.y - TITLEBAR_H - 34 - 10
-		im.SetCursorPos({(STRIP_W - 34) / 2, gear_y})
+		gear_y := imgui_io.DisplaySize.y - STRIP_BUTTON - STRIP_TOP
+		im.SetCursorPos({(STRIP_W - STRIP_BUTTON) / 2, gear_y})
 		gear_pos := im.GetCursorScreenPos()
-		if im.InvisibleButton("##strip_settings", {34, 34}) {
+		if im.InvisibleButton("##strip_settings", {STRIP_BUTTON, STRIP_BUTTON}) {
 			im.OpenPopup("##settings")
 		}
 		gear_hovered := im.IsItemHovered()
 		if gear_hovered {
-			im.DrawList_AddRectFilled(draw_list, gear_pos, {gear_pos.x + 34, gear_pos.y + 34}, im.GetColorU32Vec4({1, 1, 1, 0.07}), 8)
+			im.DrawList_AddRectFilled(draw_list, gear_pos, {gear_pos.x + STRIP_BUTTON, gear_pos.y + STRIP_BUTTON}, im.GetColorU32Vec4({1, 1, 1, 0.07}), 8)
 		}
-		gear_center := im.Vec2{gear_pos.x + 17, gear_pos.y + 17}
+		gear_center := im.Vec2{gear_pos.x + STRIP_CENTER, gear_pos.y + STRIP_CENTER}
 		gear_color := im.GetColorU32Vec4(
 			gear_hovered ? ICON_HOVER : ICON_IDLE,
 		)
-		im.DrawList_AddCircle(draw_list, gear_center, 3.2, gear_color, 0, 1.4)
+		im.DrawList_AddCircle(draw_list, gear_center, 3.8, gear_color, 0, GLYPH_STROKE)
 		for i in 0 ..< 8 {
 			angle := f32(i) * math.PI / 4
 			cos_a, sin_a := math.cos(angle), math.sin(angle)
-			im.DrawList_AddLine(draw_list, {gear_center.x + 5.2 * cos_a, gear_center.y + 5.2 * sin_a}, {gear_center.x + 7.8 * cos_a, gear_center.y + 7.8 * sin_a}, gear_color, 1.4)
+			im.DrawList_AddLine(draw_list, {gear_center.x + 6.0 * cos_a, gear_center.y + 6.0 * sin_a}, {gear_center.x + 8.8 * cos_a, gear_center.y + 8.8 * sin_a}, gear_color, GLYPH_STROKE)
 		}
 
 		// Settings popup: appearance knobs, one place only. Two
@@ -180,8 +235,8 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 		// Tall enough for every row (language, theme, two fonts, glass,
 		// transparency, two pan knobs): anchored to the window bottom
 		// (the gear sits there), clamped so short windows keep it fully
-		// on screen below the title bar.
-		settings_h := min(f32(480), imgui_io.DisplaySize.y - TITLEBAR_H - 12)
+		// on screen.
+		settings_h := min(f32(480), imgui_io.DisplaySize.y - 12)
 		im.SetNextWindowPos({STRIP_W + 6, imgui_io.DisplaySize.y - settings_h}, .Appearing)
 		im.SetNextWindowSizeConstraints({0, 0}, {f32(360), settings_h})
 		if im.BeginPopup("##settings", {}) {
@@ -251,7 +306,7 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 		// 1 px separator between the strip and the panel/scene.
 		im.DrawList_AddLine(
 			draw_list,
-			{STRIP_W - 0.5, TITLEBAR_H},
+			{STRIP_W - 0.5, 0},
 			{STRIP_W - 0.5, imgui_io.DisplaySize.y},
 			im.GetColorU32Vec4({1, 1, 1, 0.09}),
 		)
@@ -259,6 +314,77 @@ ui_activity_strip :: proc(ui: ^Ui, ied: ^ImGuiEditor, x_off: f32) {
 	im.End()
 	im.PopStyleVar(2)
 	im.PopStyleColor(2)
+}
+// Save glyph (floppy: body outline, metal shutter top-right, label slot
+// bottom), drawn from the strip cluster geometry. The save flash (amber
+// fade + drawn-in check) plays on top; main sets ui.save_flash = 1 on a
+// successful save.
+ui_strip_save_glyph :: proc(draw_list: ^im.DrawList, ui: ^Ui, imgui_io: ^im.IO) {
+	strip_x := im.GetWindowPos().x
+	slot_x := strip_x + (STRIP_W - STRIP_BUTTON) / 2
+	slot_y := STRIP_TOP + f32(7) * STRIP_STEP + 6
+	size := f32(STRIP_BUTTON)
+	save_min := im.Vec2{slot_x, slot_y}
+	if ui.save_hover {
+		im.DrawList_AddRectFilled(draw_list, save_min, {save_min.x + size, save_min.y + size}, im.GetColorU32Vec4({1, 1, 1, 0.08}), 8)
+	}
+	save_color := im.GetColorU32(.Text, 1.0)
+	im.DrawList_AddRect(draw_list, {save_min.x + 7, save_min.y + 7}, {save_min.x + size - 7, save_min.y + size - 7}, save_color, 2, 1.6)
+	im.DrawList_AddRectFilled(draw_list, {save_min.x + size - 14, save_min.y + 9}, {save_min.x + size - 9, save_min.y + 16}, save_color)
+	im.DrawList_AddRect(draw_list, {save_min.x + 12, save_min.y + size - 14}, {save_min.x + size - 12, save_min.y + size - 8}, save_color, 1, 1.4)
+
+	if ui.save_flash > 0 {
+		ui.save_flash = max(0, ui.save_flash - imgui_io.DeltaTime * 1.4)
+		flash := ui.save_flash
+		im.DrawList_AddRectFilled(
+			draw_list,
+			{save_min.x + 7, save_min.y + 7},
+			{save_min.x + size - 7, save_min.y + size - 7},
+			im.GetColorU32Vec4({ACCENT.x, ACCENT.y, ACCENT.z, 0.45 * flash}),
+			2,
+		)
+		check_progress := min(1, (1 - flash) * 3.3)
+		x1, y1 := save_min.x + 13, save_min.y + size * 0.55
+		x2, y2 := save_min.x + size * 0.42, save_min.y + size - 13
+		x3, y3 := save_min.x + size - 13, save_min.y + 13
+		check_color := im.GetColorU32Vec4({1, 1, 1, 0.9})
+		first_leg := min(check_progress / 0.35, 1)
+		second_leg := min(max(0, (check_progress - 0.35) / 0.65), 1)
+		if first_leg > 0 {
+			im.DrawList_AddLine(draw_list, {x1, y1}, {x1 + (x2 - x1) * first_leg, y1 + (y2 - y1) * first_leg}, check_color, 1.8)
+		}
+		if second_leg > 0 {
+			im.DrawList_AddLine(draw_list, {x2, y2}, {x2 + (x3 - x2) * second_leg, y2 + (y3 - y2) * second_leg}, check_color, 1.8)
+		}
+	}
+}
+
+// Pause/play glyph: bars while running, triangle while paused (the block
+// shows the action the click will take), from the strip cluster geometry.
+ui_strip_pause_glyph :: proc(draw_list: ^im.DrawList, ui: ^Ui) {
+	strip_x := im.GetWindowPos().x
+	slot_x := strip_x + (STRIP_W - STRIP_BUTTON) / 2
+	slot_y := STRIP_TOP + f32(7) * STRIP_STEP + 6 + STRIP_BUTTON + 8
+	size := f32(STRIP_BUTTON)
+	pause_min := im.Vec2{slot_x, slot_y}
+	if ui.pause_hover {
+		im.DrawList_AddRectFilled(draw_list, pause_min, {pause_min.x + size, pause_min.y + size}, im.GetColorU32Vec4({1, 1, 1, 0.08}), 8)
+	}
+	icon_color := im.GetColorU32(.Text, 1.0)
+	if ui.params.paused {
+		triangle_inset := f32(11)
+		im.DrawList_AddTriangleFilled(
+			draw_list,
+			{pause_min.x + triangle_inset, pause_min.y + triangle_inset},
+			{pause_min.x + triangle_inset, pause_min.y + size - triangle_inset},
+			{pause_min.x + size - triangle_inset + 4, pause_min.y + size / 2},
+			icon_color,
+		)
+	} else {
+		bar_width := f32(5)
+		im.DrawList_AddRectFilled(draw_list, {pause_min.x + 11, pause_min.y + 10}, {pause_min.x + 11 + bar_width, pause_min.y + size - 10}, icon_color)
+		im.DrawList_AddRectFilled(draw_list, {pause_min.x + size - 11 - bar_width, pause_min.y + 10}, {pause_min.x + size - 11, pause_min.y + size - 10}, icon_color)
+	}
 }
 
 ui_panel_width :: proc(ui: ^Ui, mode: SidebarMode, display_w: f32) -> f32 {
@@ -424,7 +550,7 @@ ui_controls_panel :: proc(ui: ^Ui, sm: ^SceneManager) {
 				case .TOGGLE:
 					im.Checkbox(widget_id, &w.on)
 				case .COLOR:
-					im.ColorEdit3(widget_id, &w.value)
+					ui_color_param(fmt.ctprintf("%s##w%d", w.label, i), &w.value)
 				}
 			}
 		}
@@ -520,8 +646,10 @@ ui_fx_panel :: proc(ui: ^Ui) {
 	}
 }
 
-// FILES mode: every .slang under src/shaders. Scenes emit SceneSelected
-// (app.odin); shared modules open in the editor.
+// FILES mode: the scene combo (was the title-bar selector), the active
+// scene's files as a tree (entry shader first, then modules), graph.json
+// access, and the shared modules. Picking a scene queues ui.scene_chosen
+// (ui_build forwards it through update()); files open in the editor.
 ui_files_panel :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor) {
 	// Keep the list fresh (template-created scenes, external files); the
 	// rescan is append-only and cheap.
@@ -531,48 +659,187 @@ ui_files_panel :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor) {
 	}
 
 	active_title := len(sm.scenes) > 0 ? sm.scenes[sm.current].title : ""
-
-	// Only the open scene's files: the unit's entry shader plus its
-	// modules (passes). Other scenes switch from the title-bar combo.
-	im.TextDisabled(fmt.ctprintf("%s · %s", tr("file explorer"), active_title))
-	if im.IsItemHovered() {
-		im.SetTooltip("%s", strings_to_c(tr("switch scenes from the title-bar combo")))
+	im.TextDisabled(trc("file explorer"))
+	// "+ new" on the caption row (was the title bar's button): creates a
+	// scene from a template. Popup logic mirrors the old title-bar one.
+	if im.SmallButton("+ new") {
+		im.OpenPopup("##scene_new")
+		ui.new_scene_open = true
 	}
-	// "+ new file" right-aligned on the caption row: creates a module in
-	// the active scene's directory, first free mod_N.slang index.
-	if active_title != "" {
-		new_w := im.CalcTextSize(strings_to_c(fmt.tprintf("%s +", tr("new file")))).x + im.GetStyle().FramePadding.x * 2
-		im.SetCursorPosX(im.GetWindowWidth() - new_w - im.GetStyle().WindowPadding.x)
-		if im.SmallButton(fmt.ctprintf("%s +", trc("new file"))) {
-			files_new_scene_module(ed, active_title)
+	if im.IsItemHovered() {
+		im.SetTooltip("%s", strings_to_c(tr("create scene from template")))
+	}
+	ui_files_new_scene_popup(ui)
+
+	// Scene picker: plain grouped combo. The old title bar sized its
+	// popup explicitly to dodge an ImGui auto-fit ratchet that only
+	// bites always-resized windows; a panel combo auto-fits fine.
+	if len(sm.scenes) > 0 {
+		current_title := sm.scenes[sm.current].title
+		ui.selector_open = false
+		im.SetNextItemWidth(-1)
+		if im.BeginCombo("##scene_sel", strings_to_c(current_title), {.HeightLarge}) {
+			ui.selector_open = true
+			im.TextDisabled(trc("scenes"))
+			for &s, i in sm.scenes {
+				root, has_root := scene_roots[s.title]
+				if has_root && root == USER_SCENES_DIR do continue
+				if im.Selectable(strings_to_c(s.title), i == sm.current, {}) {
+					ui.scene_chosen = i
+				}
+			}
+			im.Separator()
+			im.TextDisabled(trc("user scenes"))
+			for &s, i in sm.scenes {
+				root, has_root := scene_roots[s.title]
+				if !has_root || root != USER_SCENES_DIR do continue
+				if im.Selectable(strings_to_c(s.title), i == sm.current, {}) {
+					ui.scene_chosen = i
+				}
+			}
+			// Trail pages: jump to the LEARN panel, not a scene switch.
+			trails := files_trail_names()
+			if len(trails) > 0 {
+				im.Separator()
+				im.TextDisabled(trc("trails"))
+				for trail in trails {
+					if im.Selectable(strings_to_c(trail), false, {}) {
+						learn_load(trail)
+						emit(SetMode(.LEARN))
+					}
+				}
+			}
+			im.EndCombo()
+		}
+		// Tooltip outside the popup scope: tooltips opened inside it are
+		// clipped to the popup window.
+		if !ui.selector_open && im.IsItemHovered() {
+			im.SetTooltip("%s", strings_to_c(tr("switch scene")))
+			im.SetMouseCursor(.Hand)
 		}
 	}
-	prefix := fmt.tprintf("scenes/%s/", active_title)
-	for file in ed.files {
-		if !strings.has_prefix(file, prefix) do continue
-		rel := file[len(prefix):]
-		label := rel == active_title ? active_title : fmt.tprintf("  %s", rel)
-		if im.Selectable(strings_to_c(label), false, {}) {
-			ied_load_named(ed, file)
+
+	if active_title == "" do return
+	im.Spacing()
+
+	// Scene unit as a tree: the entry shader (defines the scene) first,
+	// then modules sorted as scanned. One draw-list glyph per row (the
+	// mono font ships no icons).
+	scene_header := fmt.ctprintf("%s##unit", active_title)
+	if im.TreeNodeEx(scene_header, {.DefaultOpen, .SpanFullWidth}) {
+		ui.files_open_scene = true
+		im.Indent()
+		// Entry shader row (the scene itself).
+		entry_rel := fmt.tprintf("%s/%s", active_title, active_title)
+		entry_file := fmt.tprintf("%s%s", ied_unit_prefix(active_title), entry_rel)
+		if im.Selectable(fmt.ctprintf("%s##entry", active_title)) {
+			ied_load_named(ed, entry_file)
 			ed.open = true
 		}
-	}
-	// The scene's node graph: the GRAPH sidebar mode is its editor, so
-	// selecting this row navigates there instead of the text editor.
-	if im.Selectable("  graph.json", false, {}) {
-		emit(SetMode(.GRAPH))
-	}
-	if im.IsItemHovered() {
-		im.SetTooltip(trc("node graph"))
-	}
-	im.Spacing()
-	im.TextDisabled(trc("shared"))
-	for file in ed.files {
-		if strings.has_prefix(file, "scenes/") do continue
-		if im.Selectable(strings_to_c(file), false, {}) {
-			ied_load_named(ed, file)
-			ed.open = true // surface the floating editor on the file
+		ui_files_row_context(ui, entry_file)
+		// Module files (passes).
+		prefix := ied_unit_prefix(active_title)
+		for file in ed.files {
+			if file == entry_file do continue
+			if !strings.has_prefix(file, prefix) do continue
+			rel := file[len(prefix):]
+			if im.Selectable(fmt.ctprintf("%s##f%s", rel, file), false) {
+				ied_load_named(ed, file)
+				ed.open = true
+			}
+			ui_files_row_context(ui, file)
 		}
+		// The scene's node graph: the GRAPH sidebar mode is its editor,
+		// so selecting this row navigates there instead of the editor.
+		if im.Selectable("graph.json##tree", false) {
+			emit(SetMode(.GRAPH))
+		}
+		if im.IsItemHovered() {
+			im.SetTooltip(trc("node graph"))
+		}
+		im.Unindent()
+		im.TreePop()
+	} else {
+		ui.files_open_scene = false
+	}
+
+	// Shared modules: imports available to every scene.
+	if im.TreeNodeEx(fmt.ctprintf("%s##shared", tr("shared")), {.DefaultOpen, .SpanFullWidth}) {
+		ui.files_open_shared = true
+		im.Indent()
+		for file in ed.files {
+			if strings.has_prefix(file, "scenes/") || strings.has_prefix(file, "gis_scenes/") do continue
+			if im.Selectable(fmt.ctprintf("%s##f%s", file, file), false) {
+				ied_load_named(ed, file)
+				ed.open = true // surface the floating editor on the file
+			}
+		}
+		im.Unindent()
+		im.TreePop()
+	} else {
+		ui.files_open_shared = false
+	}
+}
+
+// Right-click context on a FILES row: rename (deferred popup: a popup
+// opened inside the context popup dies with it).
+ui_files_row_context :: proc(ui: ^Ui, file: string) {
+	if im.BeginPopupContextItem() {
+		if im.Selectable(trc("rename"), false, {}) {
+			msg: BeginRenameModule
+			msg_set(&msg.scene, "")
+			msg_set(&msg.file, file)
+			emit(msg)
+		}
+		im.EndPopup()
+	}
+}
+
+// New-scene popup (was the title bar's): name + template kind, driven by
+// ui.new_scene_open like the rename popups (state opens it, the shown
+// edge cancels it).
+ui_files_new_scene_popup :: proc(ui: ^Ui) {
+	shown := im.BeginPopup("##scene_new")
+	if shown {
+		im.TextDisabled(trc("scene name"))
+		im.SetNextItemWidth(-1)
+		entered := im.InputText(
+			"##new_name",
+			cstring(&ui.new_name_buf[0]),
+			len(ui.new_name_buf),
+			{.EnterReturnsTrue},
+		)
+		if im.RadioButton(trc("compute"), ui.new_kind == .COMPUTE) do ui.new_kind = .COMPUTE
+		im.SameLine()
+		if im.RadioButton(trc("graphics 2d"), ui.new_kind == .GRAPHICS_2D) do ui.new_kind = .GRAPHICS_2D
+		im.SameLine()
+		if im.RadioButton(trc("graphics 3d"), ui.new_kind == .GRAPHICS_3D) do ui.new_kind = .GRAPHICS_3D
+		create_name := strings.trim_space(string(cstring(&ui.new_name_buf[0])))
+		name_ok := scene_name_valid(create_name) && !scene_name_taken(create_name)
+		if create_name != "" && !scene_name_valid(create_name) {
+			im.TextColored(ERROR_RED, "%s", trc("invalid name"))
+		} else if create_name != "" && scene_name_taken(create_name) {
+			im.TextColored(ERROR_RED, "%s", trc("name already exists"))
+		}
+		if (entered || im.Button(trc("create"))) && name_ok {
+			msg: CreateScene
+			msg.kind = ui.new_kind
+			msg_set(&msg.name, create_name)
+			emit(msg)
+		}
+		// The popup closes when the created scene becomes the pending
+		// selection (success); dismissal clears the typed name below.
+		if ui.pending_scene == create_name && create_name != "" {
+			for i in 0 ..< len(ui.new_name_buf) do ui.new_name_buf[i] = 0
+			im.CloseCurrentPopup()
+		}
+		im.EndPopup()
+	}
+	if !shown && ui.new_scene_open {
+		// Dismissed (ESC, outside click): clear the typed name so the
+		// next open starts fresh.
+		for i in 0 ..< len(ui.new_name_buf) do ui.new_name_buf[i] = 0
+		ui.new_scene_open = false
 	}
 }
 
@@ -632,8 +899,8 @@ ui_draw_grain :: proc(ui: ^Ui) {
 // mode (VS Code behavior). Amber seam while hovering/dragging.
 ui_panel_edge :: proc(ui: ^Ui, panel_x: f32) {
 	imgui_io := im.GetIO()
-	im.SetNextWindowPos({panel_x + ui.panel_w.value + 1, TITLEBAR_H}, .Always)
-	im.SetNextWindowSize({8, imgui_io.DisplaySize.y - TITLEBAR_H}, .Always)
+	im.SetNextWindowPos({panel_x + ui.panel_w.value + 1, 0}, .Always)
+	im.SetNextWindowSize({8, imgui_io.DisplaySize.y}, .Always)
 	edge_flags := im.WindowFlags {
 		.NoTitleBar,
 		.NoResize,
@@ -648,7 +915,7 @@ ui_panel_edge :: proc(ui: ^Ui, panel_x: f32) {
 	// button's hit rect out of the strip entirely.
 	im.PushStyleVarVec2(.WindowPadding, {0, 0})
 	if im.Begin("##panel_edge", nil, edge_flags) {
-		im.InvisibleButton("##edge_btn", {8, imgui_io.DisplaySize.y - TITLEBAR_H})
+		im.InvisibleButton("##edge_btn", {8, imgui_io.DisplaySize.y})
 		edge_hovered := im.IsItemHovered()
 		edge_active := im.IsItemActive()
 		if edge_hovered || edge_active {
@@ -673,7 +940,7 @@ ui_panel_edge :: proc(ui: ^Ui, panel_x: f32) {
 			edge_x := panel_x + ui.panel_w.value - 0.5
 			im.DrawList_AddLine(
 				draw_list,
-				{edge_x, TITLEBAR_H},
+				{edge_x, 0},
 				{edge_x, imgui_io.DisplaySize.y},
 				im.GetColorU32Vec4(ACCENT_SOFT),
 			)

@@ -1,11 +1,12 @@
 package main
 
 // LEARN mode: markdown-based learning trails. Pages live in
-// assets/trails/*.md; "index" is the home page. The renderer is a
-// deliberate md-lite: headers, bullets, fenced code blocks, and inline
-// links: because the feature that matters is the bridge to practice:
-// [label](scene:NAME) loads the scene AND opens the editor on its entry
-// file, [label](trail:NAME) navigates between pages.
+// assets/trails/*.md; "index" is the home page. Parsing and rendering
+// live in src/md_learn.odin (md4c parser + Odin renderer); this file
+// keeps trail loading, link navigation and the panel header. The
+// feature that matters is the bridge to practice: [label](scene:NAME)
+// loads the scene AND opens the editor on its entry file,
+// [label](trail:NAME) navigates between pages.
 import im "../vendor/odin-imgui"
 import "core:fmt"
 import "core:log"
@@ -30,168 +31,99 @@ learn_load :: proc(page: string) {
 	learn_page = strings.clone(page)
 }
 
-// True when the next segment still fits before the panel's right
-// edge. cursor_x is the x a SameLine(0, 0) would continue at (the
-// last segment's item-rect max), not GetCursorScreenPos(): after a
-// text item that is already the next line's start. SameLine's spacing
-// is 0, so the segment lands exactly at cursor_x.
-// Wrapped text used by every trail page line: plain lines, link-line
-// segments, and labels all share it so long text always breaks at the
-// containing block's width instead of overflowing the sidebar. An
-// optional color replaces the default text color (pushed manually
-// because TextWrapped has no colored variant).
-learn_text_wrapped :: proc(text: cstring, color := im.Vec4{-1, -1, -1, -1}) {
-	if color.x >= 0 do im.PushStyleColorVec4(.Text, color)
-	im.TextWrapped("%s", text)
-	if color.x >= 0 do im.PopStyleColor()
-}
 
-learn_segment_fits :: proc(seg: string, cursor_x, right_edge: f32) -> bool {
-	return cursor_x + im.CalcTextSize(strings_to_c(seg)).x <= right_edge
-}
-
-// Renders one inline segment run: plain text interleaved with
-// [label](target) links. Targets are "scene:NAME" (load scene + open
-// editor) and "trail:NAME" (navigate). Segments wrap at the panel
-// width; long ones continue on the next line.
-learn_render_rich_line :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor, line: string) {
-	// Lines without links wrap at the panel width; link lines flow
-	// inline (content authors keep those short).
-	if strings.index(line, "](") < 0 {
-		learn_text_wrapped(strings_to_c(line))
-	}
-	// Right edge (screen space) this line's segments must stay inside,
-	// measured once from the entry cursor: GetContentRegionAvail() is
-	// cursor-relative, so the bullet indent is included for free and
-	// the edge stays valid across wrapped continuation lines.
-	right_edge := im.GetCursorScreenPos().x + im.GetContentRegionAvail().x
-	remaining := line
-	first_segment := true
-	// X where the next SameLine(0, 0) segment would land: the last
-	// drawn item's rect max, or the entry cursor before any segment.
-	cursor_x := im.GetCursorScreenPos().x
-	link_color := LINK_BLUE
-
-	for {
-		open_bracket := strings.index(remaining, "[")
-		if open_bracket < 0 do break
-		close_bracket := strings.index(remaining[open_bracket:], "](")
-		if close_bracket < 0 do break
-		close_bracket += open_bracket
-		link_end := strings.index(remaining[close_bracket + 2:], ")")
-		if link_end < 0 do break
-		link_end += close_bracket + 2
-		label := remaining[open_bracket + 1:close_bracket]
-		target := remaining[close_bracket + 2:link_end]
-		// Segment before the link.
-		if open_bracket > 0 {
-			if !first_segment && learn_segment_fits(remaining[:open_bracket], cursor_x, right_edge) {
-				im.SameLine(0, 0)
-			}
-			learn_text_wrapped(strings_to_c(remaining[:open_bracket]))
-			cursor_x = im.GetItemRectMax().x
-			first_segment = false
-		}
-		if !first_segment && learn_segment_fits(label, cursor_x, right_edge) {
-			im.SameLine(0, 0)
-		}
-		learn_text_wrapped(strings_to_c(label), link_color)
-		if im.IsItemHovered() {
-			im.SetMouseCursor(.Hand)
-			link_min := im.GetItemRectMin()
-			link_max := im.GetItemRectMax()
-			im.DrawList_AddLine(
-				im.GetWindowDrawList(),
-				{link_min.x, link_max.y - 1},
-				{link_max.x, link_max.y - 1},
-				im.GetColorU32Vec4(link_color),
-				1,
-			)
-			if im.IsMouseClicked(.Left) {
-				if strings.has_prefix(target, "scene:") {
-					file := strings.trim_prefix(target, "scene:")
-					for &s, i in sm.scenes {
-						if s.title == file {
-							emit(SceneSelected(i))
-							// ed.files entries omit the .slang suffix
-							// (ied_file_path appends it).
-							entry := fmt.tprintf("scenes/%s/%s", file, file)
-							ied_load_named(ed, entry)
-							ed.open = true
-							break
-						}
-					}
-				} else if strings.has_prefix(target, "trail:") {
-					learn_load(strings.trim_prefix(target, "trail:"))
-					return // the page changed under us; stop rendering it
-				}
+// Follows a link target collected during rendering: "scene:NAME"
+// loads the scene and opens the editor on it; "trail:NAME" navigates.
+// Runs after md_render returns, never during parsing (learn_load
+// frees learn_text under the parser's feet).
+learn_follow_link :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor, target: string) {
+	if strings.has_prefix(target, "scene:") {
+		file := strings.trim_prefix(target, "scene:")
+		for &s, i in sm.scenes {
+			if s.title == file {
+				emit(SceneSelected(i))
+				// ed.files entries omit the .slang suffix (ied_file_path
+				// appends it). The prefix comes from the scene's root: user
+				// scenes live under gis_scenes/, not scenes/.
+				msg: OpenFile
+				msg_set(&msg.rel, fmt.tprintf("%s%s", ied_unit_prefix(file), file))
+				emit(msg)
+				return
 			}
 		}
-		cursor_x = im.GetItemRectMax().x
-		first_segment = false
-		remaining = remaining[link_end + 1:]
+		return
 	}
-	if len(remaining) > 0 {
-		if !first_segment && learn_segment_fits(remaining, cursor_x, right_edge) {
-			im.SameLine(0, 0)
-		}
-		learn_text_wrapped(strings_to_c(remaining))
+	if strings.has_prefix(target, "trail:") {
+		learn_load(strings.trim_prefix(target, "trail:"))
 	}
 }
 
+
+// Renders the trail page through the md4c parser + Odin renderer
+// (src/md_learn.odin). Parses and draws in one pass; a clicked link is
+// collected during parsing and followed afterwards.
 learn_render_page :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor) {
-	in_code := false
-	code_lines := 0
-	for line in strings.split_lines(learn_text, context.temp_allocator) {
-		if strings.has_prefix(line, "```") {
-			in_code = !in_code
-			if in_code do code_lines = 0
-			continue
-		}
-		if in_code {
-			// Fenced block: dim text over a subtle strip, indented.
-			// TextDisabled doesn't wrap; push the disabled color manually
-			// around TextWrapped so long code lines stay inside the panel.
-			// The strip is drawn before the text, so it can't know the
-			// wrapped height; skip it when the line won't fit unwrapped
-			// (cosmetic compromise, wrapped code is rare in trail pages).
-			code_min := im.GetCursorScreenPos()
-			code_width := im.GetContentRegionAvail().x
-			code_height := im.GetTextLineHeight()
-			fits := im.CalcTextSize(fmt.ctprintf("  %s", line)).x <= code_width
-			if fits {
-				im.DrawList_AddRectFilled(
-					im.GetWindowDrawList(),
-					{code_min.x, code_min.y},
-					{code_min.x + code_width, code_min.y + code_height},
-					im.GetColorU32Vec4({1, 1, 1, 0.05}),
-				)
-			}
-			im.PushStyleColorVec4(.Text, im.GetStyleColorVec4(.TextDisabled)^)
-			im.TextWrapped("  %s", strings_to_c(line))
-			im.PopStyleColor()
-			code_lines += 1
-			continue
-		}
-		trimmed := strings.trim_space(line)
-		switch {
-		case trimmed == "":
-			im.Spacing()
-		case strings.has_prefix(trimmed, "## "):
-			im.Spacing()
-			learn_text_wrapped(strings_to_c(trimmed[3:]), ACCENT)
-		case strings.has_prefix(trimmed, "# "):
-			learn_text_wrapped(strings_to_c(trimmed[2:]), {0.95, 0.92, 0.88, 1})
-			im.Separator()
-			im.Spacing()
-		case strings.has_prefix(trimmed, "- "):
-			im.Bullet()
-			learn_render_rich_line(ui, sm, ed, trimmed[2:])
-		case:
-			learn_render_rich_line(ui, sm, ed, trimmed)
-		}
+	cfg := Md_Config{
+		text          = im.GetStyle().Colors[im.Col.Text],
+		text_strong   = {1, 1, 1, 1},
+		text_em       = {0.80, 0.85, 0.95, 1},
+		text_dim      = im.GetStyle().Colors[im.Col.TextDisabled],
+		accent        = ACCENT,
+		h1            = {0.95, 0.92, 0.88, 1},
+		link          = LINK_BLUE,
+		code_bg       = {1, 1, 1, 0.045},
+		chip_bg       = {1, 1, 1, 0.06},
+		code_edge     = ACCENT_SEMITRANSPARENT,
+		code_colors   = md_code_colors(ed),
+		keywords      = CODE_KEYWORDS,
+		ns            = CODE_NS,
+		host          = CODE_HOST_IDENTS,
+		tip_chip      = trc("click to copy"),
+		tip_block     = trc("click: copy line · double-click: copy block"),
+		on_copy       = proc(text: string) { notify(.INFO, "copied: %s", text) },
+	}
+	pending, ok := md_render(learn_text, &cfg)
+	if !ok do return
+	if pending != "" do learn_follow_link(ui, sm, ed, pending)
+}
+
+// LEARN code-token colors mirrored from the code editor's current
+// theme, so the trail's syntax highlighting matches what the user sees
+// in the editor. Reads the live palette off the ite component.
+md_code_colors :: proc(ed: ^ImGuiEditor) -> Md_Code_Colors {
+	palette: [24]u32
+	ite_get_palette_u32(ed.handle, &palette[0], len(palette))
+	return Md_Code_Colors{
+		text             = u32_to_vec4(palette[0]),  // text
+		keyword          = u32_to_vec4(palette[1]),  // keyword
+		declaration      = u32_to_vec4(palette[2]),  // declaration (function calls)
+		number           = u32_to_vec4(palette[3]),  // number
+		known_identifier = u32_to_vec4(palette[8]),  // knownIdentifier (host idents, namespaces)
+		comment          = u32_to_vec4(palette[9]),  // comment
 	}
 }
+
+u32_to_vec4 :: proc(c: u32) -> im.Vec4 {
+	return im.Vec4{
+		f32(c & 0xFF) / 255,
+		f32((c >> 8) & 0xFF) / 255,
+		f32((c >> 16) & 0xFF) / 255,
+		f32((c >> 24) & 0xFF) / 255,
+	}
+}
+
+
+CODE_HOST_IDENTS :: []string{"Uniforms", "Params", "input"}
+
+CODE_KEYWORDS :: []string{
+	"float", "float2", "float3", "float4", "int", "int2", "uint", "bool",
+	"return", "if", "else", "for", "while", "struct", "public", "import",
+	"namespace", "uniform", "const", "void", "in", "out", "inout",
+	"switch", "case", "break", "continue", "true", "false",
+}
+
+CODE_NS :: []string{"Space", "Camera", "Noise", "Sdf"}
+
 
 ui_learn_panel :: proc(ui: ^Ui, sm: ^SceneManager, ed: ^ImGuiEditor) {
 	if learn_text == "" do learn_load("index")

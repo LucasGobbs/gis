@@ -141,6 +141,12 @@ void ite_use_light_palette(void *ed) {
 	S(ed)->glass = false;
 }
 
+void ite_get_palette_u32(void *ed, uint32_t *colors, size_t count) {
+	TextEditor::Palette p = S(ed)->editor.GetPalette();
+	size_t n = count < p.size() ? count : p.size();
+	for (size_t i = 0; i < n; i++) colors[i] = p[i];
+}
+
 void ite_set_glass(void *ed, bool on, float alpha) {
 	IteState *s = S(ed);
 	if (on == s->glass && s->palette_saved) return;

@@ -77,6 +77,11 @@ void ite_set_palette_u32(void *ed, const uint32_t *colors, size_t count);
 void ite_use_dark_palette(void *ed);
 void ite_use_light_palette(void *ed);
 
+// Reads the editor's current palette into colors (up to count entries,
+// same component order as ite_set_palette_u32, ABGR). Lets Odin-side
+// renderers mirror the editor's theme colors.
+void ite_get_palette_u32(void *ed, uint32_t *colors, size_t count);
+
 // Completion provider (LSP): the editor calls fn on the render thread when
 // the autocomplete popup needs items. fn gets the word being typed plus the
 // 0-based cursor line/col and fills buf with newline-separated suggestions,

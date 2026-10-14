@@ -8,18 +8,16 @@ import sdl "vendor:sdl3"
 
 // Controls UI: Dear ImGui is the only UI toolkit in the app (microui was
 // retired). The editor panel lives in imgui_editor.odin; this file owns
-// the toolbar (the in-app row below the native window frame, with the
-// scene selector),
-// the Controls window, the scene's reflected params (a visually separate
-// section), and the normalized graph-paper grid drawn behind the windows
-// via the background draw list.
+// the sidebar driver (activity strip + mode panels), the scene's reflected
+// params (a visually separate section), and the normalized graph-paper
+// grid drawn behind the windows via the background draw list.
 //
 // Widget map from the old microui build:
 //   checkboxes          -> im.Checkbox
 //   radio buttons       -> im.RadioButton
-//   tree nodes          -> im.CollapsingHeader
+//   tree nodes          -> im.TreeNodeEx (FILES tree)
 //   scene sliders       -> im.SliderFloat
-//   scene color params  -> im.ColorEdit3 (was three sliders)
+//   scene color params  -> custom swatch + hex field + ColorPicker3 popup
 //   grid overlay        -> im.GetBackgroundDrawList lines + text
 
 // Mobile theater (F5): when true, the editor docks to the bottom half
@@ -119,11 +117,44 @@ Ui :: struct {
 	pill:           Anim,
 	slide:          f32, // 0..1 mode-change slide-in progress
 	panel_w:        Anim, // panel width spring (collapse/expand)
+	// FILES panel tree expansion state (session-only; cheap to re-expand).
+	files_open_scene:  bool,
+	files_open_shared: bool,
+	// Next scene index the FILES combo queued; -1 = none. ui_build
+	// forwards it exactly once (SceneSelected), keeping the one-writer
+	// rule; the view never flips scenes directly.
+	scene_chosen:      int,
+	// New-scene popup pending state: CreateScene fired; the popup closes
+	// on success (pending_scene set) or on dismissal (shown edge, like
+	// rename_shown).
+	new_scene_open: bool,
+	// Strip icon hover bookkeeping (save/pause): the glyphs draw after
+	// the buttons, so hover state is recorded by the button and consumed
+	// by the glyph pass in the same frame.
+	save_hover:   bool,
+	pause_hover:  bool,
+	// Scene combo popup is open this frame (set inside BeginCombo's
+	// scope; read by the ui-test driver).
+	selector_open: bool,
+	// Scene/file rename state: which scene (or module file) the rename
+	// popup edits, and its text buffer. Zero-valued initial state.
+	rename_key:      string,
+	rename_buf:      [64]u8,
+	file_rename_key: string,
+	file_rename_buf: [64]u8,
+	// Rename popup shown-last-frame edges: distinguish a user dismissal
+	// (ESC, outside click) from "not opened yet" on the frame the key is
+	// first set.
+	rename_shown:      bool,
+	file_rename_shown: bool,
+	// New-scene popup buffer and template kind.
+	new_name_buf: [64]u8,
+	new_kind:     SceneTemplateKind,
+	panel_x:        f32, // sidebar panel's left x this frame (edge handle)
 	user_w:         f32, // user-dragged panel width; 0 = per-mode default
 	sidebar_x:      Anim, // strip+panel x offset (zen mode slides left)
 	prev_mode:      SidebarMode,
-	scene_sel_rect: [4]f32,
-	// Save feedback on the floppy icon: 1 on a successful save, decays
+	// Save feedback on the save icon: 1 on a successful save, decays
 	// out (amber fill fades, the check draws in during the first third).
 	save_flash:     f32,
 	// Pixel inspector: a scene click requests an async 1x1 GPU readback.
@@ -162,6 +193,7 @@ ui_init :: proc() -> ^Ui {
 	ui.panel_open = true
 	ui.font_size = 16
 	ui.gif_end = 5
+	ui.scene_chosen = -1
 	ui.fx = fx_defaults()
 	ui.slide = 1
 	ui.panel_w.value = 300
@@ -260,8 +292,25 @@ ui_build :: proc(
 	ing: ^NodeGraph,
 	frame_w, frame_h: i32,
 ) {
-	ui_toolbar(ui, sm, window, ied)
 	imgui_io := im.GetIO()
+	// Scene picked in the FILES combo: forward exactly once through
+	// update() (the one-writer rule); the view never flips scenes.
+	if ui.scene_chosen >= 0 {
+		emit(SceneSelected(ui.scene_chosen))
+		ui.scene_chosen = -1
+	}
+	// A template-created scene appeared in the rescan: select it now.
+	// The pending title is cleared by update() once the selection lands,
+	// and only after the watcher discovered the scene (the async build
+	// takes a few frames).
+	if ui.pending_scene != "" {
+		for s, i in sm.scenes {
+			if s.title == ui.pending_scene {
+				emit(SceneSelected(i))
+				break
+			}
+		}
+	}
 	ui.captures_mouse = imgui_io.WantCaptureMouse
 
 	// Mode change: the panel content slides in from the left with a
@@ -308,8 +357,8 @@ ui_build :: proc(
 		panel_alpha = 0.25 + 0.75 * ease
 	}
 
-	im.SetNextWindowPos({STRIP_W + ui.sidebar_x.value + slide_off, TITLEBAR_H}, .Always)
-	im.SetNextWindowSize({ui.panel_w.value, imgui_io.DisplaySize.y - TITLEBAR_H}, .Always)
+	im.SetNextWindowPos({STRIP_W + ui.sidebar_x.value + slide_off, 0}, .Always)
+	im.SetNextWindowSize({ui.panel_w.value, imgui_io.DisplaySize.y}, .Always)
 	panel_x := STRIP_W + ui.sidebar_x.value + slide_off
 	im.SetNextWindowBgAlpha(panel_alpha)
 	flags := im.WindowFlags {
@@ -348,6 +397,9 @@ ui_build :: proc(
 		case .LEARN:
 			ui_learn_panel(ui, sm, ied)
 		case .GRAPH:
+			if len(sm.scenes) > 0 {
+				sg_set_node_widgets(sm.scenes[sm.current].widgets[:])
+			}
 			ing_panel(ing, ied, sm.scenes[sm.current].title, &ui.graph_max)
 		case .EXPORT:
 			ui_export_panel(ui)
@@ -432,6 +484,79 @@ ui_draw_grid :: proc(ui: ^Ui, frame_w, frame_h: i32) {
 		}
 		im.DrawList_AddText(draw_list, {4, y}, text_col, label)
 	}
+}
+// ---------------------------------------------------------------------------
+// Color param: swatch + hex field + ColorPicker3 popup. Replaces the raw
+// ColorEdit3: its default row (small patch, RGB fields, options gear) read
+// as an unrelated input control inside a slider column. The darkroom
+// version: the swatch IS the button (full row height, 5px rounding), the
+// hex value sits right of it (click copies, type in the picker popup), and
+// the popup carries the saturation/value square plus hue bar with the
+// standard theme.
+
+// Packs sRGB 0..1 floats into RRGGBB.
+ui_hex_pack :: proc(rgb: ^[3]f32) -> string {
+	r := u8(clamp(rgb[0], 0, 1) * 255 + 0.5)
+	g := u8(clamp(rgb[1], 0, 1) * 255 + 0.5)
+	b := u8(clamp(rgb[2], 0, 1) * 255 + 0.5)
+	return fmt.tprintf("%02X%02X%02X", r, g, b)
+}
+
+// One color param row: swatch button (amber frame on hover), hex label,
+// picker popup anchored under the swatch. Edits write through `rgb`.
+ui_color_param :: proc(popup_id: cstring, rgb: ^[3]f32) {
+	color := im.Vec4{rgb[0], rgb[1], rgb[2], 1}
+	h := im.GetFrameHeight()
+
+	// Swatch button: 2x frame height wide, full frame height tall.
+	im.PushStyleColorVec4(.Button, color)
+	im.PushStyleColorVec4(.ButtonHovered, {color.x, color.y, color.z, min(1, color.w + 0.06)})
+	im.PushStyleColorVec4(.ButtonActive, {color.x, color.y, color.z, min(1, color.w + 0.12)})
+	sw_w := h * 2
+	im.Button(fmt.ctprintf("%s##sw", popup_id), {sw_w, h})
+	im.PopStyleColor(3)
+	swatch_min := im.GetItemRectMin()
+	swatch_max := im.GetItemRectMax()
+	swatch_hovered := im.IsItemHovered()
+	if swatch_hovered {
+		im.SetTooltip("%s", strings_to_c(tr("click to edit color")))
+		im.SetMouseCursor(.Hand)
+	}
+
+	// Hex value right of the swatch, muted (a caption: the value, not
+	// the label). Click copies to the clipboard.
+	im.SameLine(0, im.GetStyle().ItemInnerSpacing.x)
+	hex_text := ui_hex_pack(rgb)
+	im.TextUnformatted(fmt.ctprintf("#%s", hex_text))
+	if im.IsItemHovered() {
+		im.SetTooltip("%s", strings_to_c(tr("click to copy")))
+		im.SetMouseCursor(.Hand)
+	}
+	if im.IsItemClicked() {
+		im.SetClipboardText(strings_to_c(hex_text))
+	}
+
+	// Picker popup (button behavior): saturation/value square + hue bar,
+	// no alpha, no options menu, no small-preview dupes. Sized for the
+	// sidebar; the default 300+ works but a narrower popup stays inside
+	// the panel.
+	if (swatch_hovered && im.IsMouseReleased(.Left)) || im.IsPopupOpen(popup_id) {
+		im.SetNextWindowPos({swatch_min.x, swatch_max.y + 4}, .Appearing)
+		im.SetNextWindowSizeConstraints({0, 0}, {f32(280), f32(340)})
+		if im.BeginPopup(popup_id, {.AlwaysAutoResize}) {
+			im.SetNextItemWidth(220)
+			if im.ColorPicker3("##picker", rgb, {.NoAlpha, .NoOptions, .NoSmallPreview, .NoSidePreview, .DisplayHex, .Uint8, .PickerHueBar}) {
+				// Value edits live in rgb; nothing else to apply.
+			}
+			im.EndPopup()
+		}
+	}
+}
+
+// A test-only display string for the picker (funnel/UI assertions), kept
+// beside the picker so the format stays in one place.
+ui_hex_text :: proc(rgb: ^[3]f32) -> string {
+	return fmt.tprintf("#%s", ui_hex_pack(rgb))
 }
 
 // cstring view of a Go-style string, in temp allocator (ImGui needs
