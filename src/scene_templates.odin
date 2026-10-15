@@ -5,10 +5,10 @@ import "core:log"
 import "core:os"
 import "core:strings"
 
-// Scene templates for the toolbar's "+ new" menu. A new file lands in
-// SCENES_DIR; the scene watcher discovers it on the next frame, compiles
-// it, and lists it: no code change or restart needed. Names auto-increment
-// (compute.slang, compute_2.slang, ...) so repeated clicks never clobber.
+// Scene templates for the toolbar's "+ new" popup. The user names the
+// scene; it lands in USER_SCENES_DIR (<name>/<name>.slang), the scene
+// watcher discovers it on the next frame, compiles it, and lists it:
+// no code change or restart needed.
 
 SceneTemplateKind :: enum {
 	COMPUTE,
@@ -87,15 +87,6 @@ float4 pixelMain(ModelVaryings input) : SV_Target0 {
 }
 `
 
-template_base_name :: proc(kind: SceneTemplateKind) -> string {
-	switch kind {
-	case .COMPUTE:     return "compute"
-	case .GRAPHICS_2D: return "graphics2d"
-	case .GRAPHICS_3D: return "graphics3d"
-	}
-	return "scene"
-}
-
 template_source :: proc(kind: SceneTemplateKind) -> string {
 	switch kind {
 	case .COMPUTE:     return TEMPLATE_COMPUTE
@@ -105,33 +96,45 @@ template_source :: proc(kind: SceneTemplateKind) -> string {
 	return ""
 }
 
-// Creates a scene unit (directory with the entry shader) at the first
-// free name under USER_SCENES_DIR and returns the scene title for
-// follow-up selection.
-scene_create :: proc(kind: SceneTemplateKind) -> (title: string, succeeded: bool) {
-	base := template_base_name(kind)
+// Valid scene name: ASCII letter first, then letters/digits/_/-, max
+// 48 chars (fits a 64-byte input buffer). Starting with a letter keeps
+// "." and ".." out.
+scene_name_valid :: proc(name: string) -> bool {
+	if len(name) < 1 || len(name) > 48 do return false
+	if !(('a' <= name[0] && name[0] <= 'z') || ('A' <= name[0] && name[0] <= 'Z')) do return false
+	for c in name[1:] {
+		if !(('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9') || c == '_' || c == '-') do return false
+	}
+	return true
+}
+
+// A name is taken when a scene directory with it already exists under
+// either root (catalog scan or built-in tree check): never overwrite.
+scene_name_taken :: proc(name: string) -> bool {
+	for catalog_name in scene_names_on_disk() {
+		if catalog_name == name do return true
+	}
+	return os.exists(fmt.tprintf("%s/%s", SCENES_DIR, name))
+}
+
+// Creates a named scene unit (directory with the entry shader) under
+// USER_SCENES_DIR. Refuses invalid or taken names; returns the scene
+// title for follow-up selection.
+scene_create_named :: proc(kind: SceneTemplateKind, name: string) -> (title: string, succeeded: bool) {
+	if !scene_name_valid(name) || scene_name_taken(name) do return "", false
 	source := template_source(kind)
 	// User scenes live outside the source tree (USER_SCENES_DIR): they
 	// survive repo updates and read as "mine" in the scene selector.
-	user_dir := scene_user_dir()
-	for n := 1; n < 100; n += 1 {
-		name := base
-		if n > 1 {
-			name = fmt.tprintf("%s_%d", base, n)
-		}
-		scene_dir := fmt.tprintf("%s/%s", user_dir, name)
-		if os.exists(scene_dir) do continue
-		if os.make_directory(scene_dir) != nil {
-			log.errorf("new scene: failed to create %s", scene_dir)
-			return "", false
-		}
-		path := fmt.tprintf("%s/%s.slang", scene_dir, name)
-		if os.write_entire_file(path, transmute([]u8)source) != nil {
-			log.errorf("new scene: failed to write %s", path)
-			return "", false
-		}
-		log.infof("new scene: created %s", path)
-		return strings.clone(name), true
+	scene_dir := fmt.tprintf("%s/%s", scene_user_dir(), name)
+	if os.make_directory(scene_dir) != nil {
+		log.errorf("new scene: failed to create %s", scene_dir)
+		return "", false
 	}
-	return "", false
+	path := fmt.tprintf("%s/%s.slang", scene_dir, name)
+	if os.write_entire_file(path, transmute([]u8)source) != nil {
+		log.errorf("new scene: failed to write %s", path)
+		return "", false
+	}
+	log.infof("new scene: created %s", path)
+	return strings.clone(name), true
 }

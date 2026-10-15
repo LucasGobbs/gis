@@ -42,6 +42,7 @@ foreign ite {
 	ite_set_glass :: proc(ed: rawptr, on: bool, alpha: f32) ---
 	ite_set_fade :: proc(ed: rawptr, alpha: f32) ---
 	ite_set_palette_u32 :: proc(ed: rawptr, colors: [^]u32, count: c.size_t) ---
+	ite_get_palette_u32 :: proc(ed: rawptr, colors: [^]u32, count: c.size_t) ---
 	ite_use_dark_palette :: proc(ed: rawptr) ---
 	ite_get_background_alpha :: proc(ed: rawptr) -> u32 ---
 	ite_use_light_palette :: proc(ed: rawptr) ---
@@ -297,6 +298,16 @@ ied_completion_cb :: proc "c" (search_term: cstring, cursor_line: c.size_t, curs
 	if ied_lsp == nil || editor.current < 0 do return 0
 	doc_uri := ied_current_uri(editor)
 	doc_text := string(ite_get_text(editor.handle))
+
+	// Namespace member completion: `Space::` (with or without a typed
+	// prefix after it) offers the module's public symbols directly.
+	// slangd 1.8 answers `Space::` with the whole global scope instead
+	// of the namespace members, so this case is handled locally against
+	// the module file on disk. Falls through to slangd otherwise.
+	if ns := ied_namespace_at(doc_text, int(cursor_line), int(cursor_col)); ns != "" {
+		return ied_complete_namespace(ns, string(search_term), out_buf, out_cap)
+	}
+
 	items := lsp_complete(ied_lsp, doc_uri, doc_text, int(cursor_line), int(cursor_col))
 	if len(items) == 0 do return 0
 	match_count := 0
@@ -310,6 +321,104 @@ ied_completion_cb :: proc "c" (search_term: cstring, cursor_line: c.size_t, curs
 		if written + need >= int(out_cap) do break
 		copy(out_buf[written:out_cap], item.label)
 		written += len(item.label)
+		out_buf[written] = '\n'
+		written += 1
+		match_count += 1
+	}
+	return c.int(match_count)
+}
+
+// Maps a typed namespace to its module file under src/shaders/. The
+// namespace name matches the file name case-insensitively: `Space::`
+// -> space.slang. "" when the namespace is unknown.
+ied_namespace_module :: proc(ns: string) -> string {
+	switch ns {
+	case "Space":  return "space"
+	case "Camera": return "camera"
+	case "Noise":  return "noise"
+	case "Sdf":    return "sdf"
+	}
+	return ""
+}
+
+// If the text before (line, col) is `<Namespace>::` — optionally with a
+// partially typed member name after the `::` — returns the namespace
+// name; "" otherwise. The partial member is not returned here: the
+// popup passes it as `search_term` and filtering happens in
+// ied_complete_namespace.
+ied_namespace_at :: proc(doc_text: string, line, col: int) -> string {
+	lines := strings.split_lines(doc_text, context.temp_allocator)
+	if line < 0 || line >= len(lines) do return ""
+	l := lines[line]
+	if col < 0 || col > len(l) do return ""
+	prefix := l[:col]
+
+	// Strip a partially typed member name: `Space::pix` still counts.
+	base := prefix
+	if !strings.has_suffix(base, "::") {
+		i := len(base)
+		for i > 0 {
+			c := base[i - 1]
+			if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' {
+				i -= 1
+			} else {
+				break
+			}
+		}
+		if i == len(base) || i < 2 || base[i - 1] != ':' || base[i - 2] != ':' do return ""
+		base = base[:i - 2]
+	} else {
+		base = base[:len(base) - 2]
+	}
+
+	// walk back over the namespace identifier
+	i := len(base)
+	for i > 0 {
+		c := base[i - 1]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' {
+			i -= 1
+		} else {
+			break
+		}
+	}
+	if i == len(base) do return "" // no identifier before ::
+	return base[i:]
+}
+
+// Offers the public symbols of one shared module, filtered by the typed
+// prefix. Reads the module file on demand: these files are small and the
+// callback fires only while the popup is open.
+ied_complete_namespace :: proc(ns: string, search_term: string, out_buf: [^]u8, out_cap: c.size_t) -> c.int {
+	context = runtime.default_context()
+	module_name := ied_namespace_module(ns)
+	if module_name == "" do return 0
+	path := fmt.tprintf("src/shaders/%s.slang", module_name)
+	src_bytes, read_err := os.read_entire_file(path, context.temp_allocator)
+	if read_err != nil do return 0
+	src := string(src_bytes)
+
+	term := strings.to_lower(search_term, context.temp_allocator)
+	match_count := 0
+	written := 0
+	for line in strings.split_lines(src, context.temp_allocator) {
+		// public functions: `public <type> name(`; public structs: `public struct Name`
+		if !strings.has_prefix(line, "public ") do continue
+		fields := strings.fields(line, context.temp_allocator)
+		if len(fields) < 3 do continue
+		name := fields[len(fields) - 1]
+		if strings.has_suffix(name, "(") {
+			name = name[:len(name) - 1]
+		} else if fields[1] == "struct" {
+			name = fields[2]
+		} else {
+			continue
+		}
+		if term != "" && !strings.has_prefix(strings.to_lower(name, context.temp_allocator), term) do continue
+		if match_count >= 24 do break
+		need := len(name) + 1
+		if written + need >= int(out_cap) do break
+		copy(out_buf[written:out_cap], name)
+		written += len(name)
 		out_buf[written] = '\n'
 		written += 1
 		match_count += 1
@@ -391,18 +500,44 @@ ied_scan_dir :: proc(editor: ^ImGuiEditor, sub_dir: string) {
 		if sub_dir != "" {
 			name = fmt.tprintf("%s/%s", sub_dir, name)
 		}
-		// Dedupe: rescans append only newly discovered files, keeping
-		// OpenDoc.file indices stable.
-		exists := false
-		for existing_file in editor.files {
-			if existing_file == name {
-				exists = true
-				break
-			}
-		}
-		if exists do continue
-		append(&editor.files, strings.clone(name))
+		ied_append_file(editor, name)
 	}
+}
+
+// Scans the user scene tree (gis_scenes/): files register under the
+// "gis_scenes/<unit>/<file>" prefix, mirroring ied_scan_scene_dirs so
+// FILES, tabs and the graph see user scenes next to the built-ins.
+ied_scan_user_scenes :: proc(editor: ^ImGuiEditor) {
+	user_dir := scene_user_dir()
+	entries, scan_err := os.read_directory_by_path(user_dir, 0, context.temp_allocator)
+	if scan_err != nil do return
+	for entry in entries {
+		if entry.type != .Directory do continue
+		unit_dir := fmt.tprintf("%s/%s", user_dir, entry.name)
+		files, dir_err := os.read_directory_by_path(unit_dir, 0, context.temp_allocator)
+		if dir_err != nil do continue
+		for file in files {
+			if file.type != .Regular do continue
+			if !strings.has_suffix(file.name, ".slang") do continue
+			name := strings.trim_suffix(file.name, ".slang")
+			ied_append_file(editor, fmt.tprintf("%s/%s/%s", USER_SCENES_DIR, entry.name, name))
+		}
+	}
+}
+
+// Append-only insert into editor.files (relative name, no .slang):
+// rescans must keep OpenDoc.file indices stable, so an already-listed
+// name is left untouched.
+ied_append_file :: proc(editor: ^ImGuiEditor, name: string) {
+	exists := false
+	for existing_file in editor.files {
+		if existing_file == name {
+			exists = true
+			break
+		}
+	}
+	if exists do return
+	append(&editor.files, strings.clone(name))
 }
 
 // Rediscover shader files (template-created scenes, files added
@@ -411,10 +546,21 @@ ied_scan_dir :: proc(editor: ^ImGuiEditor, sub_dir: string) {
 ied_rescan :: proc(editor: ^ImGuiEditor) {
 	ied_scan_dir(editor, "")
 	ied_scan_scene_dirs(editor)
+	ied_scan_user_scenes(editor)
+}
+
+// On-disk .slang path for a files-list name. Names under gis_scenes/
+// are project-root-relative (the user tree sits outside src/shaders);
+// everything else resolves under SHADER_DIR.
+ied_file_path_for_rel :: proc(rel: string) -> string {
+	if strings.has_prefix(rel, "gis_scenes/") {
+		return fmt.tprintf("%s.slang", rel)
+	}
+	return fmt.tprintf("%s/%s.slang", SHADER_DIR, rel)
 }
 
 ied_file_path :: proc(editor: ^ImGuiEditor, file_idx: int) -> string {
-	return fmt.tprintf("%s/%s.slang", SHADER_DIR, editor.files[file_idx])
+	return ied_file_path_for_rel(editor.files[file_idx])
 }
 
 ied_current_uri :: proc(editor: ^ImGuiEditor) -> string {
@@ -504,14 +650,22 @@ ied_load_named :: proc(editor: ^ImGuiEditor, name: string) {
 		}
 	}
 }
+// The files-list prefix of a scene unit's own directory: gis_scenes for
+// user scenes (their tree is outside src/shaders), scenes/ for built-ins.
+ied_unit_prefix :: proc(unit: string) -> string {
+	if scene_root_dir(unit) == USER_SCENES_DIR {
+		return fmt.tprintf("%s/%s/", USER_SCENES_DIR, unit)
+	}
+	return fmt.tprintf("scenes/%s/", unit)
+}
 
-// Closes open docs under scenes/<unit>/. On a scene switch the previous
-// unit's tabs go away, EXCEPT dirty ones: unsaved work is never
+// Closes open docs under a scene unit's prefix. On a scene switch the
+// previous unit's tabs go away, EXCEPT dirty ones: unsaved work is never
 // destroyed, so those stay until the user saves (ied_save_all reaps them
 // once clean).
 ied_close_unit :: proc(editor: ^ImGuiEditor, unit: string) {
 	if unit == "" do return
-	prefix := fmt.tprintf("scenes/%s/", unit)
+	prefix := ied_unit_prefix(unit)
 	live_undo := ite_get_undo_index(editor.handle)
 	// Walk backwards: ied_close mutates open_docs in place.
 	for i := len(editor.open_docs) - 1; i >= 0; i -= 1 {
@@ -521,6 +675,44 @@ ied_close_unit :: proc(editor: ^ImGuiEditor, unit: string) {
 		dirty := tab_doc.dirty || (i == editor.current_open && live_undo != editor.saved_undo)
 		if dirty do continue
 		ied_close(editor, i)
+	}
+}
+
+// Closes every open tab whose file index points at rel. Called before a
+// rename removes/invalidates the name; callers must have saved first.
+ied_close_file :: proc(editor: ^ImGuiEditor, rel: string) {
+	// Walk backwards: ied_close mutates open_docs in place.
+	for i := len(editor.open_docs) - 1; i >= 0; i -= 1 {
+		if editor.files[editor.open_docs[i].file] == rel {
+			ied_close(editor, i)
+		}
+	}
+}
+
+// Drops rel from editor.files and reindexes open tabs. ied_rescan is
+// append-only by design (indices are OpenDoc state), so a renamed/
+// deleted file needs this explicit removal to leave the lists.
+ied_forget_file :: proc(editor: ^ImGuiEditor, rel: string) {
+	ied_close_file(editor, rel)
+	idx := -1
+	for file_name, i in editor.files {
+		if file_name == rel {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 do return
+	delete(editor.files[idx])
+	ordered_remove(&editor.files, idx)
+	// Reindex every doc: OpenDoc.file points into editor.files.
+	for &doc in editor.open_docs {
+		if doc.file > idx do doc.file -= 1
+	}
+	// Visible-file tracking follows the same index space.
+	if editor.current > idx {
+		editor.current -= 1
+	} else if editor.current == idx {
+		editor.current = -1
 	}
 }
 
@@ -579,7 +771,7 @@ ied_scene_files :: proc(editor: ^ImGuiEditor, scene_rel: string) -> [dynamic]str
 	for i := 0; i < len(queue); i += 1 {
 		module_rel := queue[i]
 		data, read_err := os.read_entire_file(
-			fmt.tprintf("%s/%s.slang", SHADER_DIR, module_rel),
+			ied_file_path_for_rel(module_rel),
 			context.temp_allocator,
 		)
 		if read_err != nil do continue
@@ -596,12 +788,12 @@ ied_scene_files :: proc(editor: ^ImGuiEditor, scene_rel: string) -> [dynamic]str
 	return result
 }
 
-// The files-list name of a scene: scenes/<title>.slang or, since scenes
-// moved to per-scene folders, scenes/<title>/<title>.slang, matched by
-// base name. "" when unknown.
+// The files-list name of a scene: scenes/<title>/<title>.slang for
+// built-ins, gis_scenes/<title>/<title>.slang for user scenes, matched
+// by base name. "" when unknown.
 ied_scene_rel :: proc(editor: ^ImGuiEditor, scene_name: string) -> string {
 	for file_name in editor.files {
-		if !strings.has_prefix(file_name, "scenes/") do continue
+		if !strings.has_prefix(file_name, ied_unit_prefix(scene_name)) do continue
 		base := file_name
 		if slash := strings.last_index(base, "/"); slash >= 0 {
 			base = base[slash + 1:]
@@ -678,13 +870,13 @@ ied_save_all :: proc(editor: ^ImGuiEditor) -> int {
 	}
 	// Reap the now-clean tabs that don't belong to the current scene:
 	// dirty tabs survived the switch so the user could save them; once
-	// saved, they go away (shared files outside scenes/ never close).
+	// saved, they go away (scene and shared files never close here).
 	if saved > 0 && editor.last_scene != "" {
-		current_prefix := fmt.tprintf("scenes/%s/", editor.last_scene)
+		current_prefix := ied_unit_prefix(editor.last_scene)
 		for i := len(editor.open_docs) - 1; i >= 0; i -= 1 {
 			tab_doc := &editor.open_docs[i]
 			doc_rel := editor.files[tab_doc.file]
-			if !strings.has_prefix(doc_rel, "scenes/") do continue
+			if !strings.has_prefix(doc_rel, "scenes/") && !strings.has_prefix(doc_rel, "gis_scenes/") do continue
 			if strings.has_prefix(doc_rel, current_prefix) do continue
 			if tab_doc.dirty do continue
 			ied_close(editor, i)
@@ -1631,10 +1823,10 @@ ied_panel :: proc(editor: ^ImGuiEditor) {
 		if abs(editor.scroll_vel) < 2 do editor.scroll_vel = 0
 	}
 
-	// No toolbar: saving lives in the title bar's floppy button (and
-	// Cmd+S), browsing in the FILES sidebar mode, and appearance knobs in
-	// the strip's gear menu (ui_activity_strip). No status row either:
-	// the tabs sit at the top.
+	// No toolbar: saving lives in the strip's save button (and Cmd+S),
+	// browsing in the FILES sidebar mode, and appearance knobs in the
+	// strip's gear menu (ui_activity_strip). No status row either: the
+	// tabs sit at the top.
 	if ied_has_current_build_error(editor) && editor.current_open >= 0 {
 		visible_doc := &editor.open_docs[editor.current_open]
 		if visible_doc.last_good != "" {
@@ -1742,7 +1934,7 @@ ied_panel :: proc(editor: ^ImGuiEditor) {
 	}
 	if im.BeginPopup(trc("Rename symbol"), {}) {
 		im.TextUnformatted(fmt.ctprintf(tr("rename '%s' to:"), editor.rename_word))
-		im.SetNextItemWidth(200)
+		im.SetNextItemWidth(-1)
 		apply := im.InputText(
 			"##new_name",
 			cstring(&editor.rename_buf[0]),
@@ -1914,7 +2106,7 @@ ied_panel :: proc(editor: ^ImGuiEditor) {
 				if pin_y + h_est > imgui_io.DisplaySize.y - 8 do pin_y = mouse.y - h_est - 10
 				editor.hover_pin = {
 					clamp(pin_x, 8, max(8, imgui_io.DisplaySize.x - w_est)),
-					clamp(pin_y, TITLEBAR_H + 4, max(TITLEBAR_H + 4, imgui_io.DisplaySize.y - 120)),
+					clamp(pin_y, 4, max(4, imgui_io.DisplaySize.y - 120)),
 				}
 			}
 			im.SetNextWindowPos(editor.hover_pin, .Always)
@@ -2000,8 +2192,8 @@ ied_frame :: proc(editor: ^ImGuiEditor, fx_state: ^Fx) {
 	// Wide enough for the toolbar row (save all … theme) on small windows.
 	win_w := max(imgui_io.DisplaySize.x * 0.45, 430)
 	xoff := (1 - editor.open_anim.value) * 60
-	dock_pos := im.Vec2{imgui_io.DisplaySize.x - win_w - 8 + xoff, TITLEBAR_H + 8}
-	dock_size := im.Vec2{win_w, imgui_io.DisplaySize.y - TITLEBAR_H - 16}
+	dock_pos := im.Vec2{imgui_io.DisplaySize.x - win_w - 8 + xoff, 8}
+	dock_size := im.Vec2{win_w, imgui_io.DisplaySize.y - 16}
 	if mobile_theater {
 		// Mobile theater (F5): editor docked to the bottom half of the
 		// portrait window; the scene plays in the top half.

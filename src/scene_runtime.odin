@@ -170,6 +170,9 @@ UiWidget :: struct {
 	step:     f32,
 	value:    [3]f32, // SLIDER uses [0], COLOR uses all three
 	on:       bool,   // TOGGLE
+	// True for [NodeUICheck]/[NodeUISlider]: rendered as its own graph
+	// node, never in the sidebar settings.
+	node:     bool,
 }
 
 UniformField :: struct {
@@ -200,16 +203,19 @@ ScenePass :: struct {
 	compute:  ^sdl.GPUComputePipeline,
 	graphics: ^sdl.GPUGraphicsPipeline,
 	thread:   [3]u32,
-	entry:    string, // compute entry; graphics entries below
-	entry_vert, entry_frag: string,
-	cbuffers: [dynamic]CBuffer,
 	// Sampled texture names in sampler-slot order. Bound by name:
 	// "input_tex" gets the previous pass's frame, "skybox_tex" the
-	// selected skybox; anything else falls back to paper.
+	// selected skybox; anything else falls back to paper. sampler_names
+	// holds the SamplerState name bound to each slot (paired by binding
+	// index); a graph sampler route can override it at bind time.
 	sampler_textures: [dynamic]string,
+	sampler_names:    [dynamic]string,
+	cbuffers: [dynamic]CBuffer,
+	entry:    string, // compute entry; graphics entries below
+	entry_vert, entry_frag: string,
 	debug_compute_buffer: bool,
-	debug_fragment_buffer: bool,
 	debug_compute_slot: u32,
+	debug_fragment_buffer: bool,
 	debug_fragment_slot: u32,
 	debug_watch_labels: [DEBUG_WATCH_COUNT]string,
 	// Model-viewer passes: the vertex entry takes a [[stage_in]] struct,
@@ -431,16 +437,18 @@ parse_cbuffers :: proc(
 						label = field.name,
 					}
 					switch jstr(jget(attr, "name")) {
-					case "UiSlider":
+					case "UiSlider", "NodeUISlider":
 						widget.kind = .SLIDER
+						widget.node = jstr(jget(attr, "name")) == "NodeUISlider"
 						if len(args) >= 4 {
 							widget.min = jfloat(args[0])
 							widget.max = jfloat(args[1])
 							widget.step = jfloat(args[2])
 							widget.value[0] = jfloat(args[3])
 						}
-					case "UiToggle":
+					case "UiToggle", "NodeUICheck":
 						widget.kind = .TOGGLE
+						widget.node = jstr(jget(attr, "name")) == "NodeUICheck"
 						if len(args) >= 1 do widget.on = jfloat(args[0]) != 0
 					case "UiColor":
 						widget.kind = .COLOR
@@ -584,7 +592,11 @@ scene_parse_stage_refl :: proc(
 				for len(pass.sampler_textures) <= slot {
 					append(&pass.sampler_textures, "")
 				}
+				for len(pass.sampler_names) <= slot {
+					append(&pass.sampler_names, "")
+				}
 				pass.sampler_textures[slot] = strings.clone(jstr(jget(texture_entry, "name")))
+				pass.sampler_names[slot] = strings.clone(jstr(jget(binding_entry, "name")))
 			}
 		}
 	}
@@ -701,7 +713,7 @@ scene_parse_reflection :: proc(gpu: ^sdl.GPUDevice, scene: ^RuntimeScene) -> boo
 	append(&sources, scene.source)
 	for module_name in scene_module_names(scene.title) {
 		append(&names, fmt.tprintf("%s__%s", scene.title, module_name))
-		append(&sources, fmt.tprintf("%s/%s/%s.slang", SCENES_DIR, scene.title, module_name))
+		append(&sources, fmt.tprintf("%s/%s/%s.slang", scene_root_dir(scene.title), scene.title, module_name))
 	}
 	for name, i in names {
 		pass, succeeded := scene_parse_pass(gpu, scene, name)
@@ -865,6 +877,192 @@ scene_root_dir :: proc(name: string) -> string {
 // files are scene-owned modules. This is the entry path for a scene name.
 scene_entry_path :: proc(name: string) -> string {
 	return fmt.tprintf("%s/%s/%s.slang", scene_root_dir(name), name, name)
+}
+// Disk and catalog half of a user-scene rename: directory move, entry
+// move, graph.json key rewrite, scene_roots re-registration. No editor
+// access, so it is testable headlessly (funnel L1). Caller owns the
+// guards and the editor side; see scene_rename.
+scene_rename_disk :: proc(old, new: string) -> bool {
+	// Disk: directory first, then entry file; reverse the dir move when
+	// the entry move fails so a half-renamed pair never survives.
+	scene_dir := fmt.tprintf("%s/%s", USER_SCENES_DIR, old)
+	new_dir := fmt.tprintf("%s/%s", USER_SCENES_DIR, new)
+	if os.rename(scene_dir, new_dir) != nil {
+		log.errorf("rename: failed to move %s -> %s", scene_dir, new_dir)
+		return false
+	}
+	old_entry := fmt.tprintf("%s/%s.slang", new_dir, old)
+	new_entry := fmt.tprintf("%s/%s.slang", new_dir, new)
+	if os.rename(old_entry, new_entry) != nil {
+		log.errorf("rename: failed to move %s -> %s", old_entry, new_entry)
+		if os.rename(new_dir, scene_dir) != nil {
+			notify(.ERROR, "rename failed: fix manually: %s, %s", old_entry, new_dir)
+		}
+		return false
+	}
+	// graph.json: pass keys embed file paths (comp:<path>:<entry> /
+	// gfx:<path>), entry AND modules. Rewrite the directory prefix
+	// (covers module keys; slash-delimited so no cross-scene collision),
+	// then the entry path proper - the entry file itself is renamed, so
+	// gis_scenes/<new>/<old> (delimiter-bounded) becomes <new>/<new>.
+	graph_path := fmt.tprintf("%s/graph.json", new_dir)
+	if data, read_err := os.read_entire_file(graph_path, context.temp_allocator); read_err == nil {
+		text := string(data)
+		old_dir_prefix := fmt.tprintf("%s/%s/", USER_SCENES_DIR, old)
+		new_dir_prefix := fmt.tprintf("%s/%s/", USER_SCENES_DIR, new)
+		text, _ = strings.replace(text, old_dir_prefix, new_dir_prefix, -1)
+		tails := [2]string{":", "\""}
+		for tail in tails {
+			old_entry_key := fmt.tprintf("%s%s%s", new_dir_prefix, old, tail)
+			new_entry_key := fmt.tprintf("%s%s%s", new_dir_prefix, new, tail)
+			text, _ = strings.replace(text, old_entry_key, new_entry_key, -1)
+		}
+		if os.write_entire_file(graph_path, transmute([]u8)text) != nil {
+			log.errorf("rename: failed to rewrite %s", graph_path)
+		}
+	}
+	// Catalog: scene_roots is the title -> root registry the poll reads;
+	// scene_poll itself owns manager.scenes (drop/add by title). Keys
+	// are owned clones, values are static roots: free the key only
+	// (delete_key BEFORE delete, like scene_drop_removed).
+	for key_name in scene_roots {
+		if key_name == old {
+			delete_key(&scene_roots, key_name)
+			delete(key_name)
+			break
+		}
+	}
+	scene_roots[strings.clone(new)] = USER_SCENES_DIR
+	return true
+}
+
+
+// Renames a USER scene unit: saves every dirty tab (rename cancelled on
+// a write failure), closes and forgets the unit's editor entries, moves
+// the directory on disk, renames the entry shader, rewrites graph.json
+// pass keys, re-registers scene_roots and requests a rebuild. Built-in
+// scenes live in the repo and refuse (they are not app-owned).
+scene_rename :: proc(editor: ^ImGuiEditor, old, new: string) -> bool {
+	// Guard 1-3: user-owned only, valid and free new name.
+	if scene_root_dir(old) != USER_SCENES_DIR {
+		notify(.ERROR, "rename refused: %s", old)
+		return false
+	}
+	if !scene_name_valid(new) {
+		notify(.ERROR, "rename refused: %s", new)
+		return false
+	}
+	if scene_name_taken(new) {
+		notify(.ERROR, "rename refused: %s", new)
+		return false
+	}
+	// Guard 4: unsaved work must survive the move: save all tabs first
+	// and abort on any write failure (status carries "ERROR writing ...").
+	ied_save_all(editor)
+	if strings.contains(editor.status, "ERROR writing") {
+		notify(.ERROR, "%s", tr("save failed, rename cancelled"))
+		return false
+	}
+	// Close the old unit's (now clean) tabs and drop its files from the
+	// editor so nothing references the pre-rename paths.
+	old_prefix := ied_unit_prefix(old)
+	files_to_forget := make([dynamic]string, 0, 8, context.temp_allocator)
+	for file_name in editor.files {
+		if strings.has_prefix(file_name, old_prefix) {
+			append(&files_to_forget, file_name)
+		}
+	}
+	for file_name in files_to_forget {
+		ied_forget_file(editor, file_name)
+	}
+	// Disk and catalog: the pure part of the rename (see scene_rename_disk).
+	if !scene_rename_disk(old, new) do return false
+	// Editor: rescan registers the new unit's files; select the renamed
+	// scene and rebuild it. The old title leaves the catalog on the next
+	// scene_poll (scene_drop_removed).
+	ied_rescan(editor)
+	ied_open_scene(editor, new)
+	scene_request_build([]string{new})
+	log.infof("[scenes] rename %s -> %s", old, new)
+	notify(.INFO, "renamed %s → %s", old, new)
+	return true
+}
+
+// Renames a scene-owned module file (a pass). Same save-first contract
+// as scene_rename; renaming the entry shader IS scene_rename (the entry
+// defines the scene name).
+scene_file_rename :: proc(editor: ^ImGuiEditor, scene, old_name, new_name: string) -> bool {
+	if old_name == scene {
+		return scene_rename(editor, scene, new_name)
+	}
+	if !scene_name_valid(new_name) {
+		notify(.ERROR, "rename refused: %s", new_name)
+		return false
+	}
+	scene_dir := fmt.tprintf("%s/%s", scene_root_dir(scene), scene)
+	new_path := fmt.tprintf("%s/%s.slang", scene_dir, new_name)
+	if os.exists(new_path) {
+		notify(.ERROR, "rename refused: %s", new_name)
+		return false
+	}
+	// Save all tabs first (dirty work must survive), abort on failure.
+	ied_save_all(editor)
+	if strings.contains(editor.status, "ERROR writing") {
+		notify(.ERROR, "%s", tr("save failed, rename cancelled"))
+		return false
+	}
+	// The editor/files-list name of the module (its key everywhere in
+	// the editor and the graph): scenes/<scene>/<mod> for built-ins,
+	// gis_scenes/<scene>/<mod> for user scenes.
+	rel_old := fmt.tprintf("%s%s", ied_unit_prefix(scene), old_name)
+	rel_new := fmt.tprintf("%s%s", ied_unit_prefix(scene), new_name)
+	old_path := fmt.tprintf("%s/%s.slang", scene_dir, old_name)
+	// D5: module order is lexical (pass chain); a rename that crosses
+	// the chain order changes the pass sequence - warn, not block.
+	order_before := scene_module_names(scene)
+	// Close the module's tabs first (already saved), then rename on
+	// disk; only after a successful rename drop the old files-list
+	// entry (a failed rename must leave the file openable).
+	ied_close_file(editor, rel_old)
+	if os.rename(old_path, new_path) != nil {
+		log.errorf("rename: failed to move %s -> %s", old_path, new_path)
+		return false
+	}
+	// graph.json: module pass keys embed the module path; rewrite
+	// <old>.slang -> <new>.slang within this scene's directory prefix
+	// (delimiter-bounded, no cross-module collision).
+	graph_path := fmt.tprintf("%s/graph.json", scene_dir)
+	if data, read_err := os.read_entire_file(graph_path, context.temp_allocator); read_err == nil {
+		text := string(data)
+		unit_prefix := ied_unit_prefix(scene)
+		tails := [2]string{".slang", "/"}
+		for _, tail in tails {
+			old_mod := fmt.tprintf("%s%s%s", unit_prefix, old_name, tail)
+			new_mod := fmt.tprintf("%s%s%s", unit_prefix, new_name, tail)
+			text, _ = strings.replace(text, old_mod, new_mod, -1)
+		}
+		if os.write_entire_file(graph_path, transmute([]u8)text) != nil {
+			log.errorf("rename: failed to rewrite %s", graph_path)
+		}
+	}
+	ied_forget_file(editor, rel_old)
+	ied_rescan(editor)
+	ied_load_named(editor, rel_new)
+	scene_request_build([]string{scene})
+	order_after := scene_module_names(scene)
+	changed := len(order_after) != len(order_before)
+	if !changed {
+		for mod_name, i in order_before {
+			if order_after[i] != mod_name {
+				changed = true
+				break
+			}
+		}
+	}
+	delete(order_before)
+	delete(order_after)
+	if changed do notify(.WARN, "%s", tr("pass order changed"))
+	return true
 }
 
 // Scene-owned module files (every .slang in the scene dir except the
@@ -1038,6 +1236,7 @@ scene_release_pass :: proc(gpu: ^sdl.GPUDevice, pass: ^ScenePass) {
 	for cbuffer in pass.cbuffers do delete(cbuffer.block)
 	delete(pass.cbuffers)
 	delete(pass.sampler_textures)
+	delete(pass.sampler_names)
 	delete(pass.vertex_attrs)
 	for label in pass.debug_watch_labels do if label != "" do delete(label)
 }
@@ -1259,8 +1458,17 @@ scene_rescan :: proc(manager: ^SceneManager, gpu: ^sdl.GPUDevice, start_scene: i
 	selected := start_scene
 	if selected < 0 || selected >= len(manager.scenes) do selected = 0
 	manager.current = selected
-	if info, stat_err := os.stat("src/shaders/common.slang", context.temp_allocator); stat_err == nil {
-		common_mtime = info.modification_time
+	// Seed with the on-disk mtimes so the poll only rebuilds on later
+	// edits. The map must outlive the frame's temp arena, so allocate
+	// from the context allocator (same lifetime as scene_failed).
+	if shared_mtimes == nil {
+		shared_mtimes = make(map[string]time.Time)
+	}
+	for module_name in SHARED_SHADER_MODULES {
+		path := fmt.tprintf("src/shaders/%s.slang", module_name)
+		if info, stat_err := os.stat(path, context.temp_allocator); stat_err == nil {
+			shared_mtimes[module_name] = info.modification_time
+		}
 	}
 	return scene_ensure_loaded(manager, gpu, selected)
 }
@@ -1431,11 +1639,16 @@ scene_poll :: proc(manager: ^SceneManager, gpu: ^sdl.GPUDevice) {
 			append(&changed_names, active_name)
 		}
 	}
-	// common.slang is imported by every scene. Rebuild only the active
-	// scene now; unloaded scenes consume the new common when selected.
-	info, stat_err := os.stat("src/shaders/common.slang", context.temp_allocator)
-	if stat_err == nil && info.modification_time != common_mtime {
-		common_mtime = info.modification_time
+	// Shared shader modules (common, space, camera, noise, sdf) are
+	// imported by scenes. Rebuild only the active scene now; unloaded
+	// scenes consume the new modules when selected.
+	for module_name in SHARED_SHADER_MODULES {
+		path := fmt.tprintf("src/shaders/%s.slang", module_name)
+		info, stat_err := os.stat(path, context.temp_allocator)
+		if stat_err != nil do continue
+		mtime := shared_mtimes[module_name]
+		if info.modification_time == mtime do continue
+		shared_mtimes[module_name] = info.modification_time
 		clear(&changed_names)
 		append(&changed_names, active_name)
 		failed_keys := make([dynamic]string, context.temp_allocator)
@@ -1445,10 +1658,11 @@ scene_poll :: proc(manager: ^SceneManager, gpu: ^sdl.GPUDevice) {
 			delete(failed_key)
 		}
 	}
-	if len(changed_names) > 0 do scene_request_build(changed_names[:])
 }
 
-common_mtime: time.Time
+SHARED_SHADER_MODULES :: []string{"common", "space", "camera", "noise", "sdf"}
+
+shared_mtimes: map[string]time.Time
 
 // --------------------------------------------------------------------
 // Per-frame uniform filling
@@ -1563,11 +1777,19 @@ submit_scene_frame :: proc(
 		bindings := make([]sdl.GPUTextureSamplerBinding, max(sampler_count, 1), context.temp_allocator)
 		for name, slot in pass.sampler_textures {
 			texture := gfx.gfx_texture_get(gfx_state, resources.paper_textures[resources.paper_index]).handle
+			route_sampler := resources.sampler
 			if producer := pipeline_plan_source(&scene.pipeline, pass_index, name); producer >= 0 {
 				texture = scene_pass_texture(scene, scene_tex, resources, producer)
 			} else if path, ok := pipeline_plan_resource(&scene.pipeline, pass_index, name, .TEXTURE); ok {
 				if user_tex, cached := user_assets_textures[path]; cached {
 					texture = gfx.gfx_texture_get(gfx_state, user_tex).handle
+				}
+				// The image node's sampler settings win when the node is
+				// on the canvas; otherwise the app default stays.
+				if settings, known := sg_user_samplers[path]; known {
+					if node_sampler := user_sampler_for(settings[0], settings[1]); node_sampler != nil {
+						route_sampler = node_sampler
+					}
 				}
 			} else {
 				switch name {
@@ -1579,7 +1801,19 @@ submit_scene_frame :: proc(
 					texture = gfx.gfx_texture_get(gfx_state, resources.black_texture).handle
 				}
 			}
-			bindings[slot] = {texture = texture, sampler = resources.sampler}
+			// Explicit sampler route: an image node's `sampler` output
+			// wired to this slot's SamplerState (matched by name) wins
+			// over both the app default and the node's own settings.
+			if slot < len(pass.sampler_names) {
+				if path, ok := pipeline_plan_resource(&scene.pipeline, pass_index, pass.sampler_names[slot], .SAMPLER); ok {
+					if settings, known := sg_user_samplers[path]; known {
+						if node_sampler := user_sampler_for(settings[0], settings[1]); node_sampler != nil {
+							route_sampler = node_sampler
+						}
+					}
+				}
+			}
+			bindings[slot] = {texture = texture, sampler = route_sampler}
 		}
 
 		switch pass.kind {
@@ -1739,17 +1973,26 @@ scene_write_uniforms :: proc(
 		}
 	}
 	for &widget in scene.widgets {
+		// Node widgets ([NodeUICheck]/[NodeUISlider]) take their value
+		// from the graph node snapshot (single source of truth), falling
+		// back to the reflection default when the node is not on canvas.
+		value := widget
+		if widget.node {
+			if graph_widget := sg_widget_by_label(widget.label); graph_widget != nil {
+				value = graph_widget^
+			}
+		}
 		for &pass in scene.passes {
 			for cbuffer in pass.cbuffers {
 				for field in cbuffer.fields {
 					if field.name != widget.label do continue
-					switch widget.kind {
-					case .SLIDER: poke_f32(cbuffer.block, field.offset, widget.value[0])
-					case .TOGGLE: poke_f32(cbuffer.block, field.offset, widget.on ? 1 : 0)
+					switch value.kind {
+					case .SLIDER: poke_f32(cbuffer.block, field.offset, value.value[0])
+					case .TOGGLE: poke_f32(cbuffer.block, field.offset, value.on ? 1 : 0)
 					case .COLOR:
-						poke_f32(cbuffer.block, field.offset, widget.value[0])
-						poke_f32(cbuffer.block, field.offset + 4, widget.value[1])
-						poke_f32(cbuffer.block, field.offset + 8, widget.value[2])
+						poke_f32(cbuffer.block, field.offset, value.value[0])
+						poke_f32(cbuffer.block, field.offset + 4, value.value[1])
+						poke_f32(cbuffer.block, field.offset + 8, value.value[2])
 					}
 				}
 			}

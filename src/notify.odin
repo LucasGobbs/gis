@@ -1,6 +1,6 @@
 package main
 
-// User-facing error/notice toasts, drawn top-right under the title bar.
+// User-facing error/notice toasts, drawn top-right of the window.
 // Replaces fatal error paths (SDL asserts, build failures) with visible
 // notifications: the app keeps running, the user sees what happened.
 // Duplicate messages within a short window refresh the existing toast
@@ -93,7 +93,7 @@ notify_draw :: proc(dt: f32) {
 	card_width := f32(340)
 	padding := f32(10)
 	left_x := imgui_io.DisplaySize.x - card_width - 12
-	top_y := f32(TITLEBAR_H + 10)
+	top_y := f32(10)
 	for i := len(notices) - 1; i >= 0; i -= 1 {
 		notice := &notices[i]
 		notice.age += dt
