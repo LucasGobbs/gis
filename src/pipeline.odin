@@ -8,17 +8,63 @@ import "core:strings"
 import "core:time"
 import gfx "./gfx"
 import render_graph "./render_graph"
+import sdl "vendor:sdl3"
 
 // User asset caches for graph resource routes: images and models loaded
-// on demand (pipeline_scene_reload), keyed by asset-relative path.
-// main sets the gfx state at startup (user_assets_set_gfx); small by
-// design (loaded assets are never freed on swap).
+// on demand (pipeline_scene_reload), keyed by asset-relative or absolute
+// path. Samplers are cached per (filter, address) pair from the image
+// node's settings. main sets the gfx state at startup
+// (user_assets_set_gfx); small by design (loaded assets are never freed
+// on swap).
 user_assets_textures: map[string]gfx.Texture_Handle
 user_assets_models:   map[string]^Model
 user_assets_gfx:      ^gfx.Gfx
 
+// Sampler cache keyed "filter:address" (e.g. "0:0", "1:2"). Created
+// lazily on first bind; never freed (bounded: 2 filters x 3 modes).
+user_sampler_cache: map[string]^sdl.GPUSampler
+
 user_assets_set_gfx :: proc(gfx_state: ^gfx.Gfx) {
 	user_assets_gfx = gfx_state
+}
+
+// Maps the image node's sampler settings to GPUSamplerCreateInfo and
+// returns the cached handle (creating it on first use; nil on failure —
+// callers fall back to the scene's default sampler).
+user_sampler_for :: proc(filter: int, address: int) -> ^sdl.GPUSampler {
+	if user_assets_gfx == nil do return nil
+	key := fmt.tprintf("%d:%d", filter, address)
+	if cached, ok := user_sampler_cache[key]; ok do return cached
+	min_filter := sdl.GPUFilter.LINEAR
+	mipmap_mode := sdl.GPUSamplerMipmapMode.LINEAR
+	if filter == 0 { // point
+		min_filter = .NEAREST
+		mipmap_mode = .NEAREST
+	}
+	mag_filter := min_filter
+	address_mode := sdl.GPUSamplerAddressMode.CLAMP_TO_EDGE
+	switch address {
+	case 1: address_mode = .REPEAT
+	case 2: address_mode = .MIRRORED_REPEAT
+	}
+	sampler := sdl.CreateGPUSampler(
+		user_assets_gfx.gpu,
+		{
+			min_filter     = min_filter,
+			mag_filter     = mag_filter,
+			mipmap_mode    = mipmap_mode,
+			address_mode_u = address_mode,
+			address_mode_v = address_mode,
+			address_mode_w = address_mode,
+		},
+	)
+	if sampler == nil {
+		log.errorf("pipeline: failed to create sampler %s: %s", key, sdl.GetError())
+		return nil
+	}
+	user_sampler_cache[key] = sampler
+	log.infof("pipeline: created sampler %s", key)
+	return sampler
 }
 
 PIPELINE_SCHEMA_VERSION :: render_graph.GRAPH_SCHEMA_VERSION
@@ -170,6 +216,11 @@ pipeline_scene_reload :: proc(scene: ^RuntimeScene, gfx_state: ^gfx.Gfx) {
 	for &resource in scene.pipeline.resources {
 		if _, ok := user_assets_textures[resource.path]; ok do continue
 		if _, ok := user_assets_models[resource.path]; ok do continue
+		if resource.kind == .SAMPLER {
+			// The sampler comes from the node's settings
+			// (user_sampler_for at bind time), not an asset file.
+			continue
+		}
 		if resource.kind == .TEXTURE {
 			texture, loaded := load_texture(gfx_state, resource.path)
 			if !loaded {

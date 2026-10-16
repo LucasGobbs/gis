@@ -20,6 +20,18 @@ Node_Json :: struct {
 	y:    f32,
 	// Set only on user-authored resource nodes ("uimg:"/"uobj:" keys).
 	file: string,
+	// Optional resource-node fields (absent in JSON = zero value; the
+	// loaders apply the defaults). source: "file" (default) | "target";
+	// title overrides the derived title; filter "point"|"linear";
+	// address "clamp"|"repeat"|"mirror"; width/height only for targets;
+	// value holds the persisted widget value for "ui:" nodes.
+	source:  string,
+	title:   string,
+	filter:  string,
+	address: string,
+	width:   int,
+	height:  int,
+	value:   f32,
 }
 
 Link_Json :: struct {
@@ -51,17 +63,25 @@ Route :: struct {
 	consumer:   int,
 	input_name: string, // owned
 }
+Resource_Kind :: enum { TEXTURE, MODEL, SAMPLER }
 
-Resource_Kind :: enum { TEXTURE, MODEL }
+Resource_Source :: enum {
+	FILE,
+	TARGET_WRITE,
+	TARGET_READ,
+}
 
 // One app-fed asset routed into a pass input (from a user resource node
 // link, "uimg:assets/x.jpg:texture" -> "pass:b_tex"). input_name is the
 // texture binding name, or "ModelVertex" for a model route. path is
-// owned.
+// owned. source marks a ping-pong render-target route: TARGET_READ is
+// the delayed edge (reads last frame's result), TARGET_WRITE the write
+// side (pass -> image node's `write` pin).
 Resource_Route :: struct {
 	consumer:   int,
 	input_name: string, // owned
 	kind:       Resource_Kind,
+	source:     Resource_Source,
 	path:       string, // owned
 }
 
@@ -169,21 +189,38 @@ plan_build :: proc(
 			// runtime falls back to defaults), or a params endpoint.
 			// Only user resources route into the plan.
 			kind := Resource_Kind.TEXTURE
+			source := Resource_Source.FILE
 			prefix_len := 0
-			if strings.has_prefix(link.from, "uimg:") && strings.has_suffix(link.from, ":texture") {
+			suffix := ":texture"
+			if strings.has_prefix(link.from, "uimg:target:") && strings.has_suffix(link.from, ":texture") {
+				// Ping-pong read side: the reader consumes the texture
+				// completed in the PREVIOUS frame, so this edge is
+				// delayed (excluded from cycle/ordering constraints).
+				kind = .TEXTURE
+				source = .TARGET_READ
+				prefix_len = len("uimg:")
+			} else if strings.has_prefix(link.from, "uimg:") && strings.has_suffix(link.from, ":sampler") {
+				// The image node's explicit sampler routed into a pass's
+				// SamplerState binding by name.
+				kind = .SAMPLER
+				suffix = ":sampler"
+				prefix_len = len("uimg:")
+			} else if strings.has_prefix(link.from, "uimg:") && strings.has_suffix(link.from, ":texture") {
 				kind = .TEXTURE
 				prefix_len = len("uimg:")
 			} else if strings.has_prefix(link.from, "uobj:") && strings.has_suffix(link.from, ":ModelVertex") {
 				kind = .MODEL
+				suffix = ":ModelVertex"
 				prefix_len = len("uobj:")
 			} else {
 				continue
 			}
 			// The path is everything between the prefix and the LAST
 			// colon (paths never contain ':', but the pin name does).
-			body := link.from[prefix_len:len(link.from) - (len(":texture") if kind == .TEXTURE else len(":ModelVertex"))]
+			// Target nodes keep their identity in the key ("target:<id>").
+			body := link.from[prefix_len:len(link.from) - len(suffix)]
 			path := body
-			if colon := strings.last_index(body, ":"); colon >= 0 do path = body[:colon]
+			if colon := strings.last_index(body, ":"); colon >= 0 && source != .TARGET_READ do path = body[:colon]
 			if path == "" do continue
 
 			if link.to == "show2d:frame" {
@@ -192,7 +229,11 @@ plan_build :: proc(
 			}
 			consumer, input_name, consumer_ok := find_pass_endpoint(passes, link.to)
 			if !consumer_ok do continue
-			if kind == .TEXTURE {
+			if kind == .SAMPLER {
+				// The route targets a named SamplerState binding; the
+				// reflection only records sampled textures, so existence
+				// can't be checked here — the bind site matches by name.
+			} else if kind == .TEXTURE {
 				if !pass_has_input(&passes[consumer], input_name) {
 					plan_destroy(&plan)
 					return {},
@@ -231,9 +272,22 @@ plan_build :: proc(
 					consumer   = consumer,
 					input_name = strings.clone(input_name),
 					kind       = kind,
+					source     = source,
 					path       = strings.clone(path),
 				},
 			)
+			continue
+		}
+
+		// Pass output feeding a target-mode image node's `write` pin
+		// ("uimg:target:<id>:write"): the write side of the ping-pong.
+		// It participates in ordering (the pass must run) but binds no
+		// sampled input, so it contributes no route edge.
+		if strings.has_prefix(link.to, "uimg:target:") && strings.has_suffix(link.to, ":write") {
+			if link.from == "show2d:frame" {
+				plan_destroy(&plan)
+				return {}, "viewport frame cannot feed a target write", false
+			}
 			continue
 		}
 
