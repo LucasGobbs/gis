@@ -53,6 +53,10 @@ selftest_after_ui_init :: proc(st: ^Selftest, o: Options, ui: ^Ui, editor: ^ImGu
 		editor.open = false
 		ui.graph_max = true
 	}
+	if o.start_learn {
+		ui.mode = .LEARN
+		editor.open = false
+	}
 	if o.ied_test do editor.open = true
 	if o.start_mobile do emit(ToggleMobile{})
 	if ing_selftest {
@@ -79,7 +83,7 @@ selftest_pan_inject :: proc(st: ^Selftest, inputs: ^glove.System) {
 	if !st.pan {
 		return
 	}
-	// Panel spans x 46..46+52% of the window, below the 38px title bar.
+	// Panel spans x 46..46+52% of the window.
 	pan_size := glove.window_size(inputs)
 	pan_io := im.GetIO()
 	im.IO_AddMousePosEvent(pan_io, f32(46) + f32(pan_size.x) * 0.26, f32(pan_size.y) * 0.55)

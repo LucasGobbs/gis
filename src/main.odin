@@ -60,4 +60,7 @@ main :: proc() {
 	for host_frame(&h) {}
 
 	log.info("Exiting")
+	if h.ui_test.enabled {
+		os.exit(ui_test_exit_code(&h.ui_test))
+	}
 }

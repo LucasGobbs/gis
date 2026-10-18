@@ -16,6 +16,7 @@ Options :: struct {
 	force_color:      bool,
 	start_mobile:     bool,
 	start_graph:      bool,
+	start_learn:      bool,
 	metrics:          bool,
 	notify_test:      bool,
 	pixel_test:       bool,
@@ -25,6 +26,7 @@ Options :: struct {
 	input_log:        bool,
 	pan_test:         bool,
 	ied_test:         bool,
+	ui_test:          bool,
 	benchmark_frames: int, // 0 = off
 	benchmark_warmup: int,
 	benchmark_debug:  bool,
@@ -49,6 +51,11 @@ options_parse :: proc(args: []string) -> Options {
 			o.ied_debug_clicks = true
 		case "--ied-test":
 			o.ied_test = true
+		case "--ui-test":
+			// Drives the toolbar by synthetic mouse events inside the real
+			// loop (no backend in a unit test: NewFrame asserts without one).
+			// Logs [ui-test] PASS|FAIL per case; exits 0 only if all pass.
+			o.ui_test = true
 		case "--hover-debug":
 			// Logs the live hover pipeline (capture, dwell, lookup).
 			o.hover_debug = true
@@ -123,6 +130,9 @@ options_parse :: proc(args: []string) -> Options {
 			// Start with the sidebar on the node graph panel (CLI parity
 			// with F2).
 			o.start_graph = true
+		case "--learn":
+			// Start with the sidebar on the LEARN panel.
+			o.start_learn = true
 		case "--graph-test":
 			// --graph plus two created passes on the starting scene.
 			o.start_graph = true
