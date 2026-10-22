@@ -1,0 +1,7 @@
+# Qlementine 1.5.2 (FetchContent dep) has a use-after-free inside
+# PolishedWidgetRegistry when a QMenu is polished during shell.show()
+# (polishMenu -> setWindowFlags -> unpolish erases the registry Entry
+# while polishMenu still holds a reference). Upstream bug, not ours;
+# suppressed so OUR memory bugs surface in `make run-cpp-asan`.
+interceptor_via_fun:oclero::qlementine::PolishedWidgetRegistry::rememberEventFilter
+interceptor_via_fun:oclero::qlementine::PolishedWidgetRegistry::removeAndDeleteEventFilters

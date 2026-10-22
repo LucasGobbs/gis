@@ -25,6 +25,24 @@
       "problemMatcher": []
     },
     {
+      "label": "make: run-cpp (Qt port)",
+      "type": "shell",
+      "command": "make run-cpp",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: test-cpp",
+      "type": "shell",
+      "command": "make test-cpp",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "make: debug",
       "type": "shell",
       "command": "make debug",

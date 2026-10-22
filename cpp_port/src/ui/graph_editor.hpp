@@ -1,0 +1,154 @@
+// Stage 7: node graph editor over the render_graph model. QtNodes
+// (paceholder/nodeeditor 3.0.9) canvas: nodes with reflection-derived pins,
+// links validated by plan_build before accept (invalid keeps the last valid
+// pipeline, the Odin contract), layout persisted to graph.json (atomic
+// write), autosave on scene switch + a 600-frame tick, confirmation modal on
+// producer-replacing edges.
+#pragma once
+
+#include <QDialog>
+#include <QElapsedTimer>
+#include <QGraphicsEllipseItem>
+#include <QMap>
+#include <QString>
+#include <QTimer>
+#include <QWidget>
+#include "QtNodes/internal/DataFlowGraphModel.hpp"
+#include "QtNodes/internal/DataFlowGraphicsScene.hpp"
+#include "QtNodes/internal/GraphicsView.hpp"
+#include "QtNodes/internal/NodeDelegateModel.hpp"
+
+#include <QGraphicsObject>
+
+#include "gfx/scene_runtime.hpp"
+
+class QMenu;
+
+namespace graph_editor {
+
+// One node on the canvas: a pass (from reflection), params, output (show2d),
+// or a user resource. key matches graph.json semantics.
+struct Graph_Node {
+    QString key;
+    QString kind;      // params|graphics|compute|output|texture|mesh|widget
+    float x = 0, y = 0;
+    // User-resource extras.
+    QString file;
+    QString filter;    // point|linear
+    QString address;   // clamp|repeat|mirror
+    int width = 0, height = 0;
+    float value = 0;
+};
+
+struct Graph_Link {
+    QString from; // "<key>:<pin>"
+    QString to;
+};
+
+// Delegate node: kind-tagged node. Ports: one frame output for producers,
+// one input per texture binding, one input per uniform block (wireless:
+// never linked, marked by the animated broadcast/receive rings). Validation
+// happens in plan_build, not the type system (Odin parity).
+class Scene_Delegate : public QtNodes::NodeDelegateModel {
+public:
+    explicit Scene_Delegate(QString kind, QString key);
+    // Caption = FILE NAME only: the comp:/gfx:<path> key stays as the
+    // identity, the title shows just <file>.slang (the trailing part).
+    QString caption() const override {
+        QString file = key_;
+        file.remove("comp:");
+        file.remove("gfx:");
+        return file.section('/', -1);
+    }
+    QString name() const override { return kind_; }
+    unsigned int nPorts(QtNodes::PortType type) const override;
+    QtNodes::NodeDataType dataType(QtNodes::PortType type,
+                                   QtNodes::PortIndex index) const override;
+    void setInData(std::shared_ptr<QtNodes::NodeData>, QtNodes::PortIndex const) override {}
+    std::shared_ptr<QtNodes::NodeData> outData(QtNodes::PortIndex) override { return nullptr; }
+    QWidget* embeddedWidget() override { return nullptr; }
+    void set_key(const QString& key) { key_ = key; }
+    // Port captions: binding names (texture) and "<block> (uniform)";
+    // they drive the node width so titles AND pins always fit.
+    bool portCaptionVisible(QtNodes::PortType, QtNodes::PortIndex) const override;
+    QString portCaption(QtNodes::PortType, QtNodes::PortIndex) const override;
+    // Per-node interface snapshot: texture inputs then uniform blocks, so
+    // the port index -> name mapping matches the descriptor. Set before the
+    // model's port counts are applied.
+    QStringList tex_inputs;
+    QStringList uniform_inputs;
+
+private:
+    QString kind_;
+    QString key_;
+};
+
+class Node_View : public QWidget {
+    Q_OBJECT
+public:
+    Node_View(QWidget* parent = nullptr);
+
+    // Loads layout from the scene's graph.json (missing file = default
+    // plan layout: left-to-right chain). Returns false on invalid JSON.
+    bool load_layout(const QString& scene_title, const QString& scene_root,
+                     const scene::Runtime_Scene& scene);
+    // Serializes nodes + links and writes graph.json atomically (tmp+rename).
+    bool save_layout(const QString& scene_title, const QString& scene_root);
+    void set_scene(const scene::Runtime_Scene& scene);
+
+    bool dirty_layout() const { return dirty_; }
+    void clear_dirty() { dirty_ = false; }
+
+    QString pipeline_error() const { return pipeline_error_; }
+
+private:
+    const scene::Runtime_Scene* current_scene_ = nullptr;
+    // Wireless uniform feed: every uniform input port gets a converging
+    // ring mark (the signal arriving); the params node's uniform outputs
+    // get a ball + expanding rings (broadcast). QGraphicsEllipseItems over
+    // the scene, parked per tick on a ~1.6 s loop (Odin sg_draw_wireless_rings).
+    struct Wireless_Mark {
+        QGraphicsEllipseItem* ring1 = nullptr;
+        QGraphicsEllipseItem* ring2 = nullptr;
+        bool grow = false; // emit expands, receive converges
+    };
+    void refresh_wireless_marks();
+    std::vector<Wireless_Mark> wireless_marks_;
+    QTimer* marks_timer_ = nullptr;
+    bool loading_ = false; // rebuild_scene is repopulating links; mute handlers
+    QElapsedTimer marks_clock_;
+
+signals:
+    void pipeline_changed();
+
+private:
+    void rebuild_scene();
+    std::vector<render_graph::Pass_Descriptor> descriptors() const;
+    QString node_key(QtNodes::NodeId id) const;
+    QtNodes::NodeId node_id(const QString& key) const;
+
+    QtNodes::DataFlowGraphModel* model_ = nullptr;
+    QtNodes::DataFlowGraphicsScene* scene_ = nullptr;
+    QtNodes::GraphicsView* view_ = nullptr;
+    QMap<QtNodes::NodeId, QString> id_to_key_;
+    QList<Graph_Node> nodes_;
+    QList<Graph_Link> links_;
+    QString scene_title_;
+    QString last_scene_;
+    QString scene_root_;
+    bool dirty_ = false;
+    QString pipeline_error_;
+};
+
+// Confirmation modal ("replaces %s", apply/cancel) mirroring the Odin flow.
+class Confirm_Dialog : public QDialog {
+    Q_OBJECT
+public:
+    Confirm_Dialog(const QString& message, QWidget* parent = nullptr);
+    bool apply() const { return apply_; }
+
+private:
+    bool apply_ = false;
+};
+
+} // namespace graph_editor

@@ -1,0 +1,6 @@
+# Qlementine 1.5.2 (FetchContent dep) casts a QHoverEvent to QMouseEvent
+# inside TabBarEventFilter (one eventFilter branch handles Press/Release
+# AND Hover with the same static_cast). Upstream undefined behavior;
+# harmless in practice but UBSan flags it on every tab hover. Suppressed
+# so OUR undefined-behavior reports surface in `make run-cpp-asan`.
+vptr:TabBarEventFilter.hpp

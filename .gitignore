@@ -17,3 +17,10 @@ builds/
 imgui.ini*
 /main_checklist
 assets/ui.prefs
+AGENTS.md
+cpp_port/build/
+cpp_port/build-asan/
+cpp_port/cmake-build-debug/
+cpp_port/.idea/
+cpp_port/compile_commands.json
+cpp_port/.cache/
