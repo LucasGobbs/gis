@@ -23,6 +23,5 @@ legacy/main*
 legacy/*.dSYM/
 legacy/vendor
 legacy/src/generated
-# article (paper corpus) + .impeccable: ficam locais, fora do repo
-artefacts/article/
-artefacts/.impeccable/
+# Local author docs (design system, product notes, paper corpus)
+artefacts/
