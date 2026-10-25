@@ -1141,7 +1141,7 @@ scenes_build :: proc(names: []string) -> bool {
 	strings.write_string(&manifest, `","parameterOutputDir":"`)
 	strings.write_string(&manifest, GENERATED_DIR)
 	strings.write_string(&manifest, `",`)
-	strings.write_string(&manifest, `"package":"generated","gooseImport":"../../../goose/src",`)
+	strings.write_string(&manifest, `"package":"generated","gooseImport":"../../../../vendor/goose/src",`)
 	// Hot-reload emits only the host's shader format (SCENE_TARGET);
 	// the baked goose.json build still emits both msl and spv.
 	strings.write_string(&manifest, `"commonUniforms":true,"targets":["`)

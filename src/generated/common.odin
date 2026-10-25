@@ -4,5 +4,4 @@
 package generated
 
 when ODIN_OS == .Darwin {
-} else {
 }

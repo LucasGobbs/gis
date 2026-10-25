@@ -6,7 +6,7 @@ package main
 // with depth testing. Preview blit downsamples pass outputs for the node
 // graph's thumbnails.
 
-import goose "../../goose/src"
+import goose "../../vendor/goose/src"
 import shader_glue "./generated"
 import "core:log"
 import "core:math/linalg"

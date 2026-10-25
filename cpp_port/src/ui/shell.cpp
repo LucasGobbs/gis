@@ -27,6 +27,7 @@
 #include <QScrollArea>
 #include <QSpinBox>
 #include <QTimer>
+#include "input_map.hpp"
 #include <QShortcut>
 #include <QVBoxLayout>
 #include <Qsci/qsciscintilla.h>
@@ -269,6 +270,23 @@ Shell::Shell(QWidget* parent, scene::Scene_Manager& mgr,
         ui.panel_open = false;
         animate_panel_to(0);
     });
+    // input.ini as the single key source (BUG-10). Window-mode actions bind
+    // here; editor chords stay Qt-native (Find/Ctrl+G/Escape).
+    auto bind_action = [this](const char* action, const char* fallback,
+                              void (Shell::*slot)()) {
+        QVector<QKeySequence> seqs = input_map::load("assets/input.ini", action);
+        if (seqs.isEmpty()) seqs.push_back(QKeySequence(fallback)); // ini fallback
+        for (const QKeySequence& seq : seqs)
+            connect(new QShortcut(seq, this), &QShortcut::activated, this, slot);
+    };
+    bind_action("toggle_zen", "F1", &Shell::toggle_zen);
+    bind_action("toggle_editor", "F2", &Shell::toggle_editor);
+    bind_action("toggle_theater", "F4", &Shell::toggle_theater);
+    bind_action("toggle_mobile", "F5", &Shell::toggle_mobile);
+    for (const QKeySequence& seq : input_map::load("assets/input.ini", "toggle_sidebar")) {
+        auto* sc = new QShortcut(seq, this);
+        connect(sc, &QShortcut::activated, this, [this] { toggle_zen(); });
+    }
     if (!qEnvironmentVariableIsSet("GIS_SKIP_REFRESH")) refresh_scenes();
 }
 
@@ -1050,6 +1068,74 @@ void Shell::show_editor(bool on) {
     if (!central_) return;
     central_->setCurrentIndex(on ? 1 : 0);
     if (on) editor_dock(); // lazy-create
+}
+
+void Shell::toggle_zen() {
+    // Odin F1: sidebar (strip + panel) AND the editor flip in step; the
+    // editor re-docks on reopen (the central page, not the PiP frame).
+    ui.sidebar_open = !ui.sidebar_open;
+    if (strip_) strip_->setVisible(ui.sidebar_open);
+    ui.panel_open = ui.sidebar_open;
+    show_editor(!ui.sidebar_open);
+    apply_mode(ui.mode);
+}
+
+void Shell::toggle_editor() {
+    // F2: flip the editor page; reopening re-docks it (Odin ied.moved=false).
+    bool editor_up = central_ && central_->currentIndex() == 1;
+    show_editor(!editor_up);
+    if (ui.mode == Sidebar_Mode::FILES) {
+        ui.mode = Sidebar_Mode::CONTROLS;
+        apply_mode(ui.mode);
+    }
+}
+
+void Shell::toggle_theater() {
+    // F4: bigger type + editor up + chrome hidden (Odin ToggleTheater).
+    ui.theater = !ui.theater;
+    if (ui.theater) {
+        ui.saved_ui_font = ui.font_size;
+        ui.saved_ed_font = ui.editor_font;
+        ui.saved_open = ui.panel_open;
+        ui.font_size = 18;
+        ui.editor_font = 21;
+        if (editor_) editor_->set_editor_font(21);
+        ui.panel_open = false;
+        show_editor(true);
+    } else {
+        ui.font_size = ui.saved_ui_font;
+        ui.editor_font = ui.saved_ed_font;
+        if (editor_) editor_->set_editor_font(int(ui.saved_ed_font));
+        ui.panel_open = ui.saved_open;
+    }
+    apply_mode(ui.mode);
+}
+
+void Shell::toggle_mobile() {
+    // F5: 9:16 portrait for vertical recordings — same chrome path as
+    // theater; the window resize itself is the host's MOBILE_ENTER.
+    ui.mobile = !ui.mobile;
+    if (ui.mobile) {
+        ui.mobile_saved_ui_font = ui.font_size;
+        ui.mobile_saved_ed_font = ui.editor_font;
+        ui.mobile_saved_open = ui.panel_open;
+        ui.font_size = 18;
+        ui.editor_font = 21;
+        if (editor_) editor_->set_editor_font(21);
+        ui.panel_open = false;
+        show_editor(true);
+    } else {
+        ui.font_size = ui.mobile_saved_ui_font;
+        ui.editor_font = ui.mobile_saved_ed_font;
+        if (editor_) editor_->set_editor_font(int(ui.mobile_saved_ed_font));
+        ui.panel_open = ui.mobile_saved_open;
+    }
+    apply_mode(ui.mode);
+}
+
+graph_editor::Node_View* Shell::graph_view_typed() {
+    if (!graph_view_) graph_view_ = new graph_editor::Node_View(this);
+    return graph_view_;
 }
 
 void Shell::animate_panel_to(int target_w) {

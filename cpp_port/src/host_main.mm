@@ -13,6 +13,7 @@
 // slang-generated symbol names.
 #include "gfx/gfx.hpp"
 #include "gfx/scene_runtime.hpp"
+#include "gfx/assets.hpp"
 #include "ui/notify.hpp"
 #include "ui/shell.hpp"
 #include "ui/menubar.hpp"
@@ -494,18 +495,21 @@ auto vph = [&] { return shell.viewport()->height(); };
         preview_sampler = SDL_CreateGPUSampler(gfx.gpu, &sci);
     }
     resources.sampler = preview_sampler;
-    {   // 1x1 black fallback for unmet sampler inputs (Odin black_texture).
-        SDL_GPUTextureCreateInfo btci{};
-        btci.type = SDL_GPU_TEXTURETYPE_2D;
-        btci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        btci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        btci.width = 1;
-        btci.height = 1;
-        btci.layer_count_or_depth = 1;
-        btci.num_levels = 1;
-        resources.black_texture = SDL_CreateGPUTexture(gfx.gpu, &btci);
-        resources.black_sampler = preview_sampler;
+    // Shared assets: paper/skybox textures, model library, black fallback
+    // (assets.{hpp,cpp}; Odin assets.odin + model.odin).
+    assets::Assets shared;
+    if (!assets::load(shared, gfx)) {
+        std::fprintf(stderr, "asset load failed (paper textures/models required)\n");
+        return 1;
     }
+    resources.paper_texture = gfx::gfx_texture_get(gfx, shared.paper_textures[0])->handle;
+    resources.black_texture = gfx::gfx_texture_get(gfx, shared.black_texture)->handle;
+    resources.black_sampler = preview_sampler;
+    // 3D feeds: selected model (first entry; picker lands with the UI pass)
+    // and no skybox until the sidebar exposes the slot (Odin skybox = -1).
+    resources.model_vb = shared.models[0].vb;
+    resources.model_ib = shared.models[0].ib;
+    resources.model_index_count = shared.models[0].index_count;
     // Hot reload: watch the active scene dir.
     scene::Build_State build;
     std::map<std::string, uint64_t> scene_failed;
@@ -536,6 +540,13 @@ auto vph = [&] { return shell.viewport()->height(); };
     float t = 0;
     int frames = 0;
     auto init = [&]() -> bool {
+        // Cold-start bake (Odin scene_ensure_loaded parity): scenes_build
+        // is idempotent (goose skips fresh artifacts), so this is free
+        // when the artifacts exist and compiles them when they don't —
+        // the watcher alone never fires on a fresh clone.
+        if (!scene::scenes_build({names[size_t(idx)]}, scene_roots)) {
+            std::fprintf(stderr, "scene %s failed to bake\n", names[size_t(idx)].c_str());
+        }
         // Initial scene load; frames are driven by frame_timer below.
         if (!scene::scene_load_into(gfx.gpu, manager.scenes[size_t(idx)],
                                     names[size_t(idx)], scene_roots)) {
@@ -673,6 +684,43 @@ auto vph = [&] { return shell.viewport()->height(); };
                                       pw, ph, preview_pipe, swap_pipe, preview_sampler,
                                       preview_sampler, targets.previews);
         if (fence) SDL_ReleaseGPUFence(gfx.gpu, fence);
+        // GIF capture: one PNG of the scene every 4th tick (~17 fps) while
+        // active; same blocking readback as PNG export. When the [start,end]
+        // window elapses, kick the ffmpeg assembly in the background.
+        // Node previews: 1x/second, read back every 128px target
+        // (pass outputs + final) into QImages for the graph canvas. The
+        // uploader fence from download_end resolves next tick (async).
+        static int preview_tick = 0;
+        static QVector<QImage> preview_images;
+        static std::vector<gfx::Staging> preview_readbacks;
+        if (++preview_tick >= 60) {
+            preview_tick = 0;
+            if (!preview_readbacks.empty()) { // poll last second's batch
+                bool all = true;
+                for (auto& st : preview_readbacks)
+                    if (!gfx::staging_ready(gfx.uploader, st)) { all = false; break; }
+                if (all) {
+                    preview_images.clear();
+                    for (auto& st : preview_readbacks) {
+                        QImage img(gfx::staging_read(st), scene::PREVIEW_SIZE,
+                                   scene::PREVIEW_SIZE, QImage::Format_RGBA8888);
+                        preview_images.push_back(img.copy());
+                        gfx::staging_release(gfx.uploader, st);
+                    }
+                    preview_readbacks.clear();
+                    if (shell.graph_panel_visible())
+                        shell.graph_view_typed()->set_previews(preview_images);
+                }
+            }
+            if (preview_readbacks.empty() && shell.graph_panel_visible()) {
+                for (SDL_GPUTexture* tex : targets.previews) {
+                    preview_readbacks.push_back(
+                        gfx::uploader_download_texture_region_begin(
+                            gfx.uploader, tex, 0, 0, scene::PREVIEW_SIZE,
+                            scene::PREVIEW_SIZE));
+                }
+            }
+        }
         // GIF capture: one PNG of the scene every 4th tick (~17 fps) while
         // active; same blocking readback as PNG export. When the [start,end]
         // window elapses, kick the ffmpeg assembly in the background.
@@ -820,6 +868,7 @@ auto vph = [&] { return shell.viewport()->height(); };
     QObject::connect(qApp, &QCoreApplication::aboutToQuit, [&] {
         frame_timer.stop();
         shell.flush_graph_layout();
+        assets::destroy(gfx, shared);
         ::remove("assets/gis.lock");
     });
     return app.exec();

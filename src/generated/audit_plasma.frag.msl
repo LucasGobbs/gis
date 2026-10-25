@@ -1,0 +1,91 @@
+#include <metal_stdlib>
+#include <metal_math>
+#include <metal_texture>
+using namespace metal;
+
+#line 5 "src/shaders/scenes/audit_plasma/../../common.slang"
+struct pixelOutput_0
+{
+    float4 output_0 [[color(0)]];
+};
+
+
+#line 5
+struct pixelInput_0
+{
+    float2 uv_0 [[user(TEXCOORD)]];
+    float2 gl_FragCoord_0 [[user(TEXCOORD_1)]];
+};
+
+
+#line 5
+struct _MatrixStorage_float4x4_ColMajornatural_0
+{
+    array<float4, int(4)> data_0;
+};
+
+
+#line 5
+struct SceneUniforms_natural_0
+{
+    float3 iResolution_0;
+    float iTime_0;
+    float4 iFbm_0;
+    float iColorMode_0;
+    float2 iMousePos_0;
+    float iMouseClick_0;
+    _MatrixStorage_float4x4_ColMajornatural_0 iViewProjection_0;
+    float3 iCameraPosition_0;
+    float3 iCameraRight_0;
+    float3 iCameraUp_0;
+    float3 iCameraForward_0;
+    float iManual_0;
+    uint2 iDebugPixel_0;
+    uint iDebugEnabled_0;
+    uint iDebugFrame_0;
+    uint iDebugPass_0;
+};
+
+
+#line 5 "src/shaders/scenes/audit_plasma/audit_plasma.slang"
+struct PlasmaParams_0
+{
+    float warp_0;
+};
+
+
+#line 14
+struct KernelContext_0
+{
+    SceneUniforms_natural_0 constant* Uniforms_0;
+    PlasmaParams_0 constant* Params_0;
+};
+
+
+
+[[fragment]] pixelOutput_0 pixelMain(pixelInput_0 _S1 [[stage_in]], float4 pos_0 [[position]], SceneUniforms_natural_0 constant* Uniforms_1 [[buffer(0)]], PlasmaParams_0 constant* Params_1 [[buffer(1)]])
+{
+
+#line 22
+    thread KernelContext_0 kernelContext_0;
+
+#line 22
+    (&kernelContext_0)->Uniforms_0 = Uniforms_1;
+
+#line 22
+    (&kernelContext_0)->Params_0 = Params_1;
+    float2 uv_1 = _S1.gl_FragCoord_0 / Uniforms_1->iResolution_0.xy;
+
+    float2 p_0 = uv_1 * float2(6.28318023681640625f)  * float2(Params_1->warp_0) ;
+    float _S2 = p_0.x;
+    float _S3 = p_0.y;
+
+    float _S4 = length(uv_1 - float2(0.5f) );
+
+#line 29
+    pixelOutput_0 _S5 = { float4(float3(0.94999998807907104f, 0.40000000596046448f, 0.10000000149011612f) * (float3(0.55000001192092896f)  + float3(0.44999998807907104f)  * cos(float3(((sin(_S2 + Uniforms_1->iTime_0) + sin(_S3 + Uniforms_1->iTime_0 * 1.29999995231628418f) + sin(_S2 + _S3 + Uniforms_1->iTime_0 * 0.69999998807907104f) + sin(_S4 * 12.0f - Uniforms_1->iTime_0 * 2.0f)) * 0.25f * 3.0f))  + float3(0.0f, 2.09999990463256836f, 4.19999980926513672f) + float3((Uniforms_1->iTime_0 * 0.40000000596046448f)) )) * float3((1.0f - _S4 * _S4)) , 1.0f) };
+
+#line 35
+    return _S5;
+}
+

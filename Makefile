@@ -1,84 +1,25 @@
+# gis root makefile: the C++/Qt app (cpp_port) plus the shared shader bake.
+# The Odin app lives in legacy/ (its own Makefile) while parity is proven.
 ODIN      ?= odin
 SLANG     ?= vendor/slang/bin/slangc
-GOOSE_DIR ?= ../goose
+GOOSE_DIR ?= vendor/goose
 GOOSE     := $(GOOSE_DIR)/src/tools/build
 GOOSE_BIN := $(GOOSE_DIR)/goose-build
 GOOSE_SRC := $(wildcard $(GOOSE)/*.odin)
-SRC       := ./src
-BIN       := main
-BIN_DEBUG := main_debug
 
-RELEASE_FLAGS := -o:aggressive -microarch:native -no-bounds-check
-# Perf-checked variant with asserts/bounds compiled out (matches the old
-# release flags) for benchmarking only; the default build keeps them on so
-# an invariant violation crashes/logs instead of corrupting state silently.
-NOASSERT_FLAGS := -o:aggressive -microarch:native -no-bounds-check -disable-assert
-DEBUG_FLAGS   := -debug -o:none
-HOT_FLAGS     := -define:HOT_RELOAD=true
+.PHONY: all shaders configure-cpp build-cpp run-cpp build-cpp-asan run-cpp-asan test-cpp clean-cpp clean bundle-apple
 
-BUNDLE_VERSION ?= 0.1.0
-
-.PHONY: all build shaders shaders-hot run run-optimized debug debug-optimized clean bundle-apple configure-cpp build-cpp run-cpp test-cpp clean-cpp
-
-# The integrated ImGui editor (src/imgui_editor.odin) links the
-# ImGuiColorTextEdit wrapper; every app build needs it. The wrapper MUST use
-# the same IMGUI_DISABLE_OBSOLETE_* defines as the premake-built imgui lib.
-APP_DEPS := vendor/ImGuiColorTextEdit/libite.a $(MD4C_LIB) $(TFD_LIB)
-IMGUI_DEFINES := -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_DISABLE_OBSOLETE_KEYIO
-IMGUI_INC := vendor/odin-imgui/build/deps/imgui
-ITE_SRC := vendor/ImGuiColorTextEdit/TextEditor.cpp vendor/ImGuiColorTextEdit/TextEditor.h vendor/ImGuiColorTextEdit/ite/ite.cpp vendor/ImGuiColorTextEdit/ite/ite.h
-
-vendor/ImGuiColorTextEdit/libite.a: $(ITE_SRC)
-	clang++ -std=c++17 -O2 $(IMGUI_DEFINES) -c vendor/ImGuiColorTextEdit/TextEditor.cpp -I$(IMGUI_INC) -Ivendor/ImGuiColorTextEdit -o /tmp/TextEditor.o
-	clang++ -std=c++17 -O2 $(IMGUI_DEFINES) -c vendor/ImGuiColorTextEdit/ite/ite.cpp -I$(IMGUI_INC) -Ivendor/ImGuiColorTextEdit -o /tmp/ite.o
-	rm -f $@
-	ar rc $@ /tmp/TextEditor.o /tmp/ite.o
-	ranlib $@
-
-MD4C_LIB := vendor/md4c/libmd4c.a
-
-$(MD4C_LIB): vendor/md4c/md4c.c vendor/md4c/md4c.h
-	cc -std=c11 -O2 -c vendor/md4c/md4c.c -o /tmp/md4c_obj.o
-	rm -f $@
-	ar rc $@ /tmp/md4c_obj.o
-	ranlib $@
-
-TFD_LIB := vendor/tinyfiledialogs/libtfd.a
-
-$(TFD_LIB): vendor/tinyfiledialogs/tinyfiledialogs.c vendor/tinyfiledialogs/tinyfiledialogs.h
-	cc -std=c11 -O2 -c vendor/tinyfiledialogs/tinyfiledialogs.c -o /tmp/tfd_obj.o
-	rm -f $@
-	ar rc $@ /tmp/tfd_obj.o
-	ranlib $@
-
-
-all: build
+all: build-cpp
 
 $(GOOSE_BIN): $(GOOSE_SRC)
 	$(ODIN) build $(GOOSE) -out:$(GOOSE_BIN) -o:aggressive -microarch:native -no-bounds-check
 
-# Baked glue: shader blobs are #load-ed into the binary at compile time.
+# Baked glue + scene artifacts (src/generated): consumed by the cpp_port
+# (and by legacy/, which runs the same command).
 shaders: $(GOOSE_BIN)
 	$(GOOSE_BIN) --manifest goose.json --slang $(SLANG)
 
-# Benchmarking variant: asserts and bounds checks compiled out.
-perf: shaders $(APP_DEPS)
-	$(ODIN) build $(SRC) -out:$(BIN) $(NOASSERT_FLAGS)
-
-
-run: shaders-hot $(APP_DEPS)
-	$(ODIN) run $(SRC) $(HOT_FLAGS) -- $(ARGS)
-
-run-optimized: shaders-hot $(APP_DEPS)
-	$(ODIN) run $(SRC) $(RELEASE_FLAGS) $(HOT_FLAGS) -- $(ARGS)
-
-debug: shaders-hot $(APP_DEPS)
-	$(ODIN) build $(SRC) -out:$(BIN_DEBUG) $(DEBUG_FLAGS) $(HOT_FLAGS)
-
-debug-optimized: shaders-hot $(APP_DEPS)
-	$(ODIN) build $(SRC) -out:$(BIN_DEBUG) $(RELEASE_FLAGS) $(HOT_FLAGS) -debug
-
-# C++/Qt port (cpp_port). Prereqs: brew install qt sdl3 qscintilla2 cmake.
+# C++/Qt port. Prereqs: brew install qt sdl3 qscintilla2 cmake.
 CPP_BUILD  := cpp_port/build
 CPP_CONFIGURE := cmake -B $(CPP_BUILD) -S cpp_port \
 	-DCMAKE_BUILD_TYPE=Release \
@@ -121,11 +62,11 @@ test-cpp: build-cpp
 clean-cpp:
 	rm -rf $(CPP_BUILD)
 
-clean:
-	rm -f $(BIN) $(BIN_DEBUG)
+clean: clean-cpp
+	rm -rf $(CPP_BUILD_ASAN)
 
 # Self-contained macOS bundle + zip under builds/apple (see
 # tools/package_macos.sh). `make bundle-apple BUNDLE_VERSION=0.2.0`;
 # `tools/package_macos.sh --render-icon` also re-renders the icon.
 bundle-apple:
-	tools/package_macos.sh $(BUNDLE_VERSION)
+	tools/package_macos_cpp.sh $(BUNDLE_VERSION)

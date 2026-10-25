@@ -1,0 +1,98 @@
+#include <metal_stdlib>
+#include <metal_math>
+#include <metal_texture>
+using namespace metal;
+
+#line 240 "src/shaders/scenes/audit_plasma/../../common.slang"
+struct VsOut_0
+{
+    float4 pos_0;
+    float2 uv_0;
+    float2 gl_FragCoord_0;
+};
+
+
+#line 246
+VsOut_0 fullscreen_vertex_0(uint vertexIndex_0, float2 resolution_0)
+{
+    float _S1 = float((vertexIndex_0 << 1U) & 2U);
+
+#line 248
+    float _S2 = float(vertexIndex_0 & 2U);
+
+#line 248
+    float2 p_0 = float2(_S1, _S2);
+
+#line 247
+    thread VsOut_0 o_0;
+
+    (&o_0)->pos_0 = float4(p_0 * float2(2.0f)  - float2(1.0f) , 0.0f, 1.0f);
+
+
+    (&o_0)->uv_0 = float2(_S1, 1.0f - _S2);
+    (&o_0)->gl_FragCoord_0 = p_0 * resolution_0;
+    return o_0;
+}
+
+
+#line 254
+struct vertMain_Result_0
+{
+    float4 pos_1 [[position]];
+    float2 uv_1 [[user(TEXCOORD)]];
+    float2 gl_FragCoord_1 [[user(TEXCOORD_1)]];
+};
+
+
+#line 3343 "core.meta.slang"
+struct _MatrixStorage_float4x4_ColMajornatural_0
+{
+    array<float4, int(4)> data_0;
+};
+
+
+#line 5 "src/shaders/scenes/audit_plasma/../../common.slang"
+struct SceneUniforms_natural_0
+{
+    float3 iResolution_0;
+    float iTime_0;
+    float4 iFbm_0;
+    float iColorMode_0;
+    float2 iMousePos_0;
+    float iMouseClick_0;
+    _MatrixStorage_float4x4_ColMajornatural_0 iViewProjection_0;
+    float3 iCameraPosition_0;
+    float3 iCameraRight_0;
+    float3 iCameraUp_0;
+    float3 iCameraForward_0;
+    float iManual_0;
+    uint2 iDebugPixel_0;
+    uint iDebugEnabled_0;
+    uint iDebugFrame_0;
+    uint iDebugPass_0;
+};
+
+
+#line 152
+[[vertex]] vertMain_Result_0 vertMain(uint vertexIndex_1 [[vertex_id]], SceneUniforms_natural_0 constant* Uniforms_0 [[buffer(0)]])
+{
+
+#line 18 "src/shaders/scenes/audit_plasma/audit_plasma.slang"
+    VsOut_0 _S3 = fullscreen_vertex_0(vertexIndex_1, Uniforms_0->iResolution_0.xy);
+
+#line 18
+    thread vertMain_Result_0 _S4;
+
+#line 18
+    (&_S4)->pos_1 = _S3.pos_0;
+
+#line 18
+    (&_S4)->uv_1 = _S3.uv_0;
+
+#line 18
+    (&_S4)->gl_FragCoord_1 = _S3.gl_FragCoord_0;
+
+#line 18
+    return _S4;
+}
+

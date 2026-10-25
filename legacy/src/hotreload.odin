@@ -1,6 +1,6 @@
 package main
 
-import goose "../../goose/src"
+import goose "../../vendor/goose/src"
 
 // Frees the shader blob when the glue proc OWNS it. Ownership follows the
 // generated glue mode — goose sets Code.owns_blob (true only when the proc

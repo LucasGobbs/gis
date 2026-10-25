@@ -174,7 +174,7 @@ static void write_manifest(const std::vector<std::string>& names,
     std::ostringstream m;
     m << "{\"outputDir\":\"" << GENERATED_DIR << "\",\"parameterOutputDir\":\"" << GENERATED_DIR
       << "\",";
-    m << "\"package\":\"generated\",\"gooseImport\":\"../../../goose/src\",";
+    m << "\"package\":\"generated\",\"gooseImport\":\"vendor/goose/src\",";
     m << "\"commonUniforms\":true,\"targets\":[\"" << SCENE_TARGET << "\"],\"shaders\":[";
     bool first = true;
     auto write_shader = [&](const std::string& name, const std::string& source) {
@@ -208,7 +208,8 @@ bool scenes_build(const std::vector<std::string>& names,
                            ~Close() { std::fclose(f); ::remove(path.c_str()); } }
                 closer{f, lock_path};
             write_manifest(names, scene_roots);
-            std::string goose = std::getenv("GOOSE") ? std::getenv("GOOSE") : "../goose/goose-build";
+            std::string goose =
+                std::getenv("GOOSE") ? std::getenv("GOOSE") : "vendor/goose/goose-build";
             std::string slang =
                 std::getenv("SLANG") ? std::getenv("SLANG") : "vendor/slang/bin/slangc";
             std::string cmd = goose + " --manifest " + SCENES_MANIFEST + " --slang " + slang;
@@ -933,6 +934,14 @@ void push_scene_uniforms(SDL_GPUCommandBuffer* cmd, Scene_Pass& pass, bool compu
                                            uint32_t(cb.block.size()));
     }
 }
+// Model-draw branch selector (common.slang model_scene_vertex): 1 = the
+// fullscreen background, 0 = the indexed model.
+static void scene_set_manual(Scene_Pass& pass, float value) {
+    for (CBuffer& cb : pass.cbuffers)
+        for (const Uniform_Field& field : cb.fields)
+            if (field.name == "iManual") poke_f32(cb.block, field.offset, value);
+}
+
 SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu, Runtime_Scene& scene,
                                  SDL_GPUTexture* scene_tex, Scene_Resources& resources,
                                  int width, int height, SDL_GPUGraphicsPipeline* preview_pipeline,
@@ -962,17 +971,18 @@ SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu, Runtime_Scene& scene,
             sampler_count > 0 ? sampler_count : 1);
         for (size_t slot = 0; slot < sampler_count; ++slot) {
             const std::string& name = pass.sampler_textures[slot];
-            SDL_GPUTexture* texture = nullptr;
+            // Default = the app's paper texture (Odin resources.paper_index);
+            // a producer pass wins, then a user-resource route, then the
+            // skybox/input_tex named fallbacks.
+            SDL_GPUTexture* texture = resources.paper_texture
+                                          ? resources.paper_texture
+                                          : resources.black_texture;
             int producer = pipeline_plan_source(scene.pipeline, pass_index, name);
             if (producer >= 0) {
                 texture = scene_pass_texture(scene, scene_tex, resources, producer);
-            } else if (name == "skybox_tex") {
-                // No skybox assets in the core runtime yet: black.
-                texture = resources.black_texture;
-            } else {
-                // Named inputs without a route (a_tex, b_tex, ...) read the
-                // black fallback, matching Odin's unmet-input path (paper
-                // assets land with the asset stage).
+            } else if (name == "skybox_tex" && resources.skybox_texture) {
+                texture = resources.skybox_texture;
+            } else if (name == "input_tex") {
                 texture = resources.black_texture;
             }
             bindings[slot].texture = texture;
@@ -1004,10 +1014,14 @@ SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu, Runtime_Scene& scene,
             color_target.store_op = SDL_GPU_STOREOP_STORE;
             color_target.clear_color = pass.uses_model ? SDL_FColor{0.93f, 0.91f, 0.86f, 1}
                                                        : SDL_FColor{0, 0, 0, 1};
+            SDL_GPUDepthStencilTargetInfo depth_target{};
+            depth_target.texture = resources.depth_tex;
+            depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
+            depth_target.clear_depth = 1.0f;
+            depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
             SDL_GPURenderPass* render_pass =
-                pass.uses_model
-                    ? SDL_BeginGPURenderPass(cmd, &color_target, 1, nullptr)
-                    : SDL_BeginGPURenderPass(cmd, &color_target, 1, nullptr);
+                SDL_BeginGPURenderPass(cmd, &color_target, 1,
+                                       pass.uses_model ? &depth_target : nullptr);
             SDL_BindGPUGraphicsPipeline(render_pass, pass.graphics);
             if (sampler_count > 0) {
                 // Only contiguous bound slots; gaps (nullptr texture) stop the run.
@@ -1023,8 +1037,25 @@ SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu, Runtime_Scene& scene,
             }
             SDL_GPUViewport vp{0, 0, float(width), float(height), 0.0f, 1.0f};
             SDL_SetGPUViewport(render_pass, &vp);
-            push_scene_uniforms(cmd, pass, false);
-            SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
+            if (pass.uses_model && resources.model_vb && resources.model_ib) {
+                // Model draw: fullscreen background first (iManual=1), then
+                // the indexed model depth-tested on top (iManual=0), matching
+                // the common.slang model_scene_vertex branch.
+                SDL_GPUBufferBinding vb_binding{resources.model_vb, 0};
+                SDL_BindGPUVertexBuffers(render_pass, 0, &vb_binding, 1);
+                SDL_GPUBufferBinding ib_binding{resources.model_ib, 0};
+                SDL_BindGPUIndexBuffer(render_pass, &ib_binding,
+                                       SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                scene_set_manual(pass, 1);
+                push_scene_uniforms(cmd, pass, false);
+                SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
+                scene_set_manual(pass, 0);
+                push_scene_uniforms(cmd, pass, false);
+                SDL_DrawGPUIndexedPrimitives(render_pass, resources.model_index_count, 1, 0, 0, 0);
+            } else {
+                push_scene_uniforms(cmd, pass, false);
+                SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
+            }
             SDL_EndGPURenderPass(render_pass);
         }
     }

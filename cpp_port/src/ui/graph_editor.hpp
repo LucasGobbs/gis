@@ -9,6 +9,8 @@
 #include <QDialog>
 #include <QElapsedTimer>
 #include <QGraphicsEllipseItem>
+#include <QImage>
+#include <QGraphicsPixmapItem>
 #include <QMap>
 #include <QString>
 #include <QTimer>
@@ -95,6 +97,11 @@ public:
     // Serializes nodes + links and writes graph.json atomically (tmp+rename).
     bool save_layout(const QString& scene_title, const QString& scene_root);
     void set_scene(const scene::Runtime_Scene& scene);
+    // Pass output thumbnails (128px targets, GPU-downscaled every frame by
+    // the submit). Index = pass order; empty images skip. The final entry
+    // (size = passes+1) is the viewport output.
+    void set_previews(const QVector<QImage>& images);
+    void set_previews_enabled(bool on) { previews_enabled_ = on; refresh_previews(); }
 
     bool dirty_layout() const { return dirty_; }
     void clear_dirty() { dirty_ = false; }
@@ -113,10 +120,16 @@ private:
         bool grow = false; // emit expands, receive converges
     };
     void refresh_wireless_marks();
+    // Pass thumbnails: keyed by node id (pass nodes only); rebuilt on
+    // rebuild_scene, parked on set_previews.
+    void refresh_previews();
     std::vector<Wireless_Mark> wireless_marks_;
     QTimer* marks_timer_ = nullptr;
     bool loading_ = false; // rebuild_scene is repopulating links; mute handlers
     QElapsedTimer marks_clock_;
+    QVector<QImage> previews_;
+    bool previews_enabled_ = true;
+    QMap<QtNodes::NodeId, QGraphicsPixmapItem*> preview_items_;
 
 signals:
     void pipeline_changed();

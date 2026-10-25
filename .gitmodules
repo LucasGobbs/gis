@@ -1,0 +1,3 @@
+[submodule "vendor/goose"]
+	path = vendor/goose
+	url = git@github-personal:LucasGobbs/goose.git

@@ -1,8 +1,4 @@
 {
-  "[odin]": {
-    "editor.defaultFormatter": "danielgavin.ols",
-    "editor.formatOnSave": true
-  },
   "ols.server.path": "/opt/homebrew/bin/ols",
   "C_Cpp.default.compileCommands": "${workspaceFolder}/cpp_port/compile_commands.json"
 }

@@ -71,7 +71,8 @@ public:
     // Font zoom: Cmd+= / Cmd+- across all open tabs; persists in prefs.
     void zoom_in();
     void zoom_out();
-    int editor_font() const { return font_size_; }
+    // Current skin (LEARN reads it to mirror code-token colors).
+    Editor_Theme theme() const { return theme_; }
     void set_editor_font(int pt);
     // Splits the current tab side-by-side (read-only mirror pane).
     void split_current();

@@ -433,6 +433,71 @@ void Node_View::rebuild_scene() {
     }
     loading_ = false;
     refresh_wireless_marks();
+    refresh_previews();
+}
+
+// Pass thumbnails: one pixmap per pass node, parked under the node title
+// (Odin draws the preview inside the node body; here it rides on the node
+// graphics object). Content = the 128px GPU downscale the submit blits
+// every frame; the host hands over QImages on a slow tick.
+void Node_View::set_previews(const QVector<QImage>& images) {
+    previews_ = images;
+    refresh_previews();
+}
+
+void Node_View::refresh_previews() {
+    if (!scene_) return;
+    // (Re)build the item set after structural changes.
+    for (auto it = preview_items_.begin(); it != preview_items_.end();) {
+        if (!id_to_key_.contains(it.key())) {
+            scene_->removeItem(it.value());
+            delete it.value();
+            it = preview_items_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (!previews_enabled_) {
+        for (auto& item : preview_items_) item->setVisible(false);
+        return;
+    }
+    // Pass index by graph key: nodes_ keeps reflection order for pass nodes.
+    QMap<QString, int> pass_index;
+    int pi = 0;
+    for (const Graph_Node& node : nodes_) {
+        if (node.kind == "graphics" || node.kind == "compute")
+            pass_index[node.key] = pi++;
+    }
+    for (auto it = id_to_key_.begin(); it != id_to_key_.end(); ++it) {
+        int index = pass_index.value(it.value(), -1);
+        bool show = index >= 0 && index < previews_.size() &&
+                    !previews_[size_t(index)].isNull();
+        QGraphicsPixmapItem*& item = preview_items_[it.key()];
+        if (!show) {
+            if (item) item->setVisible(false);
+            continue;
+        }
+        if (!item) {
+            item = new QGraphicsPixmapItem();
+            item->setZValue(5.0); // over the node body, under the rings
+            scene_->addItem(item);
+        }
+        item->setVisible(true);
+        item->setPixmap(QPixmap::fromImage(previews_[size_t(index)]));
+        if (auto* ngo = scene_->nodeGraphicsObject(it.key())) {
+            QRectF bounds = ngo->boundingRect();
+            // Below the caption bar, full node width (Odin: window-aspect
+            // squeeze restored by displaying at window aspect).
+            qreal w = bounds.width() - 16;
+            qreal h = qMax<qreal>(1.0, w * qreal(previews_[size_t(index)].height()) /
+                                         qreal(previews_[size_t(index)].width()));
+            item->setPos(-bounds.width() / 2 + 8, -bounds.height() / 2 + 30);
+            QTransform t;
+            t.scale(w / qreal(previews_[size_t(index)].width()),
+                    h / qreal(previews_[size_t(index)].height()));
+            item->setTransform(t);
+        }
+    }
 }
 
 // One pin-scene position for a node's port (geometry + node transform).

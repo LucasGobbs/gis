@@ -128,6 +128,15 @@ public:
     void scene_switched();
     // Saves the current scene's graph.json when the node canvas is dirty.
     void flush_graph_layout();
+    // Typed access for the host's preview feed (GRAPH panel up).
+    graph_editor::Node_View* graph_view_typed();
+    bool graph_panel_visible() const {
+        return ui.panel_open && ui.mode == Sidebar_Mode::GRAPH;
+    }
+    void toggle_zen();
+    void toggle_editor();
+    void toggle_theater();
+    void toggle_mobile();
     // Saves all dirty editor tabs; host wires save_all_requested to a build.
     int save_all() { return editor_ ? editor_->save_all() : 0; }
     // Unsaved editor tabs (for the quit confirm).

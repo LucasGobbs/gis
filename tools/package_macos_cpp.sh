@@ -5,7 +5,7 @@
 # plus a zip. Mirrors tools/package_macos.sh layout: the app resolves
 # assets/, src/shaders and vendor/slang relative to Contents/Resources/app.
 #
-# Prereqs (brew): qt, sdl3, qscintilla2, cmake; goose checkout at ../goose.
+# Prereqs (brew): qt, sdl3, qscintilla2, cmake; goose submodule in vendor/goose.
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -19,7 +19,7 @@ OUT="builds/apple"
 BUNDLE="$OUT/$APP_NAME.app"
 CONTENTS="$BUNDLE/Contents"
 APP_RSC="$CONTENTS/Resources/app"
-GOOSE_DIR="${GOOSE_DIR:-../goose}"
+GOOSE_DIR="${GOOSE_DIR:-vendor/goose}"
 SLANG_DIR="vendor/slang"
 ARCH=$(uname -m)
 ZIP="gis-cpp-$VERSION-macos-$ARCH.zip"

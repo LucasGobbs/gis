@@ -12,7 +12,7 @@
       "name": "default",
       "os": "darwin",
       "arch": "arm64",
-      "checker_path": ["src"]
+      "checker_path": ["legacy/src"]
     }
   ]
 }

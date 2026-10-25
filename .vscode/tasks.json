@@ -2,9 +2,9 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "make: build",
+      "label": "cpp: build",
       "type": "shell",
-      "command": "make build",
+      "command": "make build-cpp",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -15,9 +15,9 @@
       "problemMatcher": []
     },
     {
-      "label": "make: run",
+      "label": "cpp: run",
       "type": "shell",
-      "command": "make run",
+      "command": "make run-cpp",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -25,16 +25,7 @@
       "problemMatcher": []
     },
     {
-      "label": "make: run-cpp (Qt port)",
-      "type": "shell",
-      "command": "make run-cpp",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "make: test-cpp",
+      "label": "cpp: test",
       "type": "shell",
       "command": "make test-cpp",
       "options": {
@@ -43,23 +34,30 @@
       "problemMatcher": []
     },
     {
-      "label": "make: debug",
+      "label": "cpp: run under ASan/UBSan",
       "type": "shell",
-      "command": "make debug",
+      "command": "make run-cpp-asan",
       "options": {
         "cwd": "${workspaceFolder}"
       },
-      "group": "build",
       "problemMatcher": []
     },
     {
-      "label": "make: debug-optimized",
+      "label": "legacy (Odin): run",
       "type": "shell",
-      "command": "make debug-optimized",
+      "command": "make run",
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}/legacy"
       },
-      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "legacy (Odin): debug build",
+      "type": "shell",
+      "command": "make debug",
+      "options": {
+        "cwd": "${workspaceFolder}/legacy"
+      },
       "problemMatcher": []
     }
   ]

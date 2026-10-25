@@ -121,15 +121,21 @@ bool targets_needs_resize(const Render_Targets& t, int width, int height, int pa
 bool targets_resize(Render_Targets& t, SDL_GPUDevice* gpu, int width, int height, int pass_count);
 void targets_destroy(SDL_GPUDevice* gpu, Render_Targets& t);
 
-// Scene resources for submission.
+// Scene resources for submission. Assets mirror the Odin SceneResources:
+// paper is the default binding for unmet texture inputs, skybox feeds
+// skybox_tex, model is the drawn vertex stream (assets module owns them).
 struct Scene_Resources {
     SDL_GPUTexture* depth_tex = nullptr;
     SDL_GPUSampler* sampler = nullptr;
+    SDL_GPUTexture* paper_texture = nullptr;
+    SDL_GPUTexture* skybox_texture = nullptr; // null = none (-1 in Odin)
+    SDL_GPUBuffer* model_vb = nullptr;
+    SDL_GPUBuffer* model_ib = nullptr;
+    uint32_t model_index_count = 0;
     std::vector<SDL_GPUTexture*> pass_tex;
     SDL_GPUTexture* black_texture = nullptr;
     SDL_GPUSampler* black_sampler = nullptr;
     SDL_GPUBuffer* debug_watch_buffer = nullptr;
-
 };
 
 // ---- Discovery ----
