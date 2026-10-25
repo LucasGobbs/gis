@@ -28,11 +28,16 @@ up and the error comes back into the editor as an annotation.
   or incompatible endpoints keep the last valid pipeline active.
 - **Failure-preserving hot reload**: dependency-tracked incremental builds on a
   worker thread; broken code keeps the previous pipeline on screen.
-- **Headless mode**: `--headless` turns the app into a pure render
-  surface for the selected scene — no UI chrome, no editor, no node
-  graph. Edit the `.slang` in an external editor (VS Code); every save
-  hot-reloads the running scene. Static nodes: each scene's `graph.json`
-  is honored but never edited in-app.
+- **Node previews and pixel provenance**: every pass node on the graph canvas
+  shows its output thumbnail; clicking the scene samples the pixel and shows the
+  causal chain across upstream passes.
+- **3D model viewer scenes**: glTF (`.glb`/`.gltf`) loading, orbit camera, equirectangular
+  skyboxes; `graph.json` may route user models/textures into any pass input.
+- **Learning trails**: the LEARN panel renders markdown docs
+  (`assets/trails/*.md`) with live links — `[label](scene:NAME)` opens the scene,
+  `[label](trail:NAME)` navigates; code blocks highlight with the editor theme.
+- **Failure-preserving assets**: paper textures, skyboxes, and a model library
+  load at startup; a missing skybox is skipped, missing paper/model is fatal.
 - **User scenes vs built-ins**: scenes under `src/shaders/scenes/` are
   the built-in catalog; new scenes (created in-app or dropped in
   `gis_scenes/<name>/<name>.slang`) live outside the source tree and are
@@ -41,53 +46,53 @@ up and the error comes back into the editor as an annotation.
   below the repo root, their shared-module import is
   `import "../../src/shaders/common";` (the in-app template already
   emits it).
-- **Assets**: OBJ model loading and texture import (stb_image); scene templates for
-  compute / 2D / 3D graphics.
 - **Visual debugging**: `debug_scalar`, `debug_signed`, `debug_vector`,
   `debug_normal`, `debug_mask`, `debug_nan_inf`, compiler squiggles, async
-  1×1 pixel inspection, eight GPU-watch slots per pass, multipass pixel
-  provenance, and restore to the last loadable source version.
+  1×1 pixel inspection, eight GPU-watch slots per pass, and restore to the
+  last loadable source version.
 - **Cross-platform GPU**: built on the SDL3 GPU API (Metal on macOS, SPIR-V/Vulkan
   on Linux/Windows). Currently validated on macOS/Metal (Apple Silicon).
 
 ## Requirements
 
-- [Odin](https://odin-lang.org/) `dev-2026-08` or newer
-- [SDL3](https://wiki.libsdl.org/SDL3) (Odin's `vendor:sdl3` bindings)
-- The [goose](https://github.com/LucasGobbs/goose) shader-build toolkit checked out
-  as a **sibling directory** (`git clone https://github.com/LucasGobbs/goose ../goose`);
-  override with `GOOSE_DIR=/path/to/goose`
-- A C++17 toolchain (`clang++`) for the vendored editor/node-graph wrappers
-
-Slang (`slangc`, `slangd`) and all UI libraries are vendored under `vendor/`.
+- A C++20 toolchain (clang++ / AppleClang 17 validated) with CMake ≥ 3.22
+- Qt 6, SDL3, QScintilla2 (Homebrew on macOS: `brew install qt sdl3 qscintilla2 cmake`)
+- The [goose](https://github.com/LucasGobbs/goose) submodule (shipped in
+  `vendor/goose/`): `git clone --recursive` or `git submodule update --init`.
+  It carries a vendored Slang distribution (`vendor/goose/vendor/slang/`,
+  macOS arm64) so shader compilation needs **no separate Slang install**;
+  a system install is picked up as fallback for anything the vendored dist
+  misses (e.g. `libslang-llvm.dylib`, excluded from the submodule — over
+  GitHub's 100 MB file limit).
 
 ## Build & run
 
 ```sh
-make shaders   # bake scene artifacts (slangc, both msl and spv targets)
-make run       # release build + run (hot reload enabled)
-make debug     # debug build (main_debug)
+git clone --recursive https://github.com/LucasGobbs/gis gis && cd gis
+make build      # configure + build (build/gis_host)
+make run        # shaders bake + build + run (hot reload enabled)
+make test       # Catch2 suite (17 cases)
+make shaders    # bake scene artifacts only (slangc via goose-build)
 ```
 
-Optional leak investigation build:
-
-```sh
-odin build ./src -define:HOT_RELOAD=true -define:MEM_TRACE=true -debug -out:main_memtrace
-# heap allocations still live at exit are dumped with their allocation sites
-```
+The Odin app that predates this port is kept under `legacy/` (own Makefile)
+until the C++ app closes the last parity window; it is not part of the
+default build.
 
 ## Layout
 
 ```
-src/
-  main.odin            app loop, GPU device, blit, frame orchestration
-  scene_runtime.odin   scene discovery, async incremental builds, reflection parsing
-  pipeline.odin        graph.json schema, validation, DAG plan, last-known-good
-  imgui_editor.odin    code editor UI (ImGuiColorTextEdit + slangd LSP client)
-  imgui_nodes.odin     node editor (imnodes-odin), reflection-driven pins, layout
-  scene_templates.odin new-scene templates
-  shaders/scenes/      the scene corpus (one folder per scene)
-vendor/                slang, odin-imgui, ImGuiColorTextEdit, imnodes-odin, fonts
+src/                   the app: gfx/, gfx/render_graph/, ui/, export/, host_main.mm
+src/shaders/           shared Slang modules + the scene corpus (scenes/<name>/)
+src/generated/         goose-baked artifacts (msl/spv/refl.json/glue), gitignored
+tests/                 Catch2 suite (render graph, shell, inspect)
+vendor/goose/          submodule: goose-build + vendored Slang
+vendor/                cgltf, stb_image, md4c, fonts, editor wrappers
+assets/                textures, models, skyboxes, trails, input.ini, ui.prefs
+gis_scenes/            user scenes (shadow built-ins of the same name)
+exports/               PNG/GIF output
+legacy/                the previous Odin app (kept runnable, not built by default)
+docs/                  port development history (audit, bug hunt, gate log)
 ```
 
 ## Editable pipeline graph
@@ -137,40 +142,14 @@ frame. Labels (`color`, `value`) are extracted from the source expression;
 strings never cross the GPU boundary. The same selection downloads the output
 pixel from every upstream pass and displays its causal chain in the Debug panel
 and graph nodes. Scenes `01_hello_pixel`, `09_compute`, and `10_multipass` are
-working examples. `./main_debug --scene 10 --watch-test 400 300` exercises
-selection, multipass GPU writes, readback, type, pass, label, and provenance.
+working examples.
 
-## Measuring edit→pixel latency
+## Input map
 
-Every hot reload logs a line:
-
-```
-[INFO ] [latency] edit->pixel: 688.0 ms
-```
-
-(measured from build request to the first submitted frame; median ≈ 0.69 s
-across 12 edits of the same scene on an Apple M4, release build. This endpoint
-does not include display presentation, and the compiler/reflection/pipeline
-cost breakdown is not yet profiled.)
-
-## Reproducing technical benchmarks
-
-`--benchmark N` records N release-frame samples after a 60-frame warm-up;
-`--benchmark-debug N` selects the center invocation so watches write once per
-instrumented pass. When supported, the app requests SDL GPU `IMMEDIATE` present.
-
-```sh
-make build
-./main --scene 1  --benchmark 300
-./main --scene 1  --benchmark-debug 300
-./main --scene 9  --benchmark 300
-./main --scene 9  --benchmark-debug 300
-./main --scene 10 --benchmark 300
-./main --scene 10 --benchmark-debug 300
-```
-
-The CPU metric is the full application frame. The GPU-labelled metric is scene
-submit→fence and includes queue wait; it is not a hardware timestamp query.
+`assets/input.ini` is the single key source (ini: `action = [mod+]key`; mods
+`shift|ctrl|alt|gui`): F1 zen, F2 editor, F3 glass, F4 theater, F5 mobile,
+Cmd+S save-all, Cmd+B sidebar, Tab flycam, Q/E fly up/down. Window actions
+fall back to compiled defaults when the file is missing.
 
 ## License
 
