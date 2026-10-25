@@ -15,7 +15,6 @@ imgui.ini*
 .DS_Store
 
 # Local, not for the repo
-AGENTS.md
 include/md4c_inc/
 
 # Legacy Odin app (rollback): its own build products + symlinks
