@@ -1,4 +1,4 @@
-// AUDIT SCENE: plasma to exercise the cpp_port hot-reload + widgets path.
+// AUDIT SCENE: plasma to exercise the port hot-reload + widgets path.
 // Minimal deps: common only, one slider widget, time-driven plasma.
 import "../../common";
 

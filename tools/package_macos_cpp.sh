@@ -1,7 +1,7 @@
 #!/bin/sh
 # package_macos_cpp.sh [version]
 #
-# Builds the C++/Qt port (cpp_port) and assembles builds/apple/gis-cpp.app
+# Builds the app (CMake at the repo root) and assembles builds/apple/gis-cpp.app
 # plus a zip. Mirrors tools/package_macos.sh layout: the app resolves
 # assets/, src/shaders and vendor/slang relative to Contents/Resources/app.
 #
@@ -27,17 +27,17 @@ ZIP="gis-cpp-$VERSION-macos-$ARCH.zip"
 # 1. Scene artifacts (slangc -> msl + refl.json); same command as make shaders.
 make shaders
 
-# 2. Configure + build the port (Release).
-cmake -B cpp_port/build -S cpp_port \
+# 2. Configure + build the app (Release).
+cmake -B build -S . \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt
-cmake --build cpp_port/build
+cmake --build build
 
 # 3. Bundle skeleton + payload.
 rm -rf "$BUNDLE"
 mkdir -p "$CONTENTS/MacOS" "$APP_RSC/src/generated/scenes" "$APP_RSC/exports" \
 	"$APP_RSC/vendor/slang" "$APP_RSC/assets"
-cp cpp_port/build/gis_host "$APP_RSC/"
+cp build/gis_host "$APP_RSC/"
 cp "$GOOSE_DIR/goose-build" "$APP_RSC/"
 rm -rf "$APP_RSC/assets" && cp -R assets "$APP_RSC/assets"
 mkdir -p "$APP_RSC/src/shaders"

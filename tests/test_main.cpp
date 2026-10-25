@@ -1,6 +1,6 @@
 // gis_tests own main: chdir to the repo root before Catch2 runs. The scene
 // runtime resolves GENERATED_DIR/SCENES_DIR as relative paths; run from
-// cpp_port/build the shell test could not find the artifacts. Mirrors
+// a build dir the shell test could not find the artifacts. Mirrors
 // chdir_repo_root() in host_main.mm.
 #include <catch2/catch_session.hpp>
 #include <filesystem>

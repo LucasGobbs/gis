@@ -673,8 +673,12 @@ void Editor::lsp_start(const QString& workspace_root) {
     connect(lsp_, &QProcess::readyRead, this, &Editor::on_lsp_ready_read);
     connect(lsp_, &QProcess::finished, this, &Editor::on_lsp_finished);
     QStringList args{"--stdio"}; // the Odin app uses --stdio; --lsp answers null
-    // Relative path: only resolves when cwd is the repo root (make run-cpp cds there).
-    const QString slangd = QFileInfo("vendor/slang/bin/slangd").absoluteFilePath();
+    // Submodule dist first (one source of truth); system-install fallback.
+    // Relative paths: only resolve when cwd is the repo root (make run cds there).
+    const QString slangd =
+        QFileInfo("vendor/goose/vendor/slang/bin/slangd").exists()
+            ? QFileInfo("vendor/goose/vendor/slang/bin/slangd").absoluteFilePath()
+            : QFileInfo("vendor/slang/bin/slangd").absoluteFilePath();
     if (!QFileInfo::exists(slangd)) {
         notify::notify(notify::Kind::ERROR_, "slangd not found, LSP disabled: " + slangd);
         lsp_->deleteLater();

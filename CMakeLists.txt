@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(gis_cpp LANGUAGES C CXX)
+project(gis LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -42,7 +42,7 @@ target_compile_options(gis_warnings INTERFACE
     # QtNodes/Qlementine headers AUTOMOC pulls in, even as system
     # includes (explicit -W flags bypass system-header suppression).
     -Werror)
-set(GIS_FONT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/fonts)
+set(GIS_FONT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/fonts)
 target_link_libraries(gis PRIVATE gis_warnings)
 set_source_files_properties(${GIS_FONT_DIR}/JetBrainsMono-Regular.ttf
     PROPERTIES QT_RESOURCE_ALIAS "JetBrainsMono-Regular.ttf")
@@ -52,19 +52,19 @@ qt_add_resources(gis "fonts_qrc" PREFIX "/fonts"
     FILES ${GIS_FONT_DIR}/JetBrainsMono-Regular.ttf ${GIS_FONT_DIR}/Sergamon-Regular.ttf)
 target_include_directories(gis PUBLIC src ${QSCINTILLA_DIR}/include)
 # Vendored single-file C libs (cgltf, stb_image) compiled into gis.
-target_include_directories(gis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/cgltf
-                                      ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/stb)
-target_sources(gis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/cgltf/cgltf.c)
+target_include_directories(gis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor/cgltf
+                                      ${CMAKE_CURRENT_SOURCE_DIR}/vendor/stb)
+target_sources(gis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor/cgltf/cgltf.c)
 # Vendor C code is third-party: no -Werror cast-align there (the C++ files
 # keep the full warning set via gis_warnings).
-set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../vendor/cgltf/cgltf.c
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/vendor/cgltf/cgltf.c
     PROPERTIES COMPILE_OPTIONS "-Wno-cast-align;-Wno-sign-conversion;-Wno-conversion")
 # md4c: headers via an alias dir (include/md4c_inc). The vendor dir itself
 # is NOT on the include path: it carries an extensionless file named
 # "version" that shadows libc++'s <version> under APFS case-insensitivity.
 target_include_directories(gis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include/md4c_inc)
-target_sources(gis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/md4c/md4c.c)
-set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../vendor/md4c/md4c.c
+target_sources(gis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor/md4c/md4c.c)
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/vendor/md4c/md4c.c
     PROPERTIES COMPILE_OPTIONS "-Wno-sign-conversion;-Wno-conversion;-Wno-cast-align")
 target_link_directories(gis PUBLIC ${QSCINTILLA_DIR}/lib)
 target_link_libraries(gis PUBLIC Qt6::Widgets Qt6::Svg SDL3::SDL3 Threads::Threads qlementine-icons qlementine QtNodes
@@ -80,7 +80,7 @@ if(GIS_BUILD_TESTS)
     FetchContent_MakeAvailable(catch2)
     add_executable(gis_tests tests/test_main.cpp tests/test_render_graph.cpp tests/test_shell.cpp tests/test_inspect.cpp)
     target_link_libraries(gis_tests PRIVATE gis Catch2::Catch2)
-    target_compile_definitions(gis_tests PRIVATE GIS_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/..")
+    target_compile_definitions(gis_tests PRIVATE GIS_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
     enable_testing()
-    add_test(NAME gis_tests COMMAND gis_tests WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    add_test(NAME gis_tests COMMAND gis_tests WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
