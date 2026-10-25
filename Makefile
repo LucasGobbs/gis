@@ -20,7 +20,7 @@ shaders: $(GOOSE_BIN)
 	$(GOOSE_BIN) --manifest goose.json --slang $(SLANG)
 
 # The app (CMake at the repo root). Prereqs: brew install qt sdl3 qscintilla2 cmake.
-BUILD_DIR  := build
+BUILD_DIR  := builds/dev
 CONFIGURE := cmake -B $(BUILD_DIR) -S . \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
@@ -34,7 +34,7 @@ build: configure
 
 # ASan/UBSan build for development: catches heap races/overflows like the
 # reflection mid-write reads. Same sources; separate build dir.
-BUILD_DIR_ASAN := build-asan
+BUILD_DIR_ASAN := builds/dev-asan
 build-asan: configure
 	cmake -B $(BUILD_DIR_ASAN) -S . \
 		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -45,7 +45,7 @@ build-asan: configure
 	cmake --build $(BUILD_DIR_ASAN)
 
 run: shaders build
-	./build/gis_host $(ARGS)
+	./builds/dev/gis_host $(ARGS)
 
 # Same, under ASan/UBSan (slower; use when hunting the hot-reload races).
 # asan.supp silences the known Qlementine 1.5.2 startup UAF (upstream dep
@@ -53,7 +53,7 @@ run: shaders build
 run-asan: shaders build-asan
 	ASAN_OPTIONS="suppressions=asan.supp:detect_leaks=0" \
 		UBSAN_OPTIONS="suppressions=ubsan.supp:print_stacktrace=1" \
-		./build-asan/gis_host $(ARGS)
+		./builds/dev-asan/gis_host $(ARGS)
 
 test: build
 	cd $(BUILD_DIR) && QT_QPA_PLATFORM=offscreen ctest --output-on-failure

@@ -1,6 +1,5 @@
-# Build output (CMake at the repo root)
-/build/
-/build-asan/
+# All build output lives in builds/ (CMake dev dirs, bundles, zips)
+/builds/
 compile_commands.json
 include/
 

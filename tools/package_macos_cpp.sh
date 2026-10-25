@@ -28,16 +28,16 @@ ZIP="gis-cpp-$VERSION-macos-$ARCH.zip"
 make shaders
 
 # 2. Configure + build the app (Release).
-cmake -B build -S . \
+cmake -B builds/dev -S . \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt
-cmake --build build
+cmake --build builds/dev
 
 # 3. Bundle skeleton + payload.
 rm -rf "$BUNDLE"
 mkdir -p "$CONTENTS/MacOS" "$APP_RSC/src/generated/scenes" "$APP_RSC/exports" \
 	"$APP_RSC/vendor/slang" "$APP_RSC/assets"
-cp build/gis_host "$APP_RSC/"
+cp builds/dev/gis_host "$APP_RSC/"
 cp "$GOOSE_DIR/goose-build" "$APP_RSC/"
 rm -rf "$APP_RSC/assets" && cp -R assets "$APP_RSC/assets"
 mkdir -p "$APP_RSC/src/shaders"

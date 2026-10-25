@@ -1,4 +1,4 @@
 {
   "ols.server.path": "/opt/homebrew/bin/ols",
-  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json"
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/builds/dev/compile_commands.json"
 }

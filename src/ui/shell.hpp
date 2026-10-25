@@ -23,9 +23,6 @@
 #include <QCloseEvent>
 
 
-#ifdef __APPLE__
-#include <CoreFoundation/CoreFoundation.h>
-#endif
 
 namespace shell {
 

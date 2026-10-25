@@ -842,7 +842,7 @@ void Editor::lsp_rename(const QString& uri, int line, int col, const QString& ne
     send_lsp(lsp_next_id_++, "textDocument/rename", json);
 }
 
-void Editor::on_lsp_finished(int, QProcess::ExitStatus) { lsp_ = nullptr; }
+void Editor::on_lsp_finished(int, int) { lsp_ = nullptr; }
 
 void Editor::handle_lsp_message(const QByteArray& payload) {
     QJsonDocument doc = QJsonDocument::fromJson(payload);

@@ -8,12 +8,12 @@
 // diagnostics with a 280 ms debounce (18 frames at 60 fps), completion,
 // hover, goto-def, rename.
 
-#include <tuple>
 #include <map>
-#include <QProcess>
 #include <QString>
 #include <QTabWidget>
 #include <QWidget>
+
+class QProcess;
 
 class QsciScintilla;
 class QLineEdit;
@@ -99,7 +99,7 @@ private slots:
     void on_tab_changed(int index);
     void on_modified(int index);
     void on_lsp_ready_read();
-    void on_lsp_finished(int exit_code, QProcess::ExitStatus status);
+    void on_lsp_finished(int exit_code, int status); // QProcess::ExitStatus as int (keeps the header QProcess-free)
 
 private:
     // Editor viewport event filter: Cmd+click -> definition; Cmd hover ->
