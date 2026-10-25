@@ -28,18 +28,8 @@ namespace shell {
 
 // Honours the OS "reduce motion" preference (macOS Accessibility). Qt 6 has
 // no cross-platform equivalent, so gate non-essential animation on this.
-inline bool reduced_motion() {
-#ifdef __APPLE__
-    CFBooleanRef flag = (CFBooleanRef)CFPreferencesCopyAppValue(
-        CFSTR("reduceMotion"), CFSTR("com.apple.universalaccess"));
-    if (flag) {
-        bool on = CFBooleanGetValue(flag);
-        CFRelease(flag);
-        return on;
-    }
-#endif
-    return false;
-}
+// Definition in shell.cpp (CoreFoundation lives out of this header).
+bool reduced_motion();
 
 // Layout constants (ui_layout.odin). The window is natively framed: the OS
 // title bar is styled transparent and melts into the Qt header — the Qt top

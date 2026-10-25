@@ -33,6 +33,9 @@
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qsciscintillabase.h>
 
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
 #include <QDirIterator>
 #include <QTreeWidget>
 
@@ -47,6 +50,19 @@
 namespace shell {
 
 static const char* kPrefsFile = "assets/ui.prefs";
+
+bool reduced_motion() {
+#ifdef __APPLE__
+    CFBooleanRef flag = (CFBooleanRef)CFPreferencesCopyAppValue(
+        CFSTR("reduceMotion"), CFSTR("com.apple.universalaccess"));
+    if (flag) {
+        bool on = CFBooleanGetValue(flag);
+        CFRelease(flag);
+        return on;
+    }
+#endif
+    return false;
+}
 static const char* USER_SCENES_DIR_const = "gis_scenes";
 
 // ---- prefs ----
