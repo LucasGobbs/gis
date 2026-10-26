@@ -24,7 +24,13 @@ FetchContent_Declare(qlementine GIT_REPOSITORY https://github.com/oclero/qlement
 FetchContent_MakeAvailable(qlementine)
 set(NODE_EDITOR_STATIC ON CACHE BOOL "" FORCE)
 set(NODE_EDITOR_SHARED OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(nodeeditor GIT_REPOSITORY https://github.com/paceholder/nodeeditor.git GIT_TAG 3.0.9)
+FetchContent_Declare(nodeeditor GIT_REPOSITORY https://github.com/paceholder/nodeeditor.git GIT_TAG 3.0.9
+  # Local patch: ConnectionGraphicsObject statically downcasts event->widget()
+  # to QGraphicsView in mouse move/release; with a grabbed draft connection the
+  # event can arrive through a foreign top-level widget (UBSan vptr report).
+  # Fix: qobject_cast + graceful drop when the view is unknown.
+  PATCH_COMMAND git checkout -- . && git apply ${CMAKE_CURRENT_SOURCE_DIR}/nodeeditor-view-cast.patch
+)
 FetchContent_MakeAvailable(nodeeditor)
 
 qt_standard_project_setup()  # AUTOMOC ON global (Shell/Editor/Node_View have Q_OBJECT)

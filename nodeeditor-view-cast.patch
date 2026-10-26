@@ -1,0 +1,37 @@
+diff --git a/src/ConnectionGraphicsObject.cpp b/src/ConnectionGraphicsObject.cpp
+index 6a871c0..1285894 100644
+--- a/src/ConnectionGraphicsObject.cpp
++++ b/src/ConnectionGraphicsObject.cpp
+@@ -210,8 +210,13 @@ void ConnectionGraphicsObject::mouseMoveEvent(QGraphicsSceneMouseEvent *event)
+ {
+     prepareGeometryChange();
+ 
+-    auto view = static_cast<QGraphicsView *>(event->widget());
+-    auto ngo = locateNodeAt(event->scenePos(), *nodeScene(), view->transform());
++    // event->widget() is not guaranteed to be the GraphicsView viewport:
++    // a grabbed draft connection may receive moves routed through a foreign
++    // top-level widget (UBSan vptr). Downcast safely; without a view, skip
++    // hover highlighting (the draft end point still tracks the cursor).
++    auto *view = qobject_cast<QGraphicsView *>(event->widget());
++    auto ngo = view ? locateNodeAt(event->scenePos(), *nodeScene(), view->transform())
++                    : nullptr;
+     if (ngo) {
+         ngo->reactToConnection(this);
+ 
+@@ -242,9 +247,13 @@ void ConnectionGraphicsObject::mouseReleaseEvent(QGraphicsSceneMouseEvent *event
+     ungrabMouse();
+     event->accept();
+ 
+-    auto view = static_cast<QGraphicsView *>(event->widget());
+-
+-    Q_ASSERT(view);
++    auto *view = qobject_cast<QGraphicsView *>(event->widget());
++    if (!view) {
++        // Foreign widget delivering the release (see mouseMoveEvent): the
++        // draft connection is dropped, matching a release on empty canvas.
++        event->accept();
++        return;
++    }
+ 
+     auto ngo = locateNodeAt(event->scenePos(), *nodeScene(), view->transform());
+ 
