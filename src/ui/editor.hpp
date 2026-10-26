@@ -18,6 +18,7 @@ class QProcess;
 class QsciScintilla;
 class QLineEdit;
 class QLabel;
+class QPushButton;
 class QWidget;
 
 namespace editor {
@@ -74,8 +75,10 @@ public:
     // Current skin (LEARN reads it to mirror code-token colors).
     Editor_Theme theme() const { return theme_; }
     void set_editor_font(int pt);
-    // Splits the current tab side-by-side (read-only mirror pane).
+    // Toggles the split view: code | SHADER PREVIEW. The host catches
+    // split_toggled and shrinks the SDL preview window to the right half.
     void split_current();
+    bool split_on() const;
     QWidget* editor_dock_host();
 
     // LSP lifecycle (stage 6): slangd on the active doc.
@@ -94,6 +97,7 @@ signals:
     void status_changed(const QString& status);
     void diagnostics_ready(const std::vector<editor::Diagnostic>& diags);
     void font_changed(int pt);
+    void split_toggled(bool on);
 
 private slots:
     void on_tab_changed(int index);
@@ -105,6 +109,7 @@ private:
     // Editor viewport event filter: Cmd+click -> definition; Cmd hover ->
     // underline the identifier under the cursor. Per-viewport (load_named).
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     bool line_col_at(QsciScintilla* edit, const QPoint& vp, int& line, int& col);
     void update_link_underline(QsciScintilla* edit, const QPoint& vp, bool cmd);
     QsciScintilla* current_editor();
@@ -148,8 +153,11 @@ private:
     QLabel* find_status_ = nullptr;
     void find_next();
     void hide_find();
-    // Split view: a READ-ONLY clone mirrors the current doc side-by-side.
-    QsciScintilla* split_clone_ = nullptr;
+    // Split state: true while the host shows the preview beside the code.
+    bool split_on_ = false;
+    // Floating split toggle (bottom-right of the tab widget).
+    QPushButton* split_btn_ = nullptr;
+    void reposition_split_button();
 };
 
 } // namespace editor

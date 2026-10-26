@@ -12,11 +12,11 @@
 #include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QMenu>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
-#include <QMenu>
 #include <QVBoxLayout>
 
 #include <fstream>
@@ -24,6 +24,7 @@
 
 #include <QtNodes/internal/ConnectionIdUtils.hpp>
 #include <QtNodes/internal/NodeStyle.hpp>
+#include <QtNodes/internal/ConnectionStyle.hpp>
 
 namespace graph_editor {
 
@@ -97,6 +98,15 @@ QString Scene_Delegate::portCaption(QtNodes::PortType type, QtNodes::PortIndex i
 }
 
 Node_View::Node_View(QWidget* parent) : QWidget(parent) {
+    // Link colors follow the port type (data-defined): frame links vs the
+    // uniform hue — different link styles the legacy app had.
+    QtNodes::ConnectionStyle::setConnectionStyle(R"(
+    {
+        "ConnectionStyle": {
+            "UseDataDefinedColors": true,
+            "LineWidth": 2.0
+        }
+    })");
     auto registry = std::make_shared<QtNodes::NodeDelegateModelRegistry>();
     const QStringList kinds = {"params", "graphics", "compute", "output",
                                "texture", "mesh", "widget"};
@@ -222,15 +232,40 @@ Node_View::Node_View(QWidget* parent) : QWidget(parent) {
         dirty_ = true;
         emit pipeline_changed();
     });
-    // Node context menu: add user resources (image/mesh/target) like imgui_nodes.
+    // Node context menu: create passes/combines (writes .slang into the
+    // scene dir — the watcher rebuilds and the next resync picks the new
+    // pass up) and user resources (image/mesh/target) like imgui_nodes.
     view_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(view_, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
         QMenu menu(this);
+        menu.addSection("create pass");
+        QAction* gfx_pass = menu.addAction("graphics pass");
+        QAction* cmp_pass = menu.addAction("compute pass");
+        menu.addSection("create combine");
+        QAction* combine_add = menu.addAction("ADD");
+        QAction* combine_mul = menu.addAction("MUL");
+        QAction* combine_and = menu.addAction("AND");
+        QAction* combine_or = menu.addAction("OR");
+        QAction* combine_not = menu.addAction("NOT");
+        menu.addSection("create resource");
         QAction* image = menu.addAction("image…");
         QAction* mesh = menu.addAction("mesh…");
         menu.addAction("render target");
         QAction* chosen = menu.exec(view_->mapToGlobal(pos));
         if (!chosen) return;
+        if (chosen == gfx_pass || chosen == cmp_pass) {
+            create_pass_file(chosen == gfx_pass);
+            return;
+        }
+        if (chosen == combine_add || chosen == combine_mul || chosen == combine_and ||
+            chosen == combine_or || chosen == combine_not) {
+            QString op = chosen == combine_add ? "ADD"
+                       : chosen == combine_mul ? "MUL"
+                       : chosen == combine_and ? "AND"
+                       : chosen == combine_or  ? "OR" : "NOT";
+            create_combine_file(op);
+            return;
+        }
         if (chosen == image || chosen == mesh) {
             // Real asset pick: the node key embeds the path the runtime
             // loads; a fake path would create a dead node (bind-site miss).
@@ -264,6 +299,188 @@ Node_View::Node_View(QWidget* parent) : QWidget(parent) {
         dirty_ = true;
         rebuild_scene();
     });
+    // Node context menu (right-click on a NODE): delete for user resource
+    // nodes and combine passes (removes the .slang — the watcher resyncs).
+    // Derived nodes (params/show2d/reflection passes) are not deletable.
+    connect(scene_, &QtNodes::BasicGraphicsScene::nodeContextMenu,
+            this, [this](QtNodes::NodeId id, const QPointF&) {
+        QString key = node_key(id);
+        QMenu menu(this);
+        bool user_node = key.startsWith("uimg:") || key.startsWith("uobj:");
+        bool combine = key.contains("combine_");
+        if (!user_node && !combine) return;
+        QAction* del = menu.addAction("delete node");
+        QAction* swap = user_node && key.startsWith("uimg:") && !key.contains(":target:")
+                            ? menu.addAction("swap file…") : nullptr;
+        QAction* chosen = menu.exec(QCursor::pos());
+        if (!chosen) return;
+        if (chosen == swap) {
+            QString path = QFileDialog::getOpenFileName(
+                this, "pick image", "assets", "Images (*.png *.jpg *.jpeg *.bmp)");
+            if (path.isEmpty()) return;
+            for (Graph_Node& node : nodes_) {
+                if (node.key != key) continue;
+                node.key = QString("uimg:%1:texture").arg(path);
+                break;
+            }
+            dirty_ = true;
+            rebuild_scene();
+            return;
+        }
+        if (chosen == del && combine) {
+            // Combine nodes own their .slang: delete the file (legacy
+            // sg_delete_combine refuses non-combinator files; the marker
+            // check happens on the read side).
+            QString file = key.section(':', 0, -2);
+            file.remove("gfx:");
+            QFile(scene_root_ + "/" + file + ".slang").remove();
+        }
+        for (long i = long(nodes_.size()) - 1; i >= 0; --i) {
+            if (nodes_[size_t(i)].key == key) {
+                nodes_.removeAt(i);
+                break;
+            }
+        }
+        model_->deleteNode(id);
+        dirty_ = true;
+        rebuild_scene();
+    });
+}
+// Writes a pass template (legacy imgui_nodes SG_TEMPLATE_*) into the
+// scene dir as pass_N.slang. The watcher sees the new file, the build
+// runs, and the next graph rebuild picks the pass up as a node.
+void Node_View::create_pass_file(bool graphics) {
+    if (scene_title_.isEmpty()) return;
+    QString dir = scene_root_ + "/" + scene_title_;
+    QString body;
+    if (graphics) {
+        body = R"SLANG(// Graphics pass created from the node graph. Fullscreen triangle sampling
+// the previous pass's frame (input_tex); replace the passthrough with
+// your shading.
+import "../../common";
+
+[[vk::binding(0, 0)]]
+ConstantBuffer<SceneUniforms> Uniforms;
+
+[[vk::binding(1, 0)]]
+Texture2D<float4> input_tex;
+
+[[vk::binding(2, 0)]]
+SamplerState input_sampler;
+
+[shader("vertex")]
+VsOut vertMain(uint vertexIndex : SV_VertexID) {
+    return fullscreen_vertex(vertexIndex, Uniforms.iResolution.xy);
+}
+
+[shader("fragment")]
+float4 pixelMain(VsOut input) : SV_Target0 {
+    float2 uv = input.gl_FragCoord / Uniforms.iResolution.xy;
+    return input_tex.Sample(input_sampler, uv);
+}
+)SLANG";
+    } else {
+        body = R"SLANG(// Compute pass created from the node graph. Reads the previous pass's
+// frame (input_tex) and writes out_tex; replace the passthrough with
+// your effect.
+import "../../common";
+
+[[vk::binding(0, 0)]]
+ConstantBuffer<SceneUniforms> Uniforms;
+
+[[vk::binding(1, 0)]]
+Texture2D<float4> input_tex;
+
+[[vk::binding(2, 0)]]
+SamplerState input_sampler;
+
+[[vk::binding(3, 0)]]
+RWTexture2D<float4> out_tex;
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void computeMain(uint3 id : SV_DispatchThreadID) {
+    if (is_outside(id, Uniforms.iResolution)) return;
+    float2 uv = (float2(id.xy) + 0.5) / Uniforms.iResolution.xy;
+    out_tex[id.xy] = input_tex.Sample(input_sampler, uv);
+}
+)SLANG";
+    }
+    for (int n = 1; n < 100; ++n) {
+        QString path = QString("%1/pass_%2.slang").arg(dir).arg(n);
+        if (QFileInfo::exists(path)) continue;
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            notify::notify(notify::Kind::ERROR_, "could not write " + path);
+            return;
+        }
+        f.write(body.toUtf8());
+        notify::notify(notify::Kind::INFO, "created " + path);
+        return;
+    }
+    notify::notify(notify::Kind::ERROR_, "no free pass_N name (1..99)");
+}
+
+// Fragment body per combine op (legacy sg_combine_body; ADD = alpha-over).
+static QString combine_body(const QString& op) {
+    if (op == "ADD")
+        return "float oa = a.a + b.a * (1.0 - a.a); float3 rgb = oa > 1e-6 ? "
+               "(a.rgb * a.a + b.rgb * b.a * (1.0 - a.a)) / oa : float3(0.0, 0.0, 0.0); "
+               "return float4(rgb, oa);";
+    if (op == "MUL") return "return a * b;";
+    if (op == "AND") return "return min(a, b);";
+    if (op == "OR") return "return max(a, b);";
+    return "return float4(1.0 - a.rgb, a.a);"; // NOT
+}
+
+// Writes combine_<op>[_N].slang; the first line marks it a combinator
+// (legacy marker: // graph-node: combine <OP>).
+void Node_View::create_combine_file(const QString& op) {
+    if (scene_title_.isEmpty()) return;
+    QString dir = scene_root_ + "/" + scene_title_;
+    QString body = QString(R"SLANG(// graph-node: combine %1
+// Combinator created from the node graph: a %1 of its two inputs.
+import "../../common";
+
+[[vk::binding(0, 0)]]
+ConstantBuffer<SceneUniforms> Uniforms;
+
+[[vk::binding(1, 0)]]
+Texture2D<float4> a_tex;
+
+[[vk::binding(2, 0)]]
+SamplerState a_sampler;
+
+[[vk::binding(3, 0)]]
+Texture2D<float4> b_tex;
+
+[[vk::binding(4, 0)]]
+SamplerState b_sampler;
+
+[shader("vertex")]
+VsOut vertMain(uint vertexIndex : SV_VertexID) {
+    return fullscreen_vertex(vertexIndex, Uniforms.iResolution.xy);
+}
+
+[shader("fragment")]
+float4 pixelMain(VsOut input) : SV_Target0 {
+    float2 uv = input.gl_FragCoord / Uniforms.iResolution.xy;
+    float4 a = a_tex.Sample(a_sampler, uv);
+    float4 b = b_tex.Sample(b_sampler, uv);
+    %2
+}
+)SLANG").arg(op, combine_body(op));
+    QString base = "combine_" + op.toLower();
+    QString path = dir + "/" + base + ".slang";
+    for (int n = 1; QFileInfo::exists(path) && n < 100; ++n)
+        path = QString("%1/%2_%3.slang").arg(dir, base).arg(n);
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        notify::notify(notify::Kind::ERROR_, "could not write " + path);
+        return;
+    }
+    f.write(body.toUtf8());
+    notify::notify(notify::Kind::INFO, "created " + path);
 }
 
 std::vector<render_graph::Pass_Descriptor> Node_View::descriptors() const {

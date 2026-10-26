@@ -15,8 +15,8 @@
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QListWidget>
 #include <QStackedWidget>
-#include <QVBoxLayout>
 
 #include <QString>
 #include <QWidget>
@@ -61,6 +61,7 @@ struct Ui_State {
     bool mobile = false;
     float font_size = 14;
     float editor_font = 14;
+    bool editor_split = false; // code | shader preview (editor page)
     Editor_Theme theme = Editor_Theme::DARK;
     float user_w = 0;           // dragged panel width; 0 = per-mode default
 
@@ -166,6 +167,8 @@ private:
     bool panel_resize_hit(const QPoint& global_pos) const;
     bool panel_dragging_ = false;
 
+    QPushButton* panel_edge_ = nullptr;
+    void update_panel_edge();
     QWidget* topbar();
     QWidget* strip();
     QScrollArea* panel();
@@ -201,6 +204,7 @@ private:
     QPushButton* pause_btn_ = nullptr;
     QMenu* selector_menu_ = nullptr;
     QPushButton* selector_btn_ = nullptr;
+    QListWidget* scene_list_widget_ = nullptr; // docked scene list rows
     QMenu* scene_menu_ = nullptr;     // native Scene menu (menubar.cpp)
     void sync_scene_menu();
     graph_editor::Node_View* graph_view_ = nullptr;

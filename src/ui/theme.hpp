@@ -28,6 +28,7 @@ constexpr const char* kSurfacePanel = "#1E2026";   // side panel
 constexpr const char* kTextPrimary = "#DEE0E6";    // proof white
 constexpr const char* kTextMuted = "#828894";      // fog: captions, hints (≥4.5:1 on every surface — DESIGN.md's #757A85 measured 4.27:1)
 constexpr const char* kFrameBorder = "#FFFFFF17";  // separators/frames
+constexpr const char* kControlBorder = "#4A4D55";  // unchecked checkbox/radio outline
 
 constexpr const char* kSafelight = "#E8A857"; // amber: state, never decoration
 } // namespace theme

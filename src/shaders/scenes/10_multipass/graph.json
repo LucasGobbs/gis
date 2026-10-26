@@ -1,1 +1,42 @@
-{"version":1,"scene":"10_multipass","nodes":[{"key":"params","kind":"params","x":-190.8,"y":-49.8},{"key":"image","kind":"texture","x":10.0,"y":240.0},{"key":"comp:scenes/10_multipass/10_multipass:computeMain","kind":"compute","x":162.8,"y":-152.3},{"key":"comp:scenes/10_multipass/pass_1:computeMain","kind":"compute","x":274.7,"y":106.8},{"key":"show2d","kind":"output","x":680.0,"y":10.0}],"links":[{"from":"comp:scenes/10_multipass/pass_1:computeMain:out_tex","to":"show2d:frame"}]}
+{
+    "links": [
+        {
+            "from": "comp:scenes/10_multipass/pass_1:computeMain:out_tex",
+            "to": "show2d:frame"
+        }
+    ],
+    "nodes": [
+        {
+            "key": "params",
+            "kind": "params",
+            "x": -102.20073699951172,
+            "y": -430.1658020019531
+        },
+        {
+            "key": "image",
+            "kind": "texture",
+            "x": 10,
+            "y": 240
+        },
+        {
+            "key": "comp:scenes/10_multipass/10_multipass:computeMain",
+            "kind": "compute",
+            "x": 162.8000030517578,
+            "y": -152.3000030517578
+        },
+        {
+            "key": "comp:scenes/10_multipass/pass_1:computeMain",
+            "kind": "compute",
+            "x": 365.7532958984375,
+            "y": -19.613780975341797
+        },
+        {
+            "key": "show2d",
+            "kind": "output",
+            "x": 680,
+            "y": 10
+        }
+    ],
+    "scene": "10_multipass",
+    "version": 1
+}

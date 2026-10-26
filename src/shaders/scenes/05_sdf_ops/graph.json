@@ -1,1 +1,30 @@
-{"version":1,"scene":"05_sdf_ops","nodes":[{"key":"params","kind":"params","x":40.0,"y":40.0},{"key":"gfx:scenes/05_sdf_ops/05_sdf_ops","kind":"graphics","x":40.0,"y":300.0},{"key":"show2d","kind":"output","x":340.0,"y":40.0}],"links":[{"from":"gfx:scenes/05_sdf_ops/05_sdf_ops:frame","to":"show2d:frame"}]}
+{
+    "links": [
+        {
+            "from": "gfx:scenes/05_sdf_ops/05_sdf_ops:frame",
+            "to": "show2d:frame"
+        }
+    ],
+    "nodes": [
+        {
+            "key": "params",
+            "kind": "params",
+            "x": 139.3014678955078,
+            "y": -106.9117660522461
+        },
+        {
+            "key": "gfx:scenes/05_sdf_ops/05_sdf_ops",
+            "kind": "graphics",
+            "x": 269.88970947265625,
+            "y": 89.15441131591797
+        },
+        {
+            "key": "show2d",
+            "kind": "output",
+            "x": 559.00732421875,
+            "y": 87.61029052734375
+        }
+    ],
+    "scene": "05_sdf_ops",
+    "version": 1
+}

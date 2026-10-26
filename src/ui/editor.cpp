@@ -108,14 +108,22 @@ Editor::Editor(QWidget* parent) : QTabWidget(parent) {
     auto* esc_sc = new QShortcut(QKeySequence("Escape"), find_bar_);
     esc_sc->setContext(Qt::WidgetWithChildrenShortcut);
     connect(esc_sc, &QShortcut::activated, this, &Editor::hide_find);
-    // Split toggle: corner button on the tab row. Mirrors the current doc
-    // side-by-side (read-only clone); press again to close the split.
-    auto* split_btn = new QPushButton("⫿", this);
-    split_btn->setToolTip(i18n::tr("split editor"));
-    split_btn->setFocusPolicy(Qt::NoFocus);
-    split_btn->setFixedSize(26, 22);
-    this->setCornerWidget(split_btn, Qt::TopRightCorner);
-    connect(split_btn, &QPushButton::clicked, this, &Editor::split_current);
+    // Split toggle lives OUTSIDE the tab row: a floating button docked at
+    // the tab widget's bottom-right. The tab-row corners collide with the
+    // PiP preview (top-right) or the first tab (top-left); the bottom
+    // strip stays free in every preview mode.
+    split_btn_ = new QPushButton("⫿", this);
+    split_btn_->setObjectName("splitBtn");
+    split_btn_->setToolTip(i18n::tr("split editor"));
+    split_btn_->setAccessibleName(i18n::tr("split editor"));
+    split_btn_->setFocusPolicy(Qt::NoFocus);
+    split_btn_->setFixedSize(26, 22);
+    split_btn_->setStyleSheet(
+        "QPushButton#splitBtn { background: rgba(255,255,255,0.06);"
+        " border: none; border-radius: 4px; color: #8c9099; font-size: 9pt; }"
+        "QPushButton#splitBtn:hover { background: rgba(255,255,255,0.14);"
+        " color: #DEE0E6; }");
+    connect(split_btn_, &QPushButton::clicked, this, &Editor::split_current);
 }
 
 void Editor::rescan() {
@@ -287,6 +295,11 @@ static void apply_skin(QsciScintilla* edit, Editor_Theme theme) {
             lexer->setPaper(paper, style);
         }
     }
+    // STYLE_DEFAULT (style 32) owns every style NOT explicitly set above
+    // (blank lines, line ends): without it, lines with no text painted the
+    // lexer's light default paper.
+    edit->SendScintilla(QsciScintillaBase::SCI_STYLESETBACK, 32, paper);
+    edit->setPaper(paper); // widget-level default (QsciScintilla base style)
     edit->setMarginsBackgroundColor(margin_bg);
     edit->setMarginsForegroundColor(s.margin_fg);
     edit->setCaretForegroundColor(s.text);
@@ -407,6 +420,20 @@ QString Editor::doc_uri(const QsciScintilla* edit) const {
         if (doc.widget == edit)
             return "file://" + QFileInfo(doc.path).absoluteFilePath();
     return QString();
+}
+
+void Editor::resizeEvent(QResizeEvent* event) {
+    QTabWidget::resizeEvent(event);
+    reposition_split_button();
+}
+
+void Editor::reposition_split_button() {
+    if (!split_btn_) return;
+    // Split ON: the preview owns the bottom-right, so the toggle flips to
+    // the bottom-left (still visible/clickable to turn the split off).
+    const int x = split_on_ ? 8 : width() - split_btn_->width() - 8;
+    split_btn_->move(x, height() - split_btn_->height() - 8);
+    split_btn_->raise();
 }
 
 bool Editor::eventFilter(QObject* watched, QEvent* event) {
@@ -541,7 +568,6 @@ void Editor::apply_font() {
             lex->setFont(f);
         doc.widget->setMarginWidth(1, QString(font_size_ / 2 + 2, '0'));
     }
-    if (split_clone_) split_clone_->setFont(f);
 }
 
 void Editor::set_editor_font(int pt) {
@@ -1109,47 +1135,15 @@ QWidget* Editor::editor_dock_host() {
 }
 
 void Editor::split_current() {
-    if (split_clone_) { // close split
-        split_clone_->deleteLater();
-        split_clone_ = nullptr;
-        return;
-    }
-    QsciScintilla* ed = current_editor();
-    if (!ed) return;
-    // The real QsciScintilla cannot have two parents, so the split pane is
-    // a READ-ONLY clone that mirrors text + cursor live; edits happen only
-    // in the main pane (single source of truth). Docked over the right
-    // half of the editor dock, above the tabs' text area.
-    split_clone_ = new QsciScintilla(editor_dock_host());
-    split_clone_->setReadOnly(true);
-    split_clone_->setUtf8(true);
-    split_clone_->setMarginLineNumbers(1, true);
-    split_clone_->setMarginWidth(1, "0000");
-    split_clone_->setTabWidth(4);
-    split_clone_->setLexer(new Slang_Lexer(split_clone_));
-    split_clone_->setCaretLineVisible(false);
-    split_clone_->setWrapMode(QsciScintilla::WrapWord);
-    split_clone_->setText(ed->text());
-    // Live mirror: text edits flow main -> clone; cursor follows.
-    connect(ed, &QsciScintilla::textChanged, this, [this, ed] {
-        if (!split_clone_ || current_editor() != ed) return;
-        split_clone_->SendScintilla(QsciScintillaBase::SCI_SETREADONLY, 0);
-        split_clone_->setText(ed->text());
-        split_clone_->SendScintilla(QsciScintillaBase::SCI_SETREADONLY, 1);
-    });
-    connect(ed, &QsciScintilla::cursorPositionChanged, this, [this, ed] {
-        if (!split_clone_ || current_editor() != ed) return;
-        int line = 0, col = 0;
-        ed->getCursorPosition(&line, &col);
-        split_clone_->setCursorPosition(line, col);
-        split_clone_->ensureLineVisible(line);
-    });
-    QWidget* host = editor_dock_host();
-    int half = host->width() / 2;
-    split_clone_->setGeometry(half, 24, host->width() - half,
-                              host->height() - 24);
-    split_clone_->show();
-    split_clone_->raise();
+    // Split = code | SHADER PREVIEW. The old code|code read-only clone is
+    // gone (it covered the tabs and rendered with a stale font); the
+    // host owns the preview: the SDL child window shrinks to the right
+    // half while the split is on (Shell::split_toggled -> host).
+    split_on_ = !split_on_;
+    reposition_split_button(); // flip to the free bottom corner
+    emit split_toggled(split_on_);
 }
+
+bool Editor::split_on() const { return split_on_; }
 
 } // namespace editor

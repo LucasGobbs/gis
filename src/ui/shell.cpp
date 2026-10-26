@@ -27,8 +27,11 @@
 #include <QScrollArea>
 #include <QSpinBox>
 #include <QTimer>
+#include <QWindow>
 #include "input_map.hpp"
 #include <QShortcut>
+#include <QApplication>
+#include <algorithm>
 #include <QVBoxLayout>
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qsciscintillabase.h>
@@ -304,6 +307,10 @@ Shell::Shell(QWidget* parent, scene::Scene_Manager& mgr,
         connect(sc, &QShortcut::activated, this, [this] { toggle_zen(); });
     }
     if (!qEnvironmentVariableIsSet("GIS_SKIP_REFRESH")) refresh_scenes();
+    // Outside-click dismissal for the floating scene list: the list is a
+    // plain overlay (not a native popup), so a press on ANY other widget
+    // must close it. Application-level filter watches every press.
+    qApp->installEventFilter(this);
 }
 
 
@@ -314,6 +321,7 @@ void Shell::resizeEvent(QResizeEvent* event) {
     // apply_mode on every resize would rebuild the panel content, so only
     // the user-width clamp needs the refresh; the default per-mode widths
     // are constants. Keep apply_mode out of the resize path.
+    update_panel_edge();
 }
 
 // ---- Panel resize (drag the right panel's left edge) ----
@@ -337,6 +345,38 @@ void Shell::mousePressEvent(QMouseEvent* event) {
     QWidget::mousePressEvent(event);
 }
 
+// Top-bar press = window drag. The native title bar is styled transparent
+// (host_main.mm), so without this the header clicks land on Qt widgets and
+// the window never moves. Installed as an event filter ON the top bar: the
+// bar's styled background ACCEPTS background presses, so Shell::
+// mousePressEvent never saw them; from the filter, startSystemMove works.
+// Buttons inside the bar accept their own presses (no filter interference).
+bool Shell::eventFilter(QObject* watched, QEvent* event) {
+    // Outside-click dismissal: any press NOT inside the open scene list
+    // (and not on the selector that toggles it) closes the list. The
+    // filter is application-level (installed in the ctor).
+    if (event->type() == QEvent::MouseButtonPress && scene_list_ &&
+        scene_list_->isVisible()) {
+        auto* press = static_cast<QMouseEvent*>(event);
+        const QPoint gp = press->globalPosition().toPoint();
+        bool inside_list = scene_list_->rect().contains(
+            scene_list_->mapFromGlobal(gp));
+        QWidget* hit = qApp->widgetAt(gp);
+        bool on_selector = hit == selector_btn_ ||
+                           (hit && hit->parentWidget() == selector_btn_);
+        if (!inside_list && !on_selector) show_scene_list(false);
+    }
+    if (watched == topbar_ && event->type() == QEvent::MouseButtonPress) {
+        auto* me = static_cast<QMouseEvent*>(event);
+        if (me->button() == Qt::LeftButton) {
+            QWidget* hit = topbar_->childAt(me->position().toPoint());
+            if (!hit && windowHandle() && windowHandle()->startSystemMove())
+                return true; // drag consumed the press
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 void Shell::mouseMoveEvent(QMouseEvent* event) {
     const QPoint gp = event->globalPosition().toPoint();
     if (panel_dragging_) {
@@ -354,10 +394,6 @@ void Shell::mouseMoveEvent(QMouseEvent* event) {
     QWidget::mouseMoveEvent(event);
 }
 
-bool Shell::eventFilter(QObject* watched, QEvent* event) {
-    // Native traffic lights made the group-hover machinery unnecessary.
-    return QWidget::eventFilter(watched, event);
-}
 
 void Shell::mouseReleaseEvent(QMouseEvent* event) {
     if (panel_dragging_) {
@@ -480,23 +516,41 @@ void Shell::show_scene_list(bool on) {
     }
     if (!selector_menu_) selector_menu_ = new QMenu(selector_btn_);
     rebuild_selector_menu();
-    while (scene_list_layout_->count() > 0) {
-        QLayoutItem* item = scene_list_layout_->takeAt(0);
-        if (item->widget()) item->widget()->deleteLater();
-        delete item;
-    }
-    for (QAction* action : selector_menu_->actions()) {
-        auto* btn = new QPushButton(action->text(), scene_list_);
-        btn->setFlat(true);
-        btn->setEnabled(action->isEnabled());
-        btn->setCheckable(action->isCheckable());
-        btn->setChecked(action->isChecked());
-        btn->setCursor(Qt::PointingHandCursor);
-        connect(btn, &QPushButton::clicked, this, [this, action] {
+    // QListWidget, not per-row QPushButtons: checkable buttons under
+    // QlementineStyle cache the hover/checked look (the same style-cache
+    // bug the mode strip had) — rows STAY highlighted after the mouse
+    // leaves, "marking several". Item-based hover is single by design.
+    if (!scene_list_widget_) {
+        scene_list_widget_ = new QListWidget(scene_list_);
+        scene_list_widget_->setFrameShape(QFrame::NoFrame);
+        scene_list_widget_->setStyleSheet(
+            QString("QListWidget { background: transparent; border: none;"
+                    " outline: none; font-family: 'JetBrains Mono', monospace;"
+                    " font-size: 9pt; color: %1; }"
+                    "QListWidget::item { padding: 6px 14px; border-radius: 4px; }"
+                    "QListWidget::item:hover { background: rgba(232,168,87,0.18); }"
+                    "QListWidget::item:selected { background: rgba(232,168,87,0.28);"
+                    " color: %2; }")
+                .arg(theme::kTextPrimary, theme::kSafelight));
+        connect(scene_list_widget_, &QListWidget::itemClicked, this,
+                [this](QListWidgetItem* item) {
+            QAction* action = item->data(Qt::UserRole).value<QAction*>();
             show_scene_list(false);
-            if (action->isEnabled()) action->trigger();
+            if (action && action->isEnabled()) action->trigger();
         });
-        scene_list_layout_->addWidget(btn);
+        scene_list_layout_->addWidget(scene_list_widget_);
+    }
+    scene_list_widget_->clear();
+    for (QAction* action : selector_menu_->actions()) {
+        if (action->isSeparator()) continue;
+        auto* item = new QListWidgetItem(action->text(), scene_list_widget_);
+        item->setData(Qt::UserRole, QVariant::fromValue(action));
+        if (!action->isEnabled()) { // section caption (trails/user/builtin)
+            item->setFlags(Qt::NoItemFlags);
+            item->setForeground(QColor(theme::kTextMuted));
+        } else if (action->isChecked()) { // the active scene
+            item->setForeground(QColor(theme::kSafelight));
+        }
     }
     scene_list_layout_->addStretch(1);
     scene_list_->setFixedHeight(std::min(
@@ -514,14 +568,16 @@ void Shell::show_scene_list(bool on) {
 QWidget* Shell::topbar() {
     if (topbar_) return topbar_;
     topbar_ = new QWidget(this);
+    topbar_->installEventFilter(this); // background press = window drag
     topbar_->setFixedHeight(kTopbarH);
     topbar_->setStyleSheet(
         QString("QWidget { background: %1; }"
                 "QPushButton { background: rgba(255,255,255,0.05); border: none;"
                 " border-radius: 5px; padding: 4px 12px; color: %2;"
                 " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
-                "QPushButton:hover { background: rgba(255,255,255,0.12); }")
-            .arg(theme::kSurfaceBench, theme::kTextPrimary));
+                "QPushButton:hover { background: rgba(255,255,255,0.12); }"
+                "QPushButton:focus { border: 1px solid %3; }")
+            .arg(theme::kSurfaceBench, theme::kTextPrimary, theme::kSafelight));
     auto* layout = new QHBoxLayout(topbar_);
     // Left margin clears the NATIVE traffic lights (~70px from the window
     // edge under the transparent title bar); the window supplies them now.
@@ -600,13 +656,13 @@ QWidget* Shell::strip() {
     // from apply_mode didn't clear it). The active look is driven by the
     // "active" property, repolished on every apply_mode.
     strip_->setStyleSheet(QString("QWidget { background: %1; }"
-                                  "QPushButton { border: none; background: transparent; }"
-                                  "QPushButton:hover { background: rgba(255,255,255,0.07);"
-                                  " border-radius: 8px; }"
+                                  "QPushButton { border: 1px solid transparent;"
+                                  " background: transparent; border-radius: 8px; }"
+                                  "QPushButton:hover { background: rgba(255,255,255,0.07); }"
                                   "QPushButton[active=\"true\"] {"
-                                  " background: rgba(255,255,255,0.10);"
-                                  " border-radius: 8px; }")
-                              .arg(theme::kSurfaceBench));
+                                  " background: rgba(255,255,255,0.10); }"
+                                  "QPushButton:focus { border: 1px solid %2; }")
+                              .arg(theme::kSurfaceBench, theme::kSafelight));
     auto* layout = new QVBoxLayout(strip_);
     layout->setContentsMargins(0, kStripTop, 0, kStripTop);
     layout->setSpacing(kStripStep - kStripButton);
@@ -676,19 +732,59 @@ QScrollArea* Shell::panel() {
                 "QCheckBox::indicator:checked, QRadioButton::indicator:checked {"
                 " background: %4; border: 1px solid %4; border-radius: 3px; }"
                 "QCheckBox::indicator:unchecked, QRadioButton::indicator:unchecked {"
-                " background: transparent; border: 1px solid #4a4d55; border-radius: 3px; }"
+                " background: transparent; border: 1px solid %6; border-radius: 3px; }"
                 "QDoubleSpinBox, QComboBox { background: rgba(255,255,255,0.05);"
                 " border: none; border-radius: 4px; padding: 3px 6px;"
                 " selection-background-color: %4; selection-color: %5; }")
             .arg(theme::kSurfacePanel, theme::kTextPrimary, theme::kTextMuted,
-                 theme::kSafelight, "#131418"));
+                 theme::kSafelight, "#131418", theme::kControlBorder));
     panel_layout_ = new QVBoxLayout();
     panel_layout_->setContentsMargins(12, 10, 12, 10);
     panel_layout_->setSpacing(6);
     auto* holder = new QWidget();
     holder->setLayout(panel_layout_);
     panel_->setWidget(holder);
+
+    // Collapse affordance: a chevron rides the panel's LEFT edge. Hover
+    // turns the edge amber (the drag affordance now has a visible face);
+    // click toggles the panel (same spring as the strip's active mode).
+    // Parent = Shell, NOT the QScrollArea: the scroll viewport is a sibling
+    // that covers panel children, so a panel-child chevron never paints.
+    panel_edge_ = new QPushButton(this);
+    panel_edge_->setObjectName("panelEdge");
+    panel_edge_->setToolTip(i18n::tr("toggle panel"));
+    panel_edge_->setAccessibleName(i18n::tr("toggle panel"));
+    panel_edge_->setFocusPolicy(Qt::NoFocus);
+    panel_edge_->setFixedSize(12, 56);
+    // Resting state VISIBLE (a hover-only affordance is no affordance):
+    // dim amber pill, brightening on hover.
+    panel_edge_->setStyleSheet(
+        QString("QPushButton#panelEdge { background: rgba(232,168,87,0.14);"
+                " border: none; border-radius: 3px; color: %1; font-size: 9pt; }"
+                "QPushButton#panelEdge:hover { background: rgba(232,168,87,0.38); }")
+            .arg(theme::kSafelight));
+    connect(panel_edge_, &QPushButton::clicked, this, [this] {
+        ui.panel_open = !ui.panel_open;
+        apply_mode(ui.mode);
+    });
+    update_panel_edge();
     return panel_;
+}
+
+void Shell::update_panel_edge() {
+    if (!panel_ || !panel_edge_) return;
+    if (!panel_->isVisible() || panel_->width() <= 1 || ui.mode == Sidebar_Mode::GRAPH) {
+        panel_edge_->hide();
+        return;
+    }
+    panel_edge_->setText(ui.panel_open ? "‹" : "›");
+    const QPoint edge = panel_->mapTo(this, QPoint(0, 0)) -
+                        QPoint(panel_edge_->width() / 2, 0);
+    panel_edge_->setGeometry(edge.x(), panel_->mapTo(this, QPoint(0, 0)).y() +
+                             (panel_->height() - panel_edge_->height()) / 2,
+                             panel_edge_->width(), panel_edge_->height());
+    panel_edge_->show();
+    panel_edge_->raise();
 }
 
 static QLabel* caption(const QString& text) {
@@ -838,6 +934,11 @@ QWidget* Shell::editor_dock() {
     connect(editor_, &editor::Editor::font_changed, this, [this](int pt) {
         ui.editor_font = pt; // Cmd+= / Cmd+- update the persisted size
         prefs_save(ui);
+    });
+    // Split (code | preview): the host reads shell.ui.editor_split each
+    // tick and shapes the SDL preview window accordingly.
+    connect(editor_, &editor::Editor::split_toggled, this, [this](bool on) {
+        ui.editor_split = on;
     });
     editor_->rescan();
     if (!mgr_.scenes.empty()) {
@@ -1162,6 +1263,7 @@ void Shell::animate_panel_to(int target_w) {
         if (target_w <= 1) panel_->hide();
         else panel_->show();
         if (central_ && central_->layout()) central_->layout()->activate();
+        update_panel_edge();
         return;
     }
     // Animate the panel's real width with a QVariantAnimation driving
@@ -1179,14 +1281,18 @@ void Shell::animate_panel_to(int target_w) {
         panel_->setFixedWidth(w);
         if (w <= 1) panel_->hide();
         // Native child (sdl_host_) geometry must follow the spring.
-        if (central_ && central_->layout()) central_->layout()->activate();
+        update_panel_edge();
     });
     connect(anim, &QVariantAnimation::finished, this, [this] {
         if (ui.panel_open && panel_->width() > 1) panel_->show();
+        update_panel_edge();
     });
     anim->start(QAbstractAnimation::DeleteWhenStopped);
 }
 void Shell::apply_mode(Sidebar_Mode mode) {
+    // Mode switch owns the canvas: the floating scene list would otherwise
+    // strand over the new panel (no native popup auto-dismiss here).
+    if (scene_list_ && scene_list_->isVisible()) show_scene_list(false);
     // Strip checked states: exactly one button mirrors (mode, panel_open).
     // The click already flipped Qt's own checked flag, so set ALL buttons
     // explicitly here: no stale "active" marks survive the pass.
@@ -1273,9 +1379,23 @@ void Shell::apply_mode(Sidebar_Mode mode) {
 void Shell::scene_switched() {
     refresh_scenes();
     apply_mode(ui.mode); // rebuild active panel for the new scene
+    // Editor tabs follow the scene: drop the old unit's clean tabs, load
+    // the new unit's files (dirty tabs survive; ied_close_unit rule).
+    if (editor_ && !mgr_.scenes.empty()) {
+        editor_->rescan();
+        const auto& scene = mgr_.scenes[size_t(mgr_.current)];
+        editor_->load_unit(QString::fromStdString(scene.title),
+                           scene::scene_root_dir(roots_, scene.title).c_str());
+    }
 }
 
 void Shell::flush_graph_layout() {
+    // Only flush when the graph panel is UP: a stale nodes_ list (canvas
+    // closed while the scene rebuilt) would downgrade graph.json, dropping
+    // reflection-derived pass nodes. The panel's own load_layout re-syncs
+    // from the current reflection on every entry; the scene-switch flush in
+    // the host stays (it saves the OUTGOING scene's open canvas).
+    if (!graph_panel_visible()) return;
     if (graph_view_ && graph_view_->dirty_layout() && !mgr_.scenes.empty()) {
         const auto& scene = mgr_.scenes[size_t(mgr_.current)];
         graph_view_->save_layout(QString::fromStdString(scene.title),

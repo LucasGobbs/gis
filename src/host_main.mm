@@ -357,6 +357,7 @@ if (!sdl_nswin || !qt_nswin) {
         [NSColor colorWithCalibratedRed:0x1A / 255.0 green:0x1B / 255.0
                                    blue:0x20 / 255.0 alpha:1.0]; // kSurfaceBench
     qt_nswin.movable = YES;
+    qt_nswin.movableByWindowBackground = YES; // header drag: any non-consuming bg press moves the window
 
 auto sync_child = [&] {
     NSRect r = [qt_nswin convertRectToScreen:[qt_nsview convertRect:[qt_nsview bounds] toView:nil]];
@@ -590,24 +591,41 @@ auto vph = [&] { return shell.viewport()->height(); };
         static bool preview_applied = false;
         static bool sdl_shown = true;
         if (editor_page) {
-            // Preview frame: the USER's rect (drag/resize monitor above)
-            // once set; the default anchored rect (top-right, 40%×55%)
-            // otherwise. The rect comes from the NATIVE viewport NSView
-            // with the same convertRectToScreen path as sync_child — the
-            // pure-Qt mapping drifted off-window under FramelessWindowHint.
-            if (NSIsEmptyRect(g_pip_rect)) {
-                // contentLayoutRect excludes the (transparent) title bar:
-                // with FullSizeContentView the view's bounds DO include it,
-                // and a bounds-based PiP would poke out under the lights.
-                NSRect content = [qt_nswin contentLayoutRect];
-                CGFloat pw = NSWidth(content) * 0.40;
-                CGFloat ph = NSHeight(content) * 0.55;
-                NSRect inner = NSMakeRect(NSWidth(content) - pw - 12, 0, pw, ph);
-                NSRect in_win = [qt_nsview convertRect:inner toView:nil];
-                g_pip_rect = [qt_nswin convertRectToScreen:in_win];
+            // The preview lives INSIDE the viewport rect (vp = sdl_host_:
+            // excludes topbar/strip/side panel), converted to screen — so
+            // the panel and the editor's tab row stay clickable, and the
+            // PiP never covers the files tree. Same convertRectToScreen
+            // path as sync_child (pure-Qt mapping drifted off-window).
+            NSRect vp_win = [qt_nswin convertRectToScreen:
+                [qt_nsview convertRect:[qt_nsview bounds] toView:nil]];
+            CGFloat vp_w = NSWidth(vp_win), vp_h = NSHeight(vp_win);
+            if (shell.ui.editor_split) {
+                // SPLIT mode: right half of the viewport, starting BELOW
+                // the editor tab row — the split button (tab-row corner)
+                // stays clickable to toggle the split off.
+                CGFloat half = vp_w / 2;
+                NSRect want = NSMakeRect(NSMinX(vp_win) + vp_w - half,
+                                         NSMinY(vp_win), half,
+                                         vp_h - 48);
+                if (!NSEqualRects(want, [sdl_nswin frame]))
+                    [sdl_nswin setFrame:want display:YES];
+                g_pip_rect = NSZeroRect; // split owns the rect; drag off state
+            } else {
+                // Preview frame: the USER's rect (drag/resize monitor above)
+                // once set; the default anchored rect (top-right, 40%×55%)
+                // otherwise, clamped to the viewport.
+                if (NSIsEmptyRect(g_pip_rect)) {
+                    CGFloat pw = vp_w * 0.40;
+                    // PiP ancorado ao topo-direita do viewport, topo 48px
+                    // abaixo do topo visual (abaixo da tab row): fundo
+                    // (origin Cocoa) = vpMaxY - 48 - ph.
+                    CGFloat ph = vp_h * 0.55 - 48;
+                    g_pip_rect = NSMakeRect(NSMaxX(vp_win) - pw - 12,
+                                            NSMaxY(vp_win) - 48 - ph, pw, ph);
+                }
+                if (!NSEqualRects(g_pip_rect, [sdl_nswin frame]))
+                    [sdl_nswin setFrame:g_pip_rect display:YES];
             }
-            if (!NSEqualRects(g_pip_rect, [sdl_nswin frame]))
-                [sdl_nswin setFrame:g_pip_rect display:YES];
             preview_applied = true;
             if (!sdl_shown) {
                 SDL_ShowWindow(sdl_win);
@@ -649,9 +667,15 @@ auto vph = [&] { return shell.viewport()->height(); };
         bool click = QApplication::mouseButtons() & Qt::LeftButton;
         scene::scene_write_uniforms(sc, float(pw), float(ph), t, shell.ui.color,
                                     float(mp.x()), float(mp.y()), click);
-        // Pixel provenance (stage 8): a fresh click inside the viewport starts
-        // a 1x1 readback of the scene target at the cursor (poll below).
-        if (click && !prev_click && mp.x() >= 0 && mp.y() >= 0 &&
+        // Pixel provenance (stage 8): a fresh click inside the VIEWPORT
+        // starts a 1x1 readback of the scene target (poll below). The gate
+        // is the SDL host visibility: on the editor/graph pages the SDL
+        // window shrinks to the PiP frame (or hides) — clicks there are
+        // editor clicks, not scene clicks (the toast fired over the code
+        // editor because the hidden page kept its geometry).
+        bool scene_visible = shell.ui.mode != shell::Sidebar_Mode::FILES &&
+                             shell.ui.mode != shell::Sidebar_Mode::GRAPH;
+        if (scene_visible && click && !prev_click && mp.x() >= 0 && mp.y() >= 0 &&
             mp.x() < pw && mp.y() < ph &&
             prov_readback.begin(gfx.uploader, targets.scene, mp.x(), mp.y())) {
             last_click_x = mp.x();
@@ -802,7 +826,15 @@ auto vph = [&] { return shell.viewport()->height(); };
     QObject::connect(&shell, &shell::Shell::save_all_requested, [&] {
         scene::scene_request_build(build, {manager.scenes[size_t(manager.current)].title});
     });
-    // Qt popups over the viewport lose the mouse race to the SDL child
+    // Live multipass: a link edit on the graph canvas saves graph.json
+    // IMMEDIATELY (the 10 s autosave made edits feel dead); the watcher
+    // sees the file change and re-plans the scene this frame.
+    if (shell.graph_view_typed()) {
+        QObject::connect(shell.graph_view_typed(),
+                         &graph_editor::Node_View::pipeline_changed, [&] {
+            shell.flush_graph_layout();
+        });
+    }
     // window (NSWindowAbove): make the child mouse-transparent while a
     // popup is up.
     // PNG export: download the scene texture (device px), encode PNG via

@@ -1,1 +1,38 @@
-{"version":1,"scene":"01_hello_pixel","nodes":[{"key":"params","kind":"params","x":40,"y":40},{"key":"gfx:scenes/01_hello_pixel/01_hello_pixel","kind":"graphics","x":340,"y":40},{"key":"show2d","kind":"output","x":640,"y":40}],"links":[{"from":"gfx:scenes/01_hello_pixel/01_hello_pixel:frame","to":"show2d:frame"}]}
+{
+    "links": [
+    ],
+    "nodes": [
+        {
+            "key": "params",
+            "kind": "params",
+            "x": 0,
+            "y": 40
+        },
+        {
+            "key": "gfx:scenes/01_hello_pixel/01_hello_pixel",
+            "kind": "graphics",
+            "x": 180,
+            "y": 40
+        },
+        {
+            "key": "comp:scenes/01_hello_pixel/pass_1:computeMain",
+            "kind": "compute",
+            "x": 360,
+            "y": 40
+        },
+        {
+            "key": "gfx:scenes/01_hello_pixel/pass_2",
+            "kind": "graphics",
+            "x": 540,
+            "y": 40
+        },
+        {
+            "key": "show2d",
+            "kind": "output",
+            "x": 780,
+            "y": 40
+        }
+    ],
+    "scene": "01_hello_pixel",
+    "version": 1
+}

@@ -103,10 +103,14 @@ public:
     void set_previews(const QVector<QImage>& images);
     void set_previews_enabled(bool on) { previews_enabled_ = on; refresh_previews(); }
 
-    bool dirty_layout() const { return dirty_; }
-    void clear_dirty() { dirty_ = false; }
-
     QString pipeline_error() const { return pipeline_error_; }
+    // Create-node actions (context menu): writes template .slang files
+    // into the scene dir; the watcher rebuild picks the new pass up.
+    void create_pass_file(bool graphics);
+    void create_combine_file(const QString& op);
+    void clear_dirty() { dirty_ = false; }
+    bool dirty_layout() const { return dirty_; }
+
 
 private:
     const scene::Runtime_Scene* current_scene_ = nullptr;
@@ -132,7 +136,7 @@ private:
     QMap<QtNodes::NodeId, QGraphicsPixmapItem*> preview_items_;
 
 signals:
-    void pipeline_changed();
+    void pipeline_changed(); // links changed; host flushes graph.json now
 
 private:
     void rebuild_scene();
