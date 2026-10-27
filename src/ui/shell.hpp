@@ -17,6 +17,7 @@
 #include <QScrollArea>
 #include <QListWidget>
 #include <QStackedWidget>
+#include <QTreeWidget>
 
 #include <QString>
 #include <QWidget>
@@ -54,25 +55,30 @@ struct Ui_State {
     bool grid = false;
     Interaction_Mode interaction = Interaction_Mode::AUTOROTATE;
 
-    bool sidebar_open = true;   // zen hides it
+    // Layout preset (P3-N4): Normal, Zen, Theater and Mobile are MUTUALLY
+    // EXCLUSIVE. One enum replaces the 2^n matrix of independent flags that
+    // produced the "code editor vanished" bug. Toggling one preset leaves
+    // the others (the restore slots below hold the Normal-state values).
+    enum class Layout_Preset { Normal, Zen, Theater, Mobile };
+    Layout_Preset layout = Layout_Preset::Normal;
+    bool sidebar_open = true;   // zen hides it (derived from layout in toggles)
     Sidebar_Mode mode = Sidebar_Mode::CONTROLS;
     bool panel_open = true;
-    bool theater = false;
-    bool mobile = false;
     float font_size = 14;
     float editor_font = 14;
-    bool editor_split = false; // code | shader preview (editor page)
+    bool editor_pixel_font = false; // Sergamon pixel face for the code editor
+    bool editor_split = true;  // code | shader preview side-by-side (default)
+    bool fullscreen_view = false; // F2: viewport page (PiP hidden)
     Editor_Theme theme = Editor_Theme::DARK;
     float user_w = 0;           // dragged panel width; 0 = per-mode default
 
     float gif_start = 0;
     float gif_end = 5;
 
-    // Saved slots for theater/mobile nesting.
+    // Restore slots: the Normal-state values a preset hid. One set (the old
+    // duplicate theater/mobile slots are gone — presets are exclusive).
     float saved_ui_font = 14, saved_ed_font = 14;
     bool saved_open = true, saved_ed_open = false;
-    float mobile_saved_ui_font = 14, mobile_saved_ed_font = 14;
-    bool mobile_saved_open = true, mobile_saved_ed_open = false;
 };
 
 // Prefs: assets/ui.prefs, same keys as the Odin app.
@@ -92,8 +98,10 @@ public:
 
     Ui_State ui;
 
-    // Native-window host for the SDL render surface (elastic viewport).
-    QWidget* viewport() const { return sdl_host_; }
+    // The elastic center (editor page / fullscreen viewport page): the
+    // anchor every host-side geometry computation targets. sdl_host_ is the
+    // native-window content page and can be hidden — its bounds go stale.
+    QWidget* viewport() const { return central_; }
 
     // ---- Native menubar surface (src/ui/menubar.cpp) ----
     // Scene menu mirror: the menubar's Scene menu is repopulated on every
@@ -121,14 +129,27 @@ public:
     bool graph_panel_visible() const {
         return ui.panel_open && ui.mode == Sidebar_Mode::GRAPH;
     }
-    void toggle_zen();
+    // Layout presets (P3-N4): Normal/Zen/Theater/Mobile, mutually exclusive.
+    void set_layout(Ui_State::Layout_Preset preset);
+    void toggle_zen() { set_layout(Ui_State::Layout_Preset::Zen); }
     void toggle_editor();
-    void toggle_theater();
-    void toggle_mobile();
+    void toggle_theater() { set_layout(Ui_State::Layout_Preset::Theater); }
+    void toggle_mobile() { set_layout(Ui_State::Layout_Preset::Mobile); }
     // Saves all dirty editor tabs; host wires save_all_requested to a build.
     int save_all() { return editor_ ? editor_->save_all() : 0; }
     // Unsaved editor tabs (for the quit confirm).
     int dirty_count() const { return editor_ ? editor_->dirty_count() : 0; }
+    // Global theme switch: re-skins the persistent chrome (topbar, strip,
+    // scene list, panel frame, icons) from theme::'s active palette. The
+    // settings menu calls theme::set_app_theme() first, then this.
+    void apply_chrome_theme();
+    // Bake feedback: amber border on the save button while a scene build
+    // runs (host tick feeds it from Build_State).
+    void set_baking(bool on);
+    // O2: PiP context label — scene name + target size, parked on the
+    // preview's top edge. Hidden when the PiP is gone (fullscreen page).
+    void set_pip_overlay(const QString& text, const QRect& global_rect);
+
 signals:
     void scene_selected(int index);
     void scene_open_requested(const QString& title);
@@ -198,12 +219,20 @@ private:
     std::map<std::string, std::string>& roots_;
     QWidget* topbar_ = nullptr;
     QWidget* strip_ = nullptr;
-    QScrollArea* panel_ = nullptr;
-    QVBoxLayout* panel_layout_ = nullptr;
     QPushButton* save_btn_ = nullptr;
     QPushButton* pause_btn_ = nullptr;
+    QScrollArea* panel_ = nullptr;
+    QStackedWidget* panel_stack_ = nullptr;  // one persistent page per mode
+    int panel_page_index_[7] = {-1, -1, -1, -1, -1, -1, -1}; // Sidebar_Mode -> stack idx
+    QTreeWidget* files_tree_ = nullptr;          // persistent explorer tree
+    QWidget* files_panel_page_ = nullptr;        // FILES page widget
+    QLabel* pipeline_error_bar_ = nullptr;       // last bake failure, on-editor
+    QLabel* pip_overlay_ = nullptr;              // PiP context label (O2)
+    void update_pipeline_error_bar();
+    void refresh_files_tree();                   // refill on scene switch
     QMenu* selector_menu_ = nullptr;
     QPushButton* selector_btn_ = nullptr;
+    QPushButton* gear_btn_ = nullptr; // settings; re-tinted on theme switch
     QListWidget* scene_list_widget_ = nullptr; // docked scene list rows
     QMenu* scene_menu_ = nullptr;     // native Scene menu (menubar.cpp)
     void sync_scene_menu();

@@ -50,6 +50,8 @@ struct Uniform_Widget {
     bool on = false;
     bool node = false; // [NodeUICheck]/[NodeUISlider]
     std::string label;
+    std::string module; // source module that declared the field (entry or pass_N)
+    std::string param;  // cbuffer name (display label)
 };
 
 struct CBuffer {

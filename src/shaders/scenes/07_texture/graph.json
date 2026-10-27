@@ -1,1 +1,44 @@
-{"version":1,"scene":"07_texture","nodes":[{"key":"params","kind":"params","x":40.0,"y":40.0},{"key":"uimg:assets/parchment.jpg","kind":"texture","x":140.0,"y":200.0},{"key":"gfx:scenes/07_texture/07_texture","kind":"graphics","x":300.0,"y":40.0},{"key":"show2d","kind":"output","x":680.0,"y":10.0}],"links":[{"from":"uimg:assets/parchment.jpg:texture","to":"gfx:scenes/07_texture/07_texture:paper_tex"},{"from":"gfx:scenes/07_texture/07_texture:frame","to":"show2d:frame"}]}
+{
+    "links": [
+    ],
+    "nodes": [
+        {
+            "key": "params",
+            "kind": "params",
+            "x": 188.39999389648438,
+            "y": 9.600000381469727
+        },
+        {
+            "key": "image",
+            "kind": "texture",
+            "x": -104.4000015258789,
+            "y": 111.5999984741211
+        },
+        {
+            "key": "gfx:scenes/03_mouse/03_mouse",
+            "kind": "graphics",
+            "x": 406,
+            "y": 145.60000610351562
+        },
+        {
+            "key": "gfx:scenes/03_mouse/combine_add",
+            "kind": "combine",
+            "x": 40,
+            "y": 820
+        },
+        {
+            "key": "gfx:scenes/03_mouse/combine_add_1",
+            "kind": "combine",
+            "x": 40,
+            "y": 1080
+        },
+        {
+            "key": "show2d",
+            "kind": "output",
+            "x": 640,
+            "y": 40
+        }
+    ],
+    "scene": "07_texture",
+    "version": 1
+}

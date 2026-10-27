@@ -32,6 +32,7 @@
 #include <SDL3/SDL_gpu.h>
 
 #include <algorithm>
+#include <clocale>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -185,20 +186,34 @@ static inspect::Provenance_Readback prov_readback;
 static bool prov_pending = false;
 static int last_click_x = 0;
 static int last_click_y = 0;
+// M5: --pixel-test X Y — CLI regression probe: render N frames, read back
+// one pixel of the scene target, print rgba, quit. Legacy parity
+// (selftest.odin), reuses the provenance 1x1 readback path.
+static bool pixel_test_on = false;
+static int pixel_test_x = 0, pixel_test_y = 0;
+static int pixel_test_settle = 30; // frames before sampling (bake settle)
 static id g_pip_monitor = nil;
 
 int main(int argc, char** argv) {
+    // C locale for BOTH Qt (QLocale below) and the C runtime: --pixel-test
+    // prints '.'-decimal to stdout for diffing; the system locale (pt_BR)
+    // would render "0,141" and break numeric comparison.
+    std::setlocale(LC_ALL, "C");
     QApplication app(argc, argv);
     // C locale: uniforms are '.'-decimal; the system locale (pt_BR) renders
     // spinboxes as "0,25" and then rejects round-trip typed input.
     QLocale::setDefault(QLocale::c());
+    // QApplication's ctor calls setlocale(LC_ALL, "") on macOS (picks up
+    // the user environment); re-assert "C" AFTER it, or --pixel-test's
+    // stdout is pt_BR "0,141" instead of "0.141".
+    std::setlocale(LC_ALL, "C");
     // Qlementine owns the whole UI look: one dark theme JSON + matching icons.
     oclero::qlementine::QlementineStyle* style =
         new oclero::qlementine::QlementineStyle(&app);
     style->setThemeJsonPath(":/qlementine/resources/themes/dark.json");
     app.setStyle(style);
     theme::load_fonts();
-    oclero::qlementine::icons::initializeIconTheme();
+    theme::apply_palette(app, style); // theme:: owns the runtime-switch handle
     QIcon::setThemeName("qlementine");
     if (!chdir_repo_root()) {
         std::fprintf(stderr, "repo root not found (no src/shaders/scenes up from cwd/app dir)\n");
@@ -233,11 +248,19 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--scene") == 0 && i + 1 < argc) {
             scene_name_arg = argv[i + 1];
-            break;
+            ++i; // value consumed
+            continue;
+        }
+        if (std::strcmp(argv[i], "--pixel-test") == 0 && i + 2 < argc) {
+            pixel_test_on = true;
+            pixel_test_x = std::atoi(argv[i + 1]);
+            pixel_test_y = std::atoi(argv[i + 2]);
+            i += 2;
+            continue;
         }
         if (argv[i][0] != '-') {
             scene_name_arg = argv[i];
-            break;
+            continue;
         }
     }
 
@@ -576,11 +599,22 @@ auto vph = [&] { return shell.viewport()->height(); };
         // needs the shader visible while editing. sync_child is skipped
         // while the preview frame owns the rect: a per-tick flip-flop
         // between the two rects starves the UI with resizes.
-        bool editor_page = shell.ui.mode == shell::Sidebar_Mode::FILES;
-        if (!editor_page) sync_child();
+        // CORE LAYOUT: the editor is ALWAYS the center page; the scene
+        // preview floats as the PiP frame over it in every mode. The old
+        // FILES-only gate (fullscreen viewport for other modes) is gone.
+        bool editor_page = !shell.ui.fullscreen_view;
         // Apply finished goose-builds: worker writes artifacts, only this
         // pump creates GPU pipelines (must run on the main/GPU thread).
         scene::scene_build_pump(build, manager, gfx.gpu, scene_roots, scene_failed);
+        {
+            // Bake indicator: build.req (queued) or build.running (worker).
+            bool baking;
+            {
+                std::lock_guard<std::mutex> lock(build.mu);
+                baking = build.req || build.running;
+            }
+            shell.set_baking(baking);
+        }
         // The SDL NSWindow is a child window: a stack page switch does not hide
         // it, so it kept covering the editor (FILES) until hidden here.
         // PREVIEW mode (editor page up): the SDL window shrinks to a floating
@@ -610,13 +644,16 @@ auto vph = [&] { return shell.viewport()->height(); };
                 if (!NSEqualRects(want, [sdl_nswin frame]))
                     [sdl_nswin setFrame:want display:YES];
                 g_pip_rect = NSZeroRect; // split owns the rect; drag off state
+                shell.set_pip_overlay(QString(), QRect()); // split: no PiP label
             } else {
                 // Preview frame: the USER's rect (drag/resize monitor above)
-                // once set; the default anchored rect (top-right, 40%×55%)
-                // otherwise, clamped to the viewport.
+                // once set — FREE to move anywhere, including over the
+                // sidebar or partly off-window (the old behavior; clamping
+                // made it feel glued to the editor). Default anchored rect
+                // only when never set.
                 if (NSIsEmptyRect(g_pip_rect)) {
                     CGFloat pw = vp_w * 0.40;
-                    // PiP ancorado ao topo-direita do viewport, topo 48px
+                    // PiP ancorado ao topo-direito do viewport, topo 48px
                     // abaixo do topo visual (abaixo da tab row): fundo
                     // (origin Cocoa) = vpMaxY - 48 - ph.
                     CGFloat ph = vp_h * 0.55 - 48;
@@ -626,12 +663,25 @@ auto vph = [&] { return shell.viewport()->height(); };
                 if (!NSEqualRects(g_pip_rect, [sdl_nswin frame]))
                     [sdl_nswin setFrame:g_pip_rect display:YES];
             }
+            // O2: PiP context label — Cocoa screen rect (bottom-left origin)
+            // -> Qt global (top-left): flip Y around the screen height.
+            CGFloat screen_h = [[[NSScreen screens] firstObject] frame].size.height;
+            QRect qt_pip(int(g_pip_rect.origin.x),
+                         int(screen_h - g_pip_rect.origin.y - g_pip_rect.size.height),
+                         int(g_pip_rect.size.width), int(g_pip_rect.size.height));
+            QString scene_name = manager.scenes.empty()
+                                     ? QString()
+                                     : QString::fromStdString(
+                                           manager.scenes[size_t(manager.current)].title);
+            shell.set_pip_overlay(
+                QString("%1 · %2×%3")
+                    .arg(scene_name)
+                    .arg(int(targets.w))
+                    .arg(int(targets.h)),
+                qt_pip);
             preview_applied = true;
-            if (!sdl_shown) {
-                SDL_ShowWindow(sdl_win);
-                sdl_shown = true;
-            }
         } else {
+            shell.set_pip_overlay(QString(), QRect()); // fullscreen: no PiP label
             if (preview_applied) { // leaving the editor: full viewport again
                 preview_applied = false;
                 sync_child();
@@ -675,6 +725,24 @@ auto vph = [&] { return shell.viewport()->height(); };
         // editor because the hidden page kept its geometry).
         bool scene_visible = shell.ui.mode != shell::Sidebar_Mode::FILES &&
                              shell.ui.mode != shell::Sidebar_Mode::GRAPH;
+        // M5 --pixel-test: after the settle frames, sample the CLI-provided
+        // pixel (no click needed), print to stdout and quit. The provenance
+        // gate (scene_visible/click) does not apply: this is headless intent.
+        if (pixel_test_on && frames == pixel_test_settle && !prov_pending) {
+            if (pixel_test_x < pw && pixel_test_y < ph &&
+                prov_readback.begin(gfx.uploader, targets.scene, pixel_test_x, pixel_test_y)) {
+                prov_pending = true;
+                last_click_x = pixel_test_x;
+                last_click_y = pixel_test_y;
+            }
+        }
+        if (pixel_test_on && frames > pixel_test_settle + 5 && !prov_pending) {
+            // begin() kept failing (probe outside the target): fail loud,
+            // nonzero exit for CI.
+            std::printf("pixel %d %d: ERROR begin failed\n", pixel_test_x, pixel_test_y);
+            std::fflush(stdout);
+            QApplication::exit(1);
+        }
         if (scene_visible && click && !prev_click && mp.x() >= 0 && mp.y() >= 0 &&
             mp.x() < pw && mp.y() < ph &&
             prov_readback.begin(gfx.uploader, targets.scene, mp.x(), mp.y())) {
@@ -691,6 +759,15 @@ auto vph = [&] { return shell.viewport()->height(); };
             if (prov_readback.poll(gfx.uploader, r)) {
                 prov_pending = false;
                 if (r.valid) {
+                    if (pixel_test_on) {
+                        // M5: machine-readable stdout for regression diffs.
+                        std::printf("pixel %d %d: r=%.3f g=%.3f b=%.3f a=%.3f\n",
+                                    pixel_test_x, pixel_test_y, r.rgba[0], r.rgba[1],
+                                    r.rgba[2], r.rgba[3]);
+                        std::fflush(stdout);
+                        QApplication::quit();
+                        return;
+                    }
                     notify::notify(notify::Kind::INFO,
                                    QString("pixel (%1,%2): r=%3 g=%4 b=%5 a=%6")
                                        .arg(last_click_x)

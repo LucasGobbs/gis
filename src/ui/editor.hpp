@@ -75,6 +75,9 @@ public:
     // Current skin (LEARN reads it to mirror code-token colors).
     Editor_Theme theme() const { return theme_; }
     void set_editor_font(int pt);
+    // Pixel-face toggle for the code text (Sergamon); re-skins open tabs.
+    void set_pixel_font(bool on);
+    bool pixel_font() const { return pixel_font_; }
     // Toggles the split view: code | SHADER PREVIEW. The host catches
     // split_toggled and shrinks the SDL preview window to the right half.
     void split_current();
@@ -101,11 +104,13 @@ signals:
 
 private slots:
     void on_tab_changed(int index);
+private:
+    // Empty-state overlay (first run / all tabs closed): teaches the model.
+    QWidget* empty_state_ = nullptr;
+    void update_empty_state();
     void on_modified(int index);
     void on_lsp_ready_read();
     void on_lsp_finished(int exit_code, int status); // QProcess::ExitStatus as int (keeps the header QProcess-free)
-
-private:
     // Editor viewport event filter: Cmd+click -> definition; Cmd hover ->
     // underline the identifier under the cursor. Per-viewport (load_named).
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -128,9 +133,15 @@ private:
     Editor_Theme theme_ = Editor_Theme::DARK;
     // Font size (pt) applied to every doc's lexer + widget.
     int font_size_ = 12;
+    bool pixel_font_ = false; // Sergamon pixel face instead of JetBrains Mono
+    // Active code face: JetBrains Mono, or Sergamon when the pixel option is
+    // on (set_pixel_font).
+    QFont editor_font() const;
     void apply_font();
     // Smooth wheel scroll: fractional lines pending between wheel events.
     double scroll_acc_ = 0;
+    // Shift+wheel horizontal scroll: pending character columns.
+    double h_scroll_acc_ = 0;
     // LSP state.
     QProcess* lsp_ = nullptr;
     QString lsp_root_;
@@ -144,6 +155,11 @@ private:
     // goto-def clicked before the handshake finished; replayed on initialize.
     std::tuple<QString, int, int> pending_def_;
     bool has_pending_def_ = false;
+    // Word the last definition request queried (for the local fallback when
+    // slangd answers null — it does for declaration lines and cross-module
+    // symbols).
+    QString last_def_word_;
+    QString last_def_uri_;
     // Diagnostics currently painted, per uri; cleared when that doc's text
     // changes so stale squiggles never outlive the code that produced them.
     std::map<QString, std::vector<Diagnostic>> live_diags_;

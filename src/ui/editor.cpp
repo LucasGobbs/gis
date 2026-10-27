@@ -11,7 +11,9 @@
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QLabel>
+#include <QToolTip>
 #include <QPushButton>
+#include <QTabBar>
 #include <Qsci/qscilexercpp.h>
 #include <QSplitter>
 #include <cmath>
@@ -32,6 +34,16 @@
 namespace editor {
 
 static const char* kShaderDir = "src/shaders";
+// P2-N5: the empty state teaches the app's model on first run and after the
+// last tab closes. The overlay is a child of the QTabWidget, raised above the
+// (empty) tab area; hidden the moment any tab exists.
+void Editor::update_empty_state() {
+    if (!empty_state_) return;
+    bool empty = open_docs_.empty();
+    empty_state_->setVisible(empty);
+    empty_state_->raise();
+}
+
 QString Editor::file_path_for_rel(const QString& rel) const {
     if (rel.startsWith("gis_scenes/")) return rel + ".slang";
     // LSP locations arrive as full rels ("src/shaders/common"); editor rels
@@ -52,8 +64,22 @@ Editor::Editor(QWidget* parent) : QTabWidget(parent) {
         removeTab(index);
         open_docs_.erase(open_docs_.begin() + index);
         if (w) w->deleteLater();
+        update_empty_state();
     });
 
+    // Empty state (P2-N5): teaches the model on first run and after the last
+    // tab closes. One line, muted; gone the moment a tab exists.
+    empty_state_ = new QWidget(this);
+    empty_state_->setStyleSheet("background: transparent;");
+    auto* es_layout = new QVBoxLayout(empty_state_);
+    es_layout->setAlignment(Qt::AlignCenter);
+    auto* es_label = new QLabel(
+        i18n::tr("pick a file in the explorer to start editing"),
+        empty_state_);
+    es_label->setStyleSheet("color: #828894; font-size: 10pt; background: transparent;");
+    es_label->setAlignment(Qt::AlignCenter);
+    es_layout->addWidget(es_label);
+    update_empty_state();
     // Cmd+F find bar: floats over the active tab (QTabWidget corner widgets
     // only own the tab-row strip, which reads as chrome, not overlay).
     find_bar_ = new QWidget(this);
@@ -201,7 +227,7 @@ public:
 // lexer's built-in dark-on-white defaults (the "punctuation turned black"
 // bug). DARK = Darkroom tokens; MONOKAI/SOLARIZED/LIGHT are the standard
 // schemes.
-static void apply_skin(QsciScintilla* edit, Editor_Theme theme) {
+static void apply_skin(QsciScintilla* edit, Editor_Theme theme, const QFont& code_face) {
     struct Skin {
         QColor paper, text, keyword, type, number, comment, string,
                preproc, operator_, margin_bg, margin_fg, caret_line,
@@ -252,17 +278,16 @@ static void apply_skin(QsciScintilla* edit, Editor_Theme theme) {
     }
     QColor paper = s.paper;
     QColor margin_bg = s.margin_bg; margin_bg.setAlpha(140);
-    // Caret line: derived (paper blended toward the text color) instead of
-    // the margin fg — margin grays (#75715e MONOKAI, #586e75 SOLARIZED) at
-    // alpha 140 read as a DARKER stripe than the paper (the "line went
-    // dark" bug). DARK keeps its authored translucent white.
+    // Caret line: NO background band (user wants the row visually unchanged).
+    // The affordance is the line-number margin: caret rows get a brighter
+    // number via SCI_SETCARETLINEBACKALPHA 0 below + per-locator styling in
+    // on_modified. Keep the derived color for matched-brace/indent guides.
     QColor caret_line = s.caret_line;
     if (theme != Editor_Theme::DARK)
         caret_line = QColor::fromRgbF(
-            s.paper.redF() * 0.92 + s.text.redF() * 0.08,
-            s.paper.greenF() * 0.92 + s.text.greenF() * 0.08,
-            s.paper.blueF() * 0.92 + s.text.blueF() * 0.08);
-    caret_line.setAlpha(140);
+            s.paper.redF() * 0.85 + s.text.redF() * 0.15,
+            s.paper.greenF() * 0.85 + s.text.greenF() * 0.15,
+            s.paper.blueF() * 0.85 + s.text.blueF() * 0.15);
     auto* lexer = dynamic_cast<Slang_Lexer*>(edit->lexer());
     if (lexer) {
         auto color = [&s](int style) {
@@ -289,7 +314,7 @@ static void apply_skin(QsciScintilla* edit, Editor_Theme theme) {
             if (style == QsciLexerCPP::Operator) return s.operator_;
             return s.text;
         };
-        lexer->setFont(theme::code_font(12));
+        lexer->setFont(code_face);
         for (int style = 0; style <= QsciLexerCPP::RawString; ++style) {
             lexer->setColor(color(style), style);
             lexer->setPaper(paper, style);
@@ -304,10 +329,22 @@ static void apply_skin(QsciScintilla* edit, Editor_Theme theme) {
     edit->setMarginsForegroundColor(s.margin_fg);
     edit->setCaretForegroundColor(s.text);
     edit->setCaretLineVisible(true);
-    edit->setCaretLineBackgroundColor(caret_line);
-    // Opaque selection: translucent backgrounds left glyphs unreadable.
-    edit->setSelectionBackgroundColor(s.selection_bg);
-    edit->setSelectionForegroundColor(s.selection_fg);
+    edit->setCaretLineBackgroundColor(QColor(0, 0, 0, 0)); // no band: row unchanged
+    edit->SendScintilla(QsciScintillaBase::SCI_SETCARETLINEBACKALPHA, 0ul);
+    // Selection UNDER the text: the band sits behind the glyphs, so lexer
+    // token colors survive inside the selection (an opaque selection bg +
+    // flat fg painted every token the same near-white — the "selection loses
+    // the theme" bug).
+    // SCI_SETSELECTIONLAYER = 2754 (missing from this QScintilla's enum),
+    // SC_LAYER_UNDER_TEXT = 1: the band sits behind the glyphs.
+    edit->SendScintilla(2754, 1ul);
+    QColor sel_bg = s.selection_bg;
+    sel_bg.setAlpha(110); // translucent: tokens read through the band
+    edit->setSelectionBackgroundColor(sel_bg);
+    // NO selection fg override: forcing one fg paints every token the same
+    // pale color inside the selection. With the layer under the text, the
+    // lexer styles keep full control of the glyph colors.
+    edit->resetSelectionForegroundColor();
     edit->setIndentationGuidesBackgroundColor(margin_bg);
     edit->setIndentationGuidesForegroundColor(s.caret_line);
     edit->setMatchedBraceBackgroundColor(caret_line);
@@ -336,23 +373,66 @@ void Editor::load_named(const QString& rel) {
 
     auto* edit = new QsciScintilla(this);
     auto* lexer = new Slang_Lexer(edit);
-    lexer->setFont(theme::code_font(12));
+    lexer->setFont(editor_font());
     edit->setLexer(lexer);
     edit->setText(text);
-    edit->setMarginWidth(0, 4); // line numbers width set by lexer
     edit->setMarginLineNumbers(1, true);
-    edit->setMarginWidth(1, "0000");
+    // Fixed tiny gap (zoom-independent): 3 zero glyphs pad the numbers from
+    // the code; the lexer font grows, the margin keeps this base width.
+    edit->setMarginWidth(1, "000");
     edit->setUtf8(true);
-    edit->setFont(theme::code_font(12));
+    edit->setFont(editor_font());
     edit->setTabWidth(4);
+    // No wrap; kill the phantom horizontal scroll: Scintilla defaults
+    // SCROLLWIDTH to 2000px and never shrinks it, so short files scrolled
+    // far past their content. Track the widest line exactly (+2 chars
+    // slack) on every edit; the h-scrollbar then matches real content.
+    edit->setWrapMode(QsciScintilla::WrapNone);
+    edit->SendScintilla(QsciScintillaBase::SCI_SETSCROLLWIDTHTRACKING, 1ul);
+    edit->SendScintilla(QsciScintillaBase::SCI_SETSCROLLWIDTH, 400ul);
     edit->setIndentationsUseTabs(false);
+    // Overscroll: scroll past the last line so code can sit higher on
+    // screen (editor convention the user asked for). ENDATLASTLINE 0 adds
+    // a screenful of empty scroll below the text.
+    edit->SendScintilla(QsciScintillaBase::SCI_SETENDATLASTLINE, 0ul);
     edit->setAutoCompletionSource(QsciScintilla::AcsDocument); // words already typed in this file
     edit->setAutoCompletionThreshold(2);
-    apply_skin(edit, theme_);
+    apply_skin(edit, theme_, editor_font());
+    // Caret affordance: brighter LINE NUMBER on the caret row (the band is
+    // off). Scintilla paints margin numbers with one shared style (33), so a
+    // per-row look needs a style offset: margin 1 uses styles 256+line.
+    // SCI_SETMARGINSTYLEOFFSET = 2537 (missing from this QScintilla's enum).
+    constexpr long kNumStyleBase = 256;
+    edit->SendScintilla(2537, 1ul, kNumStyleBase);
+    edit->SendScintilla(QsciScintillaBase::SCI_SETCARETLINEVISIBLEALWAYS, 1ul);
+    QObject::connect(edit, &QsciScintillaBase::SCN_UPDATEUI, edit,
+                     [edit, base = kNumStyleBase] {
+        // SCI_MARGINSETSTYLEFORE = 2538 (missing from this QScintilla's enum).
+        auto paint = [edit, base](int ln, quint32 rgb) {
+            if (ln < 0) return;
+            edit->SendScintilla(2538, ln + base, rgb);
+        };
+        // Dim = whatever style 33 (STYLE_LINENUMBER) currently paints. Styles
+        // 256+line default to black on the dark paper, so every VISIBLE row's
+        // style carries the dim color; the caret row is then repainted bright
+        // on top. ~40 SendScintilla calls per update: trivial.
+        quint32 dim = quint32(edit->SendScintilla(QsciScintillaBase::SCI_STYLEGETFORE, 33ul));
+        long first = long(edit->SendScintilla(QsciScintillaBase::SCI_GETFIRSTVISIBLELINE));
+        long vis = long(edit->SendScintilla(QsciScintillaBase::SCI_LINESONSCREEN)) + 1;
+        for (long ln = first; ln < first + vis; ++ln) paint(int(ln), dim);
+        int line = int(edit->SendScintilla(QsciScintillaBase::SCI_LINEFROMPOSITION,
+                                           long(edit->SendScintilla(
+                                               QsciScintillaBase::SCI_GETCURRENTPOS))));
+        paint(line, 0x00e6e0de); // BGR quint32 of #DEE0E6: bright caret-row number
+    });
     // Cmd+click goto-def + Cmd-hover underline: my filter on the viewport
     // runs before Qsci's own (install order = reverse run order), so the
     // press is interceptable. Mouse tracking keeps Move events flowing while
     // a button is up (needed for hover underline).
+    // Both receivers: the viewport owns mouse events; the Scintilla widget
+    // owns Key events (Cmd press/release while the mouse rests — the viewport
+    // never sees those, so the underline affordance needs the edit filter too).
+    edit->installEventFilter(this);
     edit->viewport()->installEventFilter(this);
     edit->viewport()->setMouseTracking(true);
     // Link underline style: PlainIndicator = single straight line, Safelight
@@ -365,20 +445,21 @@ void Editor::load_named(const QString& rel) {
     // instead of a slangd hover card (the local answer wins: it is always
     // current with what is painted).
     edit->SendScintilla(QsciScintillaBase::SCI_SETMOUSEDWELLTIME, 500);
-    connect(edit, &QsciScintillaBase::SCN_DWELLSTART, this, [this, edit](int pos) {
+    connect(edit, &QsciScintillaBase::SCN_DWELLSTART, this,
+            [this, edit](int pos, int, int) {
         if (pos < 0) return;
         QString uri = doc_uri(edit);
         QString diag = diag_message_at(uri, pos);
         if (!diag.isEmpty()) {
-            edit->setToolTip(diag);
+            QToolTip::showText(QCursor::pos(), diag, edit);
             return;
         }
         int line = int(edit->SendScintilla(QsciScintillaBase::SCI_LINEFROMPOSITION, pos));
         int col = int(edit->SendScintilla(QsciScintillaBase::SCI_GETCOLUMN, pos));
         lsp_hover(uri, line, col);
     });
-    connect(edit, &QsciScintillaBase::SCN_DWELLEND, edit, [edit] {
-        edit->setToolTip(QString()); // clear the hover card when the mouse leaves
+    connect(edit, &QsciScintillaBase::SCN_DWELLEND, edit, [] {
+        QToolTip::hideText(); // clear the hover card when the mouse leaves
     });
     // Any keystroke invalidates the painted diagnostics for THIS doc: the
     // squiggles/markers describe old text, so drop them (the 280 ms
@@ -391,8 +472,8 @@ void Editor::load_named(const QString& rel) {
     });
     connect(edit, &QsciScintilla::modificationChanged, this,
             [this, edit](bool) { on_modified(indexOf(edit)); });
-    // Completion on identifier/'.' typing: send fresh text first (the debounced
-    // didChange lags 280 ms), then ask slangd. Result is shown in the handler.
+    // Completion on identifier/'.' typing: ask slangd (the 280 ms didChange
+    // debounce syncs text separately; see on_modified).
     connect(edit, &QsciScintilla::textChanged, this, [this, edit, path] {
         int line = 0, col = 0;
         edit->getCursorPosition(&line, &col);
@@ -401,7 +482,11 @@ void Editor::load_named(const QString& rel) {
         QChar c = l[col - 1];
         if (!(c.isLetterOrNumber() || c == '_' || c == '.')) return;
         QString uri = "file://" + QFileInfo(path).absoluteFilePath();
-        lsp_did_change(uri, edit->text());
+        // NO did_change here: on_modified's 280 ms debounce already syncs the
+        // server. A full-text didChange per keystroke (plus the didClose/
+        // didOpen reset pair every sync) made slangd reparse mid-typing —
+        // the "small delay on every key" bug. Completion on the pre-sync
+        // text is fine (the server merges the next sync).
         lsp_completion(uri, line, col);
     });
 
@@ -409,6 +494,7 @@ void Editor::load_named(const QString& rel) {
     open_docs_.push_back(doc);
     addTab(edit, rel.section('/', -1));
     setCurrentIndex(int(open_docs_.size()) - 1);
+    update_empty_state();
 
     // did-open for the LSP.
     QString uri = "file://" + QFileInfo(path).absoluteFilePath();
@@ -425,6 +511,7 @@ QString Editor::doc_uri(const QsciScintilla* edit) const {
 void Editor::resizeEvent(QResizeEvent* event) {
     QTabWidget::resizeEvent(event);
     reposition_split_button();
+    if (empty_state_) empty_state_->setGeometry(0, 0, width(), height());
 }
 
 void Editor::reposition_split_button() {
@@ -437,20 +524,42 @@ void Editor::reposition_split_button() {
 }
 
 bool Editor::eventFilter(QObject* watched, QEvent* event) {
-    // Editor viewport events: Cmd+click -> definition; Cmd held over a word
-    // -> underline it (the clickable affordance). Per-viewport filter, so it
-    // runs before QsciScintillaBase's own viewport filter.
-    auto* edit = qobject_cast<QsciScintilla*>(watched->parent());
+    // Editor events: Cmd+click -> definition; Cmd held over a word ->
+    // underline it (the clickable affordance). Two watched objects per doc:
+    // the viewport (mouse events) and the Scintilla widget itself (Key events
+    // while the mouse rests — the viewport never sees those). For the widget,
+    // watched IS the edit; for the viewport, parent() is.
+    QsciScintilla* edit = qobject_cast<QsciScintilla*>(watched);
+    if (!edit) edit = qobject_cast<QsciScintilla*>(watched->parent());
     if (!edit || !doc_for_widget(edit)) return QTabWidget::eventFilter(watched, event);
 
     switch (event->type()) {
     case QEvent::Wheel: {
+        auto* wheel = static_cast<QWheelEvent*>(event);
+        // Shift + wheel = horizontal scroll (standard editor convention):
+        // pixels (trackpad) or one character column per 1/8 notch (wheel).
+        if (wheel->modifiers() & Qt::ShiftModifier) {
+            double dx = !wheel->pixelDelta().isNull()
+                            ? double(-wheel->pixelDelta().x())
+                            : -wheel->angleDelta().y() / (8.0 * 120.0) * 20.0;
+            if (wheel->pixelDelta().isNull() && wheel->angleDelta().x() != 0)
+                dx = -wheel->angleDelta().x() / (8.0 * 120.0) * 20.0;
+            h_scroll_acc_ += dx;
+            double whole = 0;
+            h_scroll_acc_ = std::modf(h_scroll_acc_, &whole);
+            if (whole != 0) {
+                long x = long(edit->SendScintilla(QsciScintillaBase::SCI_GETXOFFSET));
+                long max = long(edit->SendScintilla(QsciScintillaBase::SCI_GETSCROLLWIDTH));
+                long target = std::clamp(x + long(whole), 0L, std::max(0L, max - 1));
+                edit->SendScintilla(QsciScintillaBase::SCI_SETXOFFSET, target);
+            }
+            return true;
+        }
         // Smooth scroll: QScintilla's wheel path jumps whole lines. Convert
         // the wheel delta into first-visible-line steps through a fractional
         // accumulator (angleDelta: ~7 lines per notch; trackpad pixelDelta
         // drives 1:1 for true pixel smoothness). The sub-line remainder
         // persists between events so slow wheels still move eventually.
-        auto* wheel = static_cast<QWheelEvent*>(event);
         double line_h = edit->textHeight(0);
         if (line_h <= 0) line_h = 1;
         double steps = 0;
@@ -555,19 +664,32 @@ void Editor::update_link_underline(QsciScintilla* edit, const QPoint& vp, bool c
 void Editor::set_theme(Editor_Theme theme) {
     theme_ = theme;
     for (Open_Doc& doc : open_docs_)
-        if (doc.widget) apply_skin(doc.widget, theme);
+        if (doc.widget) apply_skin(doc.widget, theme, editor_font());
 }
 
-// Applies font_size_ to every open doc (widget + lexer), margins included.
+// Active code face: JetBrains Mono, or Sergamon when the pixel option is on.
+QFont Editor::editor_font() const {
+    return pixel_font_ ? theme::pixel_code_font(font_size_)
+                       : theme::code_font(font_size_);
+}
+
+// Applies font_size_ + face to every open doc (widget + lexer), margins included.
 void Editor::apply_font() {
-    QFont f = theme::code_font(font_size_);
+    QFont f = editor_font();
     for (Open_Doc& doc : open_docs_) {
         if (!doc.widget) continue;
         doc.widget->setFont(f);
         if (auto* lex = dynamic_cast<Slang_Lexer*>(doc.widget->lexer()))
             lex->setFont(f);
-        doc.widget->setMarginWidth(1, QString(font_size_ / 2 + 2, '0'));
+        doc.widget->setMarginWidth(1, "000"); // constant tiny gap, zoom-independent
     }
+}
+
+// Pixel-face toggle for the code text; re-skins open tabs immediately.
+void Editor::set_pixel_font(bool on) {
+    if (pixel_font_ == on) return;
+    pixel_font_ = on;
+    apply_font();
 }
 
 void Editor::set_editor_font(int pt) {
@@ -602,6 +724,7 @@ void Editor::load_unit(const QString& scene_title, const QString& root_dir) {
         if (w) w->deleteLater();
         open_docs_.erase(open_docs_.begin() + i);
     }
+    update_empty_state();
     // Open the unit's own files.
     for (const QString& rel : files_) {
         if (rel.startsWith(prefix)) load_named(rel);
@@ -630,6 +753,7 @@ void Editor::close_current_tab() {
     removeTab(index);
     open_docs_.erase(open_docs_.begin() + index);
     if (w) w->deleteLater();
+    update_empty_state();
 }
 
 int Editor::save_all() {
@@ -842,6 +966,22 @@ void Editor::lsp_hover(const QString& uri, int line, int col) {
 }
 
 void Editor::lsp_goto_def(const QString& uri, int line, int col) {
+    // Remember the queried word: when slangd answers null (declaration lines,
+    // cross-module symbols), the response handler falls back to a local
+    // top-level-declaration search with it.
+    last_def_uri_ = uri;
+    last_def_word_.clear();
+    QsciScintilla* ed = current_editor();
+    if (ed) {
+        QString text = ed->text(line);
+        int s = std::min(col, (int)text.size());
+        while (s > 0 && (text[s - 1].isLetterOrNumber() || text[s - 1] == '_')) --s;
+        int e = std::min(col, (int)text.size());
+        while (e < (int)text.size() &&
+               (text[e].isLetterOrNumber() || text[e] == '_'))
+            ++e;
+        last_def_word_ = text.mid(s, e - s);
+    }
     // Clicks can land before the initialize handshake finishes (slangd spawn
     // is deferred 3 s): queue the request and replay it once initialized,
     // otherwise the click is silently dropped by the send gate.
@@ -974,7 +1114,7 @@ void Editor::handle_lsp_message(const QByteArray& payload) {
         }
         if (contents.isEmpty())
             contents = i18n::tr("no docs for this symbol");
-        if (current_editor()) current_editor()->setToolTip(contents);
+        if (current_editor()) QToolTip::showText(QCursor::pos(), contents, current_editor());
     } else if (method == "definition") {
         // Result: Location | Location[] | null. First location wins.
         QJsonValue r = obj["result"];
@@ -995,7 +1135,35 @@ void Editor::handle_lsp_message(const QByteArray& payload) {
                 current_editor()->ensureLineVisible(def_line);
             }
         } else {
-            notify::notify(notify::Kind::INFO, i18n::tr("no definition found"));
+            // slangd answers null for declaration lines, keywords, attribute
+            // names and cross-module symbols (verified with slangd 2026.18.2
+            // probes). Fall back to the legacy local search: a top-level line
+            // declaring the word ("struct <word>" / "<ret> <word>("), same
+            // heuristic as ied_find_definition in the Odin app. Silent when
+            // nothing matches (keyword/attribute click).
+            if (last_def_word_.isEmpty()) return;
+            QsciScintilla* ed = current_editor();
+            if (!ed) return;
+            QString word = last_def_word_;
+            QString struct_needle = "struct " + word;
+            QString call_needle = word + "(";
+            int lines = int(ed->SendScintilla(QsciScintillaBase::SCI_GETLINECOUNT));
+            for (int ln = 0; ln < lines; ++ln) {
+                QString text = ed->text(ln);
+                if (text.trimmed().startsWith("//")) continue;
+                if (text.trimmed().isEmpty() || text[0] == ' ' || text[0] == '\t') continue;
+                if (text.contains(struct_needle)) {
+                    ed->setCursorPosition(ln, 0);
+                    ed->ensureLineVisible(ln);
+                    return;
+                }
+                int paren = text.indexOf(call_needle);
+                if (paren > 0 && !text.left(paren).contains('=')) {
+                    ed->setCursorPosition(ln, 0);
+                    ed->ensureLineVisible(ln);
+                    return;
+                }
+            }
         }
     } else if (method == "completion") {
         // Result: CompletionItem[] or CompletionList{items}. Filter by the word
@@ -1043,25 +1211,32 @@ void Editor::on_lsp_ready_read() {
 }
 
 void Editor::apply_diagnostics(const std::vector<Diagnostic>& diags) {
-    static const int kSquiggle = 8;  // custom indicator index
-    static const int kBadMarker = 2; // error-line marker
+    static const int kUnderline = 8; // custom indicator index
     live_diags_.clear();
     for (Open_Doc& doc : open_docs_) {
         if (!doc.widget) continue;
         QString uri = "file://" + QFileInfo(doc.path).absoluteFilePath();
-        doc.widget->markerDeleteAll(kBadMarker);
         doc.widget->SendScintilla(QsciScintillaBase::SCI_INDICATORCLEARRANGE, 0,
                                   long(doc.widget->SendScintilla(
                                       QsciScintillaBase::SCI_GETLENGTH)));
-        doc.widget->indicatorDefine(QsciScintilla::SquiggleIndicator, kSquiggle);
-        doc.widget->setIndicatorForegroundColor(QColor(0xf2, 0x6b, 0x5c), kSquiggle);
+        // Error affordance: a straight red UNDERLINE along the reported
+        // token range (whole line when slangd gives no length). No margin
+        // dots, no tab badges — the underline IS the signal.
+        doc.widget->indicatorDefine(QsciScintilla::PlainIndicator, kUnderline);
+        doc.widget->setIndicatorForegroundColor(QColor(0xf2, 0x6b, 0x5c), kUnderline);
+        doc.widget->setIndicatorDrawUnder(true, kUnderline);
+        // fillIndicatorRange paints the CURRENT indicator: the Cmd-hover
+        // handler leaves it at 9 (amber link) on some docs, which swallowed
+        // the red underline. Pin it to the diagnostics index first.
+        doc.widget->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT,
+                                  kUnderline);
         for (const Diagnostic& d : diags) {
             if (d.uri != uri) continue;
             live_diags_[uri].push_back(d);
             int line_len = doc.widget->lineLength(d.line);
             int len = d.len > 0 ? d.len : std::max(1, line_len - d.col - 1);
-            doc.widget->fillIndicatorRange(d.line, d.col, d.line, d.col + len, kSquiggle);
-            if (d.error) doc.widget->markerAdd(d.line, kBadMarker);
+            doc.widget->fillIndicatorRange(d.line, d.col, d.line, d.col + len,
+                                           kUnderline);
         }
     }
 }

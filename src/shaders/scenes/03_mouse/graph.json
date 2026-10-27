@@ -1,1 +1,48 @@
-{"version":1,"scene":"03_mouse","nodes":[{"key":"params","kind":"params","x":40.0,"y":40.0},{"key":"image","kind":"texture","x":40.0,"y":300.0},{"key":"gfx:scenes/03_mouse/03_mouse","kind":"graphics","x":340.0,"y":40.0},{"key":"gfx:scenes/03_mouse/combine_add","kind":"combine","x":40.0,"y":820.0},{"key":"gfx:scenes/03_mouse/combine_add_1","kind":"combine","x":40.0,"y":1080.0},{"key":"show2d","kind":"output","x":640.0,"y":40.0}],"links":[{"from":"gfx:scenes/03_mouse/03_mouse:frame","to":"show2d:frame"}]}
+{
+    "links": [
+        {
+            "from": "gfx:scenes/03_mouse/03_mouse:frame",
+            "to": "show2d:frame"
+        }
+    ],
+    "nodes": [
+        {
+            "key": "params",
+            "kind": "params",
+            "x": 40,
+            "y": 40
+        },
+        {
+            "key": "image",
+            "kind": "texture",
+            "x": 200.8000030517578,
+            "y": 190.8000030517578
+        },
+        {
+            "key": "gfx:scenes/03_mouse/03_mouse",
+            "kind": "graphics",
+            "x": 406,
+            "y": 145.60000610351562
+        },
+        {
+            "key": "gfx:scenes/03_mouse/combine_add",
+            "kind": "combine",
+            "x": 40,
+            "y": 820
+        },
+        {
+            "key": "gfx:scenes/03_mouse/combine_add_1",
+            "kind": "combine",
+            "x": 40,
+            "y": 1080
+        },
+        {
+            "key": "show2d",
+            "kind": "output",
+            "x": 640,
+            "y": 40
+        }
+    ],
+    "scene": "03_mouse",
+    "version": 1
+}

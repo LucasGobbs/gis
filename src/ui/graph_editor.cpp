@@ -16,7 +16,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QEvent>
+#include <QGraphicsTextItem>
+#include <QImage>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QVBoxLayout>
 
 #include <fstream>
@@ -118,6 +122,7 @@ Node_View::Node_View(QWidget* parent) : QWidget(parent) {
     scene_ = new QtNodes::DataFlowGraphicsScene(*model_, this);
     view_ = new QtNodes::GraphicsView(this);
     view_->setScene(scene_);
+    view_->viewport()->installEventFilter(this); // Alt+click = pixel provenance
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(view_);
@@ -498,6 +503,40 @@ QtNodes::NodeId Node_View::node_id(const QString& key) const {
     return QtNodes::InvalidNodeId;
 }
 
+// No links in graph.json (or no file at all): chain the pass nodes in
+// reflection order into show2d — the same routing plan_build infers at
+// runtime, so the canvas mirrors what actually renders.
+void Node_View::derive_default_links() {
+    links_.clear();
+    const auto descs = descriptors();
+    auto find_desc = [&descs](const QString& key)
+        -> const render_graph::Pass_Descriptor* {
+        for (const auto& d : descs)
+            if (QString::fromStdString(d.key) == key) return &d;
+        return nullptr;
+    };
+    // Pass nodes in nodes_ order (the reflection order load_layout uses).
+    QList<Graph_Link> chain;
+    QString prev_output; // "<key>:<pin>" of the previous pass's frame
+    for (const Graph_Node& node : nodes_) {
+        if (node.kind == "params" || node.kind == "output" ||
+            node.kind == "texture" || node.kind == "mesh" ||
+            node.kind == "widget")
+            continue;
+        const auto* desc = find_desc(node.key);
+        if (!desc) continue;
+        QString out = node.key + ":" + QString::fromStdString(desc->output_pin);
+        if (!prev_output.isEmpty() && !desc->input_textures.empty())
+            chain.push_back({prev_output,
+                             node.key + ":" +
+                                 QString::fromStdString(desc->input_textures[0])});
+        prev_output = out;
+    }
+    // Last pass -> show2d:frame (the viewport endpoint).
+    if (!prev_output.isEmpty()) chain.push_back({prev_output, "show2d:frame"});
+    links_ = chain;
+}
+
 bool Node_View::load_layout(const QString& scene_title, const QString& scene_root,
                             const scene::Runtime_Scene& scene) {
     scene_title_ = scene_title;
@@ -524,6 +563,7 @@ bool Node_View::load_layout(const QString& scene_title, const QString& scene_roo
             x += 180;
         }
         nodes_.push_back({"show2d", "output", x + 60, 40, "", "", "", 0, 0});
+        derive_default_links();
         rebuild_scene();
         dirty_ = true;
         return true;
@@ -556,6 +596,7 @@ bool Node_View::load_layout(const QString& scene_title, const QString& scene_roo
     for (const auto& l : doc.links) {
         links_.push_back({QString::fromStdString(l.from), QString::fromStdString(l.to)});
     }
+    if (links_.empty()) derive_default_links(); // link-less graph.json: default chain
     rebuild_scene();
     return true;
 }
@@ -674,6 +715,17 @@ void Node_View::refresh_previews() {
             ++it;
         }
     }
+    // Provenance labels die with their node: a stale rgba on a rebuilt node
+    // would lie about the current pass output.
+    for (auto it = provenance_items_.begin(); it != provenance_items_.end();) {
+        if (!preview_items_.contains(it.key())) {
+            scene_->removeItem(it.value());
+            delete it.value();
+            it = provenance_items_.erase(it);
+        } else {
+            ++it;
+        }
+    }
     if (!previews_enabled_) {
         for (auto& item : preview_items_) item->setVisible(false);
         return;
@@ -726,6 +778,68 @@ static QPointF port_scene_pos(QtNodes::BasicGraphicsScene& scene,
     QTransform t;
     if (auto* ngo = scene.nodeGraphicsObject(id)) t = ngo->sceneTransform();
     return scene.nodeGeometry().portScenePosition(id, type, index, t);
+}
+
+// Pixel provenance per node (legacy imgui_nodes parity): Alt+click on a
+// pass thumbnail samples that pass's preview QImage at the click point and
+// parks a colored "r g b a" label under the thumbnail. Previews are 128px
+// GPU-downscaled targets, so the value is approximate (the legacy app read
+// full-resolution per pass); the graph panel refreshes them 1x/second.
+bool Node_View::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == view_->viewport() && event->type() == QEvent::MouseButtonPress) {
+        auto* me = static_cast<QMouseEvent*>(event);
+        if (me->modifiers() & Qt::AltModifier && me->button() == Qt::LeftButton) {
+            const QPointF sp = view_->mapToScene(me->position().toPoint());
+            // Hit-test the preview items top-down; the topmost wins.
+            QList<QGraphicsItem*> hits = scene_->items(sp);
+            for (QGraphicsItem* it : hits) {
+                auto* pix = dynamic_cast<QGraphicsPixmapItem*>(it);
+                if (!pix) continue;
+                QtNodes::NodeId id = preview_items_.key(pix, QtNodes::InvalidNodeId);
+                if (id == QtNodes::InvalidNodeId) continue;
+                // Node key → pass index (reflection order, like refresh_previews).
+                QMap<QString, int> pass_index;
+                int pi = 0;
+                for (const Graph_Node& node : nodes_)
+                    if (node.kind == "graphics" || node.kind == "compute")
+                        pass_index[node.key] = pi++;
+                int index = pass_index.value(id_to_key_.value(id), -1);
+                if (index < 0 || index >= previews_.size()) break;
+                const QImage& img = previews_[size_t(index)];
+                // Click point in the item's pixmap coords (undo the fit scale).
+                QPointF local = pix->mapFromScene(sp);
+                int px = int(local.x() / pix->boundingRect().width() * img.width());
+                int py = int(local.y() / pix->boundingRect().height() * img.height());
+                px = std::clamp(px, 0, img.width() - 1);
+                py = std::clamp(py, 0, img.height() - 1);
+                QColor c = img.pixelColor(px, py);
+                // Label under the thumbnail: values in the pixel's color.
+                auto*& label = provenance_items_[id];
+                if (!label) {
+                    label = new QGraphicsTextItem();
+                    label->setZValue(6.0);
+                    scene_->addItem(label);
+                }
+                label->setPlainText(QString("%1  %2  %3  %4")
+                                        .arg(c.redF(), 0, 'f', 3)
+                                        .arg(c.greenF(), 0, 'f', 3)
+                                        .arg(c.blueF(), 0, 'f', 3)
+                                        .arg(c.alphaF(), 0, 'f', 3));
+                label->setDefaultTextColor(c);
+                QFont f = label->font();
+                f.setPointSizeF(7.5);
+                f.setFamily("JetBrains Mono");
+                label->setFont(f);
+                if (auto* ngo = scene_->nodeGraphicsObject(id)) {
+                    QRectF b = ngo->boundingRect();
+                    label->setPos(ngo->scenePos() + QPointF(-b.width() / 2 + 8,
+                                                            b.height() / 2 - 14));
+                }
+                return true; // consumed: no node drag on Alt+click
+            }
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 // Parks the wireless ring items at the current pin positions. Uniform

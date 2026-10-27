@@ -124,9 +124,16 @@ private:
         bool grow = false; // emit expands, receive converges
     };
     void refresh_wireless_marks();
+    // No links in graph.json (or no file): chain passes in reflection order
+    // into show2d — the same routing plan_build infers at runtime.
+    void derive_default_links();
     // Pass thumbnails: keyed by node id (pass nodes only); rebuilt on
     // rebuild_scene, parked on set_previews.
     void refresh_previews();
+    // Pixel provenance per node (legacy parity): Alt+click a pass thumbnail
+    // samples that QImage at the click point and parks a colored
+    // "r g b a" label under the preview. Cleared on rebuild/preview change.
+    bool eventFilter(QObject* watched, QEvent* event) override;
     std::vector<Wireless_Mark> wireless_marks_;
     QTimer* marks_timer_ = nullptr;
     bool loading_ = false; // rebuild_scene is repopulating links; mute handlers
@@ -134,6 +141,7 @@ private:
     QVector<QImage> previews_;
     bool previews_enabled_ = true;
     QMap<QtNodes::NodeId, QGraphicsPixmapItem*> preview_items_;
+    QMap<QtNodes::NodeId, QGraphicsTextItem*> provenance_items_;
 
 signals:
     void pipeline_changed(); // links changed; host flushes graph.json now

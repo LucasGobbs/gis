@@ -40,6 +40,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #endif
 #include <QDirIterator>
+#include <QSet>
 #include <QTreeWidget>
 
 #include <algorithm>
@@ -84,6 +85,10 @@ void prefs_load(Ui_State& ui) {
             if (v >= 0 && v <= int(Editor_Theme::SOLARIZED)) ui.theme = Editor_Theme(v);
         } else if (key == "editor_font") {
             ui.editor_font = std::clamp(std::atof(value.c_str()), 10.0, 28.0);
+        } else if (key == "editor_pixel_font") {
+            ui.editor_pixel_font = value == "1";
+        } else if (key == "editor_split") {
+            ui.editor_split = value == "1";
         } else if (key == "ui_font") {
             ui.font_size = std::clamp(std::atof(value.c_str()), 12.0, 22.0);
         } else if (key == "panel_width") {
@@ -103,6 +108,8 @@ void prefs_save(const Ui_State& ui) {
     std::snprintf(buf, sizeof buf, "%.0f", ui.user_w);
     f << "theme=" << int(ui.theme) << "\n"
       << "editor_font=" << int(ui.editor_font) << "\n"
+      << "editor_pixel_font=" << (ui.editor_pixel_font ? 1 : 0) << "\n"
+      << "editor_split=" << (ui.editor_split ? 1 : 0) << "\n"
       << "ui_font=" << int(ui.font_size) << "\n"
       << "panel_width=" << (ui.user_w > 0 ? buf : "") << "\n";
     // ofstream flushes on destruction; good() here catches mid-stream failure.
@@ -149,16 +156,6 @@ static QIcon tinted_icon(const char* resource, const QColor& color, int size = k
     return QIcon(out);
 }
 
-// One qlementine icon per strip mode (order = Sidebar_Mode).
-static const char* kModeIcons[7] = {
-    ":/qlementine/icons/24/navigation/sliders-horizontal.svg", // controls
-    ":/qlementine/icons/24/file/folder.svg",                   // files
-    ":/qlementine/icons/24/misc/book-open.svg",                // learn
-    ":/qlementine/icons/24/misc/items-tree.svg",               // graph
-    ":/qlementine/icons/24/action/download.svg",               // export
-    ":/qlementine/icons/24/misc/fx.svg",                       // effects
-    ":/qlementine/icons/24/hardware/keyboard.svg",             // shortcuts
-};
 static const char* kIconColor = "#dfe0e6";
 
 QString panel_width_for(const Ui_State& ui, Sidebar_Mode mode, int display_w) {
@@ -204,10 +201,84 @@ static QStringList trail_names() {
 
 // ---- Shell ----
 
+
+// ---- Chrome stylesheets (theme-aware) ----
+// Built from theme::'s ACTIVE palette on every call; the ctor and
+// apply_chrome_theme() share them so a theme switch re-skins everything.
+static QString scene_list_qss() {
+    return QString("QWidget { background: %1; }"
+                   "QPushButton { text-align: left; padding: 6px 14px; border: none;"
+                   " border-radius: 4px; color: %2; background: transparent;"
+                   " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
+                   "QPushButton:disabled { color: %3; }"
+                   "QPushButton:hover:enabled { background: rgba(232,168,87,0.18); }"
+                   "QPushButton:checked { background: rgba(232,168,87,0.28);"
+                   " color: %4; }")
+        .arg(theme::surface_tray(), theme::text_primary(), theme::text_muted(),
+             theme::safelight());
+}
+static QString scene_list_items_qss() {
+    return QString("QListWidget { background: transparent; border: none;"
+                   " outline: none; font-family: 'JetBrains Mono', monospace;"
+                   " font-size: 9pt; color: %1; }"
+                   "QListWidget::item { padding: 6px 14px; border-radius: 4px; }"
+                   "QListWidget::item:hover { background: rgba(232,168,87,0.18); }"
+                   "QListWidget::item:selected { background: rgba(232,168,87,0.28);"
+                   " color: %2; }")
+        .arg(theme::text_primary(), theme::safelight());
+}
+static QString topbar_qss() {
+    return QString("QWidget { background: %1; }"
+                   "QPushButton { background: rgba(255,255,255,0.05); border: none;"
+                   " border-radius: 5px; padding: 4px 12px; color: %2;"
+                   " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
+                   "QPushButton:hover { background: rgba(255,255,255,0.12); }"
+                   "QPushButton:focus { border: 1px solid %3; }")
+        .arg(theme::surface_bench(), theme::text_primary(), theme::safelight());
+}
+static QString strip_qss() {
+    return QString("QWidget { background: %1; }"
+                   "QPushButton { border: 1px solid transparent;"
+                   " background: transparent; border-radius: 8px; }"
+                   "QPushButton:hover { background: rgba(255,255,255,0.07); }"
+                   "QPushButton[active=\"true\"] {"
+                   " background: rgba(255,255,255,0.10); }"
+                   "QPushButton:focus { border: 1px solid %2; }")
+        .arg(theme::surface_bench(), theme::safelight());
+}
+static QString panel_qss() {
+    return QString("QWidget { background: %1; color: %2; font-size: 9pt; }"
+                   "QPushButton { background: rgba(255,255,255,0.06); border: none;"
+                   " border-radius: 4px; padding: 4px 8px; }"
+                   "QPushButton:hover { background: rgba(255,255,255,0.12); }"
+                   "QLabel[caption=\"true\"] { color: %3; font-weight: 700;"
+                   " letter-spacing: 1px; }"
+                   "QCheckBox, QRadioButton { color: %2; spacing: 7px; }"
+                   "QCheckBox::indicator, QRadioButton::indicator { width: 14px; height: 14px; }"
+                   "QCheckBox::indicator:checked, QRadioButton::indicator:checked {"
+                   " background: %4; border: 1px solid %4; border-radius: 3px; }"
+                   "QCheckBox::indicator:unchecked, QRadioButton::indicator:unchecked {"
+                   " background: transparent; border: 1px solid %6; border-radius: 3px; }"
+                   "QDoubleSpinBox, QComboBox { background: rgba(255,255,255,0.05);"
+                   " border: none; border-radius: 4px; padding: 3px 6px;"
+                   " selection-background-color: %4; selection-color: %5; }")
+        .arg(theme::surface_panel(), theme::text_primary(), theme::text_muted(),
+             theme::safelight(), "#131418", theme::control_border());
+}
+static QString panel_edge_qss() {
+    return QString("QPushButton#panelEdge { background: rgba(232,168,87,0.14);"
+                   " border: none; border-radius: 3px; color: %1; font-size: 9pt; }"
+                   "QPushButton#panelEdge:hover { background: rgba(232,168,87,0.38); }")
+        .arg(theme::safelight());
+}
+
 Shell::Shell(QWidget* parent, scene::Scene_Manager& mgr,
              std::map<std::string, std::string>& roots)
     : QWidget(parent), mgr_(mgr), roots_(roots) {
     prefs_load(ui);
+    // Boot with the persisted skin: Qlementine theme + chrome constants
+    // BEFORE any widget builds (they read theme::'s accessors).
+    theme::set_app_theme(theme::App_Theme(int(ui.theme)));
     i18n::init();
     const bool shell_null = qEnvironmentVariableIsSet("GIS_SHELL_NULL");
     const bool no_strip = qEnvironmentVariableIsSet("GIS_SKIP_STRIP");
@@ -220,17 +291,7 @@ Shell::Shell(QWidget* parent, scene::Scene_Manager& mgr,
     outer->addWidget(topbar());
     // Scene list panel: docked under the top bar, toggled by the selector.
     scene_list_ = new QWidget(this);
-    scene_list_->setStyleSheet(
-        QString("QWidget { background: %1; }"
-                "QPushButton { text-align: left; padding: 6px 14px; border: none;"
-                " border-radius: 4px; color: %2; background: transparent;"
-                " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
-                "QPushButton:disabled { color: %3; }"
-                "QPushButton:hover:enabled { background: rgba(232,168,87,0.18); }"
-                "QPushButton:checked { background: rgba(232,168,87,0.28);"
-                " color: %4; }")
-            .arg(theme::kSurfaceTray, theme::kTextPrimary, theme::kTextMuted,
-                 theme::kSafelight));
+    scene_list_->setStyleSheet(scene_list_qss());
     scene_list_layout_ = new QVBoxLayout(scene_list_);
     scene_list_layout_->setContentsMargins(10, 8, 10, 10);
     scene_list_layout_->setSpacing(2);
@@ -246,13 +307,14 @@ Shell::Shell(QWidget* parent, scene::Scene_Manager& mgr,
     if (!no_strip) body->addWidget(strip());
     sdl_host_ = new QWidget(this);
     sdl_host_->setAttribute(Qt::WA_NativeWindow); // own NSView to host SDL
+    // Sidebar on the LEFT (next to the strip), per the layout contract; the
+    // editor owns the rest of the window permanently.
+    if (!no_panel) body->addWidget(panel());      // fixed width via apply_mode
     central_ = new QStackedWidget(this);
-    central_->addWidget(sdl_host_);               // page 0: scene viewport
-    central_->addWidget(editor_dock());           // page 1: code editor
-    central_->addWidget(graph_view());            // page 2: node graph
+    central_->addWidget(editor_dock());           // page 0: code editor (always)
+    central_->addWidget(sdl_host_);               // page 1: fullscreen viewport (zen)
     central_->setCurrentIndex(0);
     body->addWidget(central_, 1);                 // elastic center
-    if (!no_panel) body->addWidget(panel());      // fixed width via apply_mode
     outer->addLayout(body, 1);
     if (!no_panel) apply_mode(ui.mode);
 
@@ -302,6 +364,17 @@ Shell::Shell(QWidget* parent, scene::Scene_Manager& mgr,
     bind_action("toggle_editor", "F2", &Shell::toggle_editor);
     bind_action("toggle_theater", "F4", &Shell::toggle_theater);
     bind_action("toggle_mobile", "F5", &Shell::toggle_mobile);
+    // Cmd+1..5: sidebar modes (files, graph, controls, export, commands),
+    // in strip order. Same show_mode path as a strip click.
+    const Sidebar_Mode mode_keys[5] = {
+        Sidebar_Mode::FILES, Sidebar_Mode::GRAPH,     Sidebar_Mode::CONTROLS,
+        Sidebar_Mode::EXPORT, Sidebar_Mode::SHORTCUTS,
+    };
+    for (int i = 0; i < 5; ++i) {
+        auto* sc = new QShortcut(QKeySequence(QString("Meta+%1").arg(i + 1)), this);
+        connect(sc, &QShortcut::activated, this,
+                [this, mode = mode_keys[i]] { show_mode(mode); });
+    }
     for (const QKeySequence& seq : input_map::load("assets/input.ini", "toggle_sidebar")) {
         auto* sc = new QShortcut(seq, this);
         connect(sc, &QShortcut::activated, this, [this] { toggle_zen(); });
@@ -523,15 +596,7 @@ void Shell::show_scene_list(bool on) {
     if (!scene_list_widget_) {
         scene_list_widget_ = new QListWidget(scene_list_);
         scene_list_widget_->setFrameShape(QFrame::NoFrame);
-        scene_list_widget_->setStyleSheet(
-            QString("QListWidget { background: transparent; border: none;"
-                    " outline: none; font-family: 'JetBrains Mono', monospace;"
-                    " font-size: 9pt; color: %1; }"
-                    "QListWidget::item { padding: 6px 14px; border-radius: 4px; }"
-                    "QListWidget::item:hover { background: rgba(232,168,87,0.18); }"
-                    "QListWidget::item:selected { background: rgba(232,168,87,0.28);"
-                    " color: %2; }")
-                .arg(theme::kTextPrimary, theme::kSafelight));
+        scene_list_widget_->setStyleSheet(scene_list_items_qss());
         connect(scene_list_widget_, &QListWidget::itemClicked, this,
                 [this](QListWidgetItem* item) {
             QAction* action = item->data(Qt::UserRole).value<QAction*>();
@@ -547,9 +612,9 @@ void Shell::show_scene_list(bool on) {
         item->setData(Qt::UserRole, QVariant::fromValue(action));
         if (!action->isEnabled()) { // section caption (trails/user/builtin)
             item->setFlags(Qt::NoItemFlags);
-            item->setForeground(QColor(theme::kTextMuted));
+            item->setForeground(QColor(theme::text_muted()));
         } else if (action->isChecked()) { // the active scene
-            item->setForeground(QColor(theme::kSafelight));
+            item->setForeground(QColor(theme::safelight()));
         }
     }
     scene_list_layout_->addStretch(1);
@@ -570,14 +635,7 @@ QWidget* Shell::topbar() {
     topbar_ = new QWidget(this);
     topbar_->installEventFilter(this); // background press = window drag
     topbar_->setFixedHeight(kTopbarH);
-    topbar_->setStyleSheet(
-        QString("QWidget { background: %1; }"
-                "QPushButton { background: rgba(255,255,255,0.05); border: none;"
-                " border-radius: 5px; padding: 4px 12px; color: %2;"
-                " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
-                "QPushButton:hover { background: rgba(255,255,255,0.12); }"
-                "QPushButton:focus { border: 1px solid %3; }")
-            .arg(theme::kSurfaceBench, theme::kTextPrimary, theme::kSafelight));
+    topbar_->setStyleSheet(topbar_qss());
     auto* layout = new QHBoxLayout(topbar_);
     // Left margin clears the NATIVE traffic lights (~70px from the window
     // edge under the transparent title bar); the window supplies them now.
@@ -655,63 +713,61 @@ QWidget* Shell::strip() {
     // clicked buttons (the style cached the checked look; setChecked(false)
     // from apply_mode didn't clear it). The active look is driven by the
     // "active" property, repolished on every apply_mode.
-    strip_->setStyleSheet(QString("QWidget { background: %1; }"
-                                  "QPushButton { border: 1px solid transparent;"
-                                  " background: transparent; border-radius: 8px; }"
-                                  "QPushButton:hover { background: rgba(255,255,255,0.07); }"
-                                  "QPushButton[active=\"true\"] {"
-                                  " background: rgba(255,255,255,0.10); }"
-                                  "QPushButton:focus { border: 1px solid %2; }")
-                              .arg(theme::kSurfaceBench, theme::kSafelight));
+    strip_->setStyleSheet(strip_qss());
     auto* layout = new QVBoxLayout(strip_);
     layout->setContentsMargins(0, kStripTop, 0, kStripTop);
     layout->setSpacing(kStripStep - kStripButton);
     layout->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
 
-    const Sidebar_Mode modes[7] = {
-        Sidebar_Mode::CONTROLS, Sidebar_Mode::FILES,     Sidebar_Mode::LEARN,
-        Sidebar_Mode::GRAPH,    Sidebar_Mode::EXPORT,    Sidebar_Mode::EFFECTS,
-        Sidebar_Mode::SHORTCUTS,
+    // Strip mode buttons: 1 files, 2 graph, 3 controls (scene params),
+    // 4 export, 5 commands. Settings stays the separate gear popup.
+    // LEARN and EFFECTS are gone (fx removed per the layout contract).
+    const Sidebar_Mode modes[5] = {
+        Sidebar_Mode::FILES, Sidebar_Mode::GRAPH,     Sidebar_Mode::CONTROLS,
+        Sidebar_Mode::EXPORT, Sidebar_Mode::SHORTCUTS,
     };
-    for (int i = 0; i < 7; ++i) {
+    const char* icons[5] = {
+        ":/qlementine/icons/24/file/folder.svg",
+        ":/qlementine/icons/24/misc/items-tree.svg",
+        ":/qlementine/icons/24/navigation/sliders-horizontal.svg",
+        ":/qlementine/icons/24/action/download.svg",
+        ":/qlementine/icons/24/hardware/keyboard.svg",
+    };
+    for (int i = 0; i < 5; ++i) {
         auto* btn = new QPushButton(strip_);
-        btn->setIcon(tinted_icon(kModeIcons[i], QColor(kIconColor)));
+        btn->setIcon(tinted_icon(icons[i], QColor(kIconColor)));
         btn->setIconSize(QSize(kStripIcon, kStripIcon));
         btn->setFixedSize(kStripButton, kStripButton);
         btn->setToolTip(mode_name(modes[i]));
-        // A11y: icon-only buttons need an explicit name (screen readers +
-        // AX tree); the tooltip alone does not surface as AXDescription.
         btn->setAccessibleName(mode_name(modes[i]));
-        // TabFocus (was NoFocus): keyboard-only users reach the mode strip.
         btn->setFocusPolicy(Qt::TabFocus);
         connect(btn, &QPushButton::clicked, this, [this, mode = modes[i]] {
-            if (ui.mode == mode) ui.panel_open = !ui.panel_open;
-            else { ui.mode = mode; ui.panel_open = true; }
+            // Re-clicking the active button does NOT collapse: collapse is
+            // the panel edge chevron's job (recognition over recall — a
+            // double click by habit must never hide the panel).
+            if (ui.mode != mode) ui.mode = mode;
+            ui.panel_open = true;
             apply_mode(ui.mode);
         });
         strip_buttons_.push_back(btn);
-        // Explicit per-widget alignment: a layout-level AlignHCenter does not
-        // reach fixed-size children added afterwards (they keep left-anchored
-        // alignment), which is exactly the off-center strip bug.
         layout->addWidget(btn, 0, Qt::AlignHCenter);
     }
-    layout->addSpacing(6);
-
     layout->addStretch(1);
-
-    // Settings gear: language, theme, fonts — persisted via prefs. Bottom
-    // of the strip (it is a tool, not a mode).
-    auto* gear = new QPushButton(strip_);
-    gear->setIcon(tinted_icon(":/qlementine/icons/24/navigation/settings.svg",
-                              QColor(kIconColor)));
-    gear->setIconSize(QSize(kStripIcon, kStripIcon));
-    gear->setFixedSize(kStripButton, kStripButton);
-    gear->setToolTip(i18n::tr("settings"));
-    gear->setAccessibleName(i18n::tr("settings"));
-    gear->setFocusPolicy(Qt::TabFocus);
-    layout->setAlignment(gear, Qt::AlignHCenter);
-    connect(gear, &QPushButton::clicked, this, &Shell::open_settings_menu);
-    layout->addWidget(gear);
+    // Settings: the gear's popup, promoted to the strip (3rd slot visually
+    // grouped after graph/export; bottom keeps it a tool, not a mode).
+    gear_btn_ = new QPushButton(strip_);
+    gear_btn_->setIcon(tinted_icon(
+        ":/qlementine/icons/24/navigation/settings.svg", QColor(kIconColor)));
+    gear_btn_->setIconSize(QSize(kStripIcon, kStripIcon));
+    gear_btn_->setFixedSize(kStripButton, kStripButton);
+    // Tooltip dinâmica (W4): o gear anuncia o estado ativo — tema, fonte,
+    // idioma — em uma linha. Atualizada ao abrir o settings.
+    gear_btn_->setToolTip(i18n::tr("settings"));
+    gear_btn_->setAccessibleName(i18n::tr("settings"));
+    gear_btn_->setFocusPolicy(Qt::TabFocus);
+    layout->setAlignment(gear_btn_, Qt::AlignHCenter);
+    connect(gear_btn_, &QPushButton::clicked, this, &Shell::open_settings_menu);
+    layout->addWidget(gear_btn_);
     return strip_;
 }
 
@@ -720,29 +776,18 @@ QScrollArea* Shell::panel() {
     panel_ = new QScrollArea(this);
     panel_->setWidgetResizable(true);
     panel_->setFrameShape(QFrame::NoFrame);
-    panel_->setStyleSheet(
-        QString("QWidget { background: %1; color: %2; font-size: 9pt; }"
-                "QPushButton { background: rgba(255,255,255,0.06); border: none;"
-                " border-radius: 4px; padding: 4px 8px; }"
-                "QPushButton:hover { background: rgba(255,255,255,0.12); }"
-                "QLabel[caption=\"true\"] { color: %3; font-weight: 700;"
-                " letter-spacing: 1px; }"
-                "QCheckBox, QRadioButton { color: %2; spacing: 7px; }"
-                "QCheckBox::indicator, QRadioButton::indicator { width: 14px; height: 14px; }"
-                "QCheckBox::indicator:checked, QRadioButton::indicator:checked {"
-                " background: %4; border: 1px solid %4; border-radius: 3px; }"
-                "QCheckBox::indicator:unchecked, QRadioButton::indicator:unchecked {"
-                " background: transparent; border: 1px solid %6; border-radius: 3px; }"
-                "QDoubleSpinBox, QComboBox { background: rgba(255,255,255,0.05);"
-                " border: none; border-radius: 4px; padding: 3px 6px;"
-                " selection-background-color: %4; selection-color: %5; }")
-            .arg(theme::kSurfacePanel, theme::kTextPrimary, theme::kTextMuted,
-                 theme::kSafelight, "#131418", theme::kControlBorder));
-    panel_layout_ = new QVBoxLayout();
-    panel_layout_->setContentsMargins(12, 10, 12, 10);
-    panel_layout_->setSpacing(6);
+    panel_->setStyleSheet(panel_qss());
+    // Persistent panel: one QStackedWidget with a page per sidebar mode.
+    // Pages are built ONCE and kept alive — mode switches only change the
+    // visible index, so tree expand state, selection and scroll survive
+    // (the old clear-and-rebuild destroyed all of it on 22 call sites).
+    panel_stack_ = new QStackedWidget();
+    panel_stack_->setContentsMargins(0, 0, 0, 0);
     auto* holder = new QWidget();
-    holder->setLayout(panel_layout_);
+    auto* holder_layout = new QVBoxLayout(holder);
+    holder_layout->setContentsMargins(12, 10, 12, 10);
+    holder_layout->setSpacing(6);
+    holder_layout->addWidget(panel_stack_);
     panel_->setWidget(holder);
 
     // Collapse affordance: a chevron rides the panel's LEFT edge. Hover
@@ -758,11 +803,7 @@ QScrollArea* Shell::panel() {
     panel_edge_->setFixedSize(12, 56);
     // Resting state VISIBLE (a hover-only affordance is no affordance):
     // dim amber pill, brightening on hover.
-    panel_edge_->setStyleSheet(
-        QString("QPushButton#panelEdge { background: rgba(232,168,87,0.14);"
-                " border: none; border-radius: 3px; color: %1; font-size: 9pt; }"
-                "QPushButton#panelEdge:hover { background: rgba(232,168,87,0.38); }")
-            .arg(theme::kSafelight));
+    panel_edge_->setStyleSheet(panel_edge_qss());
     connect(panel_edge_, &QPushButton::clicked, this, [this] {
         ui.panel_open = !ui.panel_open;
         apply_mode(ui.mode);
@@ -802,6 +843,8 @@ static QWidget* make_color_row(scene::Runtime_Scene* scene,
     auto* layout = new QHBoxLayout(row);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(8);
+    auto* name = new QLabel(QString::fromStdString(widget.label));
+    layout->addWidget(name);
     QColor color(int(widget.value[0] * 255 + 0.5f), int(widget.value[1] * 255 + 0.5f),
                  int(widget.value[2] * 255 + 0.5f));
 
@@ -822,8 +865,7 @@ static QWidget* make_color_row(scene::Runtime_Scene* scene,
     hex->setCursor(Qt::PointingHandCursor);
 
     auto open_picker = [scene, label = widget.label, swatch, hex, paint_swatch, color]() {
-        QColor picked = QColorDialog::getColor(color, swatch, QObject::tr("pick color"),
-                                               QColorDialog::ShowAlphaChannel);
+        QColor picked = QColorDialog::getColor(color, swatch, QObject::tr("pick color"));
         if (!picked.isValid()) return;
         // Resolve the widget at fire time: the panel can outlive a
         // hot-reload scene swap that rebuilt scene.widgets.
@@ -857,14 +899,18 @@ QWidget* Shell::controls_panel() {
 
     if (!mgr_.scenes.empty()) {
         auto* scene = &mgr_.scenes[size_t(mgr_.current)];
-        // Reflected widgets ([UiSlider]/[UiToggle]/[UiColor]).
-        if (!scene->widgets.empty()) {
-            layout->addWidget(caption(
-                i18n::tr("%s params").replace("%s",
-                                              QString::fromStdString(scene->title))), 0);
-        }
+        // Reflected widgets ([UiSlider]/[UiToggle]/[UiColor]), grouped per
+        // declaring module file; the row label is the shader variable name.
+        std::string shown_module;
         for (auto& widget : scene->widgets) {
             if (widget.node) continue; // rendered as its own graph node
+            // Group header per source file: "noises" or "noises · pass_1".
+            if (widget.module != shown_module) {
+                shown_module = widget.module;
+                QString file = QString::fromStdString(shown_module);
+                file.replace(QString::fromStdString(scene->title + "__"), "");
+                layout->addWidget(caption(file), 0);
+            }
             QString label = QString::fromStdString(widget.label);
             switch (widget.kind) {
             case scene::Uniform_Widget::Kind::SLIDER: {
@@ -928,9 +974,21 @@ QWidget* Shell::editor_dock() {
     auto* layout = new QVBoxLayout(editor_dock_);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
+    // Bake error bar (P1-N2): the last bake failure lives HERE, on the
+    // editor, where the eye already is — not only in the GRAPH panel. Hidden
+    // when the last bake succeeded; scene_switched/set_baking update it.
+    pipeline_error_bar_ = new QLabel(editor_dock_);
+    pipeline_error_bar_->setObjectName("pipelineErrorBar");
+    pipeline_error_bar_->setStyleSheet(
+        "QLabel#pipelineErrorBar { background: rgba(242,107,92,0.16);"
+        " color: #F26B5C; padding: 4px 12px; font-size: 9pt; }");
+    pipeline_error_bar_->setWordWrap(true);
+    pipeline_error_bar_->hide();
+    layout->addWidget(pipeline_error_bar_);
     editor_ = new editor::Editor(editor_dock_);
     editor_->set_theme(ui.theme); // persisted prefs decide the first skin
     editor_->set_editor_font(int(ui.editor_font)); // prefs persist the size
+    editor_->set_pixel_font(ui.editor_pixel_font); // prefs persist the face
     connect(editor_, &editor::Editor::font_changed, this, [this](int pt) {
         ui.editor_font = pt; // Cmd+= / Cmd+- update the persisted size
         prefs_save(ui);
@@ -963,85 +1021,84 @@ QWidget* Shell::graph_view() {
     return graph_view_;
 }
 
-QWidget* Shell::files_panel() {
-    auto* w = new QWidget();
-    auto* layout = new QVBoxLayout(w);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(4);
+// Refill the persistent files tree: called on first build and every scene
+// switch. Keeps the QTreeWidget alive (expand state of groups the refill
+// re-sets intentionally; per-item selection resets — acceptable, the scene
+// changed).
+void Shell::refresh_files_tree() {
+    if (!files_tree_) return;
+    files_tree_->clear();
     QString active =
         mgr_.scenes.empty() ? QString() : QString::fromStdString(mgr_.scenes[size_t(mgr_.current)].title);
-
-    // Scene selection lives in the top bar now; this panel is the tree.
-
-
-    // Tree explorer: the active scene's unit (entry shader + modules +
-    // graph.json) under one folder node, then shared modules. Leaf names
-    // carry no path: the hierarchy IS the path (VS Code-style).
-    auto* tree = new QTreeWidget(w);
-    tree->setHeaderHidden(true);
-    tree->setRootIsDecorated(true);
-    tree->setIndentation(14);
-    tree->setStyleSheet(
-        "QTreeWidget { background: transparent; border: none;"
-        " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
-        "QTreeWidget::item { height: 22px; }"
-        "QTreeWidget::item:selected { background: rgba(232,168,87,0.22); color: #DEE0E6; }"
-        "QTreeWidget::item:hover { background: rgba(255,255,255,0.06); }"
-        "QTreeWidget::branch { background: transparent; }");
-
-    auto open_file = [this](const QString& rel) {
-        editor_dock(); // lazy-create + load the scene unit
-        editor_->load_named(rel);
-        show_editor(true);
+    auto file_icon = [](const QString& path) -> QIcon {
+        const QString suffix = QFileInfo(path).suffix().toLower();
+        const char* res = ":/qlementine/icons/16/file/file.svg";
+        if (suffix == "slang") res = ":/qlementine/icons/16/file/file-script.svg";
+        else if (suffix == "json") res = ":/qlementine/icons/16/file/markup.svg";
+        else if (suffix == "png" || suffix == "jpg" || suffix == "jpeg")
+            res = ":/qlementine/icons/16/file/picture.svg";
+        else if (suffix == "glb" || suffix == "gltf" || suffix == "obj")
+            res = ":/qlementine/icons/16/shape/cube.svg";
+        return tinted_icon(res, QColor(theme::text_muted()), 14);
     };
-    auto add_leaf = [](QTreeWidgetItem* parent, const QString& name,
-                       const QString& rel) {
+    enum Kind { kShader, kGraph, kAsset };
+    // W1: group headers — uppercase, letter-spaced, muted; visually anchor
+    // the three sections in a narrow panel (F-shaped scan).
+    auto add_group = [this](const QString& title) -> QTreeWidgetItem* {
+        auto* item = new QTreeWidgetItem(files_tree_, QStringList{title.toUpper()});
+        item->setFlags(Qt::ItemIsEnabled);
+        QFont f = item->font(0);
+        f.setPointSizeF(7.5);
+        f.setLetterSpacing(QFont::AbsoluteSpacing, 1.0);
+        item->setFont(0, f);
+        item->setForeground(0, QColor(theme::text_muted()));
+        return item;
+    };
+    auto add_leaf = [&](QTreeWidgetItem* parent, const QString& name,
+                        const QString& rel, Kind kind) {
         auto* item = new QTreeWidgetItem(parent, QStringList{name});
         item->setData(0, Qt::UserRole, rel);
-        item->setData(0, Qt::UserRole + 1, true); // openable leaf
+        item->setData(0, Qt::UserRole + 1, (int)kind);
+        item->setIcon(0, file_icon(rel));
+        if (kind == kAsset)
+            item->setToolTip(0, i18n::tr("route it in the render graph"));
         return item;
     };
 
     if (!active.isEmpty()) {
-        auto* unit = new QTreeWidgetItem(tree, QStringList{active});
-        unit->setFlags(Qt::ItemIsEnabled); // folder: not clickable as a file
-        // Entry shader first (it defines the scene), then modules, then the
-        // graph; paths resolve under the scene's root (builtin or user).
+        auto* unit = add_group(active);
+        unit->setIcon(0, tinted_icon(":/qlementine/icons/16/file/folder-open.svg",
+                                     QColor(theme::text_muted()), 14));
+        // EVERY file in the scene dir: entry shader first, then modules,
+        // graph.json, then extras (images, meshes) the scene ships with.
         QString root = QString::fromStdString(scene::scene_root_dir(roots_, active.toStdString()));
         QString prefix = root + "/" + active + "/";
-        QStringList slang;
-        QDirIterator it(prefix, QStringList() << "*.slang", QDir::Files);
-        while (it.hasNext()) slang << it.next();
-        slang.sort();
+        QStringList files;
+        QDirIterator it(prefix, QDir::Files);
+        while (it.hasNext()) files << it.next();
+        files.sort();
         QString entry = prefix + active + ".slang";
-        for (const QString& f : slang) {
-            QString rel = f;
-            if (f == entry) {
-                add_leaf(unit, active, rel);
+        if (QFileInfo::exists(entry))
+            add_leaf(unit, active, "scenes/" + active + "/" + active, kShader);
+        for (const QString& f : files) {
+            if (f == entry) continue;
+            QFileInfo info(f);
+            if (info.suffix() == "slang") {
+                add_leaf(unit, info.completeBaseName(),
+                         "scenes/" + active + "/" + info.completeBaseName(), kShader);
+            } else if (info.fileName() == "graph.json") {
+                auto* graph_item = add_leaf(unit, info.fileName(), f, kGraph);
+                graph_item->setToolTip(0, i18n::tr("graph"));
             } else {
-                add_leaf(unit, QFileInfo(f).completeBaseName(), rel);
+                add_leaf(unit, info.fileName(), f, kAsset);
             }
         }
-        auto* graph_item = new QTreeWidgetItem(unit, QStringList{"graph.json"});
-        graph_item->setData(0, Qt::UserRole + 1, false); // opens the node canvas
-        connect(tree, &QTreeWidget::itemClicked, this, [this, open_file](QTreeWidgetItem* item, int) {
-            QString rel = item->data(0, Qt::UserRole).toString();
-            bool leaf = item->data(0, Qt::UserRole + 1).toBool();
-            if (rel.isEmpty()) return;
-            if (!leaf) { // graph.json: switch to the node canvas
-                ui.mode = Sidebar_Mode::GRAPH;
-                ui.panel_open = true;
-                apply_mode(ui.mode);
-                return;
-            }
-            open_file(rel);
-        });
         unit->setExpanded(true);
     }
 
-    // Shared modules: imports available to every scene.
-    auto* shared = new QTreeWidgetItem(tree, QStringList{i18n::tr("shared")});
-    shared->setFlags(Qt::ItemIsEnabled);
+    auto* shared = add_group(i18n::tr("shared"));
+    shared->setIcon(0, tinted_icon(":/qlementine/icons/16/file/folder.svg",
+                                   QColor(theme::text_muted()), 14));
     {
         QStringList slang;
         QDirIterator it("src/shaders", QStringList() << "*.slang", QDir::Files,
@@ -1052,11 +1109,175 @@ QWidget* Shell::files_panel() {
             QString rel = f;
             if (rel.startsWith("src/shaders/")) rel = rel.mid(QString("src/shaders/").size());
             if (rel.startsWith("scenes/") || rel.startsWith("gis_scenes/")) continue;
-            add_leaf(shared, rel, rel);
+            add_leaf(shared, rel, rel, kShader);
         }
     }
     shared->setExpanded(true);
-    layout->addWidget(tree, 1);
+
+    auto* assets = add_group(i18n::tr("assets"));
+    assets->setIcon(0, tinted_icon(":/qlementine/icons/16/file/folder.svg",
+                                   QColor(theme::text_muted()), 14));
+    {
+        struct Group { const char* dir; const char* filter; };
+        // QDir nameFilters do NOT split on spaces: one pattern per entry.
+        const Group groups[] = {{"assets/models", "*.glb"},
+                                {"assets/models", "*.gltf"},
+                                {"assets/skybox", "*.png"},
+                                {"assets/skybox", "*.jpg"},
+                                {"assets", "*.jpg"},
+                                {"assets", "*.png"}};
+        QSet<QString> seen;
+        for (const Group& g : groups) {
+            QDirIterator it(g.dir, QStringList() << g.filter, QDir::Files);
+            while (it.hasNext()) {
+                QString f = it.next();
+                if (seen.contains(f)) continue;
+                seen.insert(f);
+                auto* item = add_leaf(assets, QFileInfo(f).fileName(), f, kAsset);
+                item->setForeground(0, QColor(theme::text_muted()));
+            }
+        }
+    }
+    assets->setExpanded(true);
+}
+QWidget* Shell::files_panel() {
+    // Persistent page: the tree is built once and REFILLED on scene switch
+    // (refresh_files_tree). Expand state of untouched groups survives.
+    if (files_tree_) return files_panel_page_;
+    auto* w = new QWidget();
+    files_panel_page_ = w;
+    auto* layout = new QVBoxLayout(w);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+
+    // The persistent explorer tree: built once here, refilled by
+    // refresh_files_tree() on scene switch.
+    files_tree_ = new QTreeWidget(w);
+    auto* tree = files_tree_;
+    tree->setHeaderHidden(true);
+    tree->setRootIsDecorated(true);
+    tree->setIndentation(14);
+    tree->setContextMenuPolicy(Qt::CustomContextMenu);
+    tree->setStyleSheet(
+        "QTreeWidget { background: transparent; border: none;"
+        " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
+        "QTreeWidget::item { height: 22px; }"
+        "QTreeWidget::item:selected { background: rgba(232,168,87,0.22); color: #DEE0E6; }"
+        "QTreeWidget::item:hover { background: rgba(255,255,255,0.06); }"
+        "QTreeWidget::branch { background: transparent; }");
+
+    // Click routing: shader leaves open in the editor; graph.json flips to
+    // the GRAPH mode; assets are context-only (no dead-end affordance).
+    enum Kind { kShader, kGraph, kAsset };
+    connect(tree, &QTreeWidget::itemClicked, this,
+            [this](QTreeWidgetItem* item, int) {
+        QString rel = item->data(0, Qt::UserRole).toString();
+        int kind = item->data(0, Qt::UserRole + 1).toInt();
+        if (rel.isEmpty()) return;
+        if (kind == kGraph) {
+            ui.mode = Sidebar_Mode::GRAPH;
+            ui.panel_open = true;
+            apply_mode(ui.mode);
+            return;
+        }
+        if (kind == kShader) {
+            editor_dock(); // lazy-create + load the scene unit
+            editor_->load_named(rel);
+            show_editor(true);
+        }
+        if (kind == kAsset) {
+            // W3: an asset is route material — the render graph is where it
+            // gets wired into the scene. No dead-end click.
+            ui.mode = Sidebar_Mode::GRAPH;
+            ui.panel_open = true;
+            apply_mode(ui.mode);
+        }
+    });
+
+    // ---- Rename (context menu on shader leaves of user-owned scenes) ----
+    // Builtin scenes live in the repo: renaming there is refused with a hint.
+    connect(tree, &QTreeWidget::customContextMenuRequested, this,
+            [this](const QPoint& pos) {
+        QTreeWidget* tree = qobject_cast<QTreeWidget*>(sender());
+        QTreeWidgetItem* item = tree->itemAt(pos);
+        if (!item) return;
+        int kind = item->data(0, Qt::UserRole + 1).toInt();
+        if (kind != kShader) return; // folders, graph, assets: no rename
+        QString rel = item->data(0, Qt::UserRole).toString();
+        if (!rel.startsWith("scenes/")) return; // shared modules: repo-owned
+        QString scene = rel.section('/', 1, 1);
+        bool user_owned = scene::scene_root_dir(roots_, scene.toStdString()) == "gis_scenes";
+
+        QMenu menu(tree);
+        QAction* rename_action = menu.addAction(i18n::tr("rename"));
+        rename_action->setEnabled(user_owned);
+        if (!user_owned)
+            rename_action->setText(i18n::tr("built-in: edit in the repo"));
+        QAction* picked = menu.exec(tree->mapToGlobal(pos));
+        if (picked != rename_action || !user_owned) return;
+
+        // Inline edit: make the item editable for the edit session only.
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
+        tree->editItem(item, 0);
+        // commitData (below) handles the disk rename; flags reset there.
+    });
+    // Commit: rename on disk, preserve extension, rescan everything.
+    connect(tree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int col) {
+        if (col != 0) return;
+        auto* tree = qobject_cast<QTreeWidget*>(sender());
+        if (!tree) return;
+        // itemChanged fires for programmatic setText too (restore paths):
+        // only treat it as a rename attempt when the label differs from the
+        // stored rel's base name; restores land here as a no-op.
+        int kind = item->data(0, Qt::UserRole + 1).toInt();
+        QString rel = item->data(0, Qt::UserRole).toString();
+        if (kind != kShader || !rel.startsWith("scenes/")) return;
+        QString scene = rel.section('/', 1, 1);
+        if (scene::scene_root_dir(roots_, scene.toStdString()) != "gis_scenes") return;
+        QString old_base = rel.section('/', -1);
+        if (item->text(0) == old_base) return; // restore or unchanged edit
+
+        QString new_name = item->text(0).trimmed();
+        QString root_dir = QString::fromStdString(scene::scene_root_dir(roots_, scene.toStdString()));
+        QString old_path = root_dir + "/" + scene + "/" + old_base + ".slang";
+        QString new_base = new_name; // entry rename keeps the unit title
+        QString new_path = root_dir + "/" + scene + "/" + new_base + ".slang";
+
+        if (new_name.isEmpty() || new_base == old_base ||
+            QFileInfo::exists(new_path) || new_name.contains('/')) {
+            // Invalid or no-op: restore the label, keep the file.
+            item->setText(0, old_base);
+            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+            return;
+        }
+        if (!QFile::rename(old_path, new_path)) {
+            notify::notify(notify::Kind::ERROR_,
+                           i18n::tr("rename failed: fix manually: %s, %s")
+                               .replace("%s", old_path).replace("%s", new_path));
+            item->setText(0, old_base);
+            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+            return;
+        }
+        item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+        // Only the FILE is renamed; the scene keeps its title. Reflect the
+        // new module name in the label and rel.
+        item->setText(0, new_base);
+        item->setData(0, Qt::UserRole, "scenes/" + scene + "/" + new_base);
+        if (editor_) editor_->rescan();
+        // O3: flash the renamed row amber, then fade back to muted —
+        // confirms WHERE the change landed (the toast only says THAT).
+        item->setForeground(0, QColor(0xE8, 0xA8, 0x57));
+        QTreeWidgetItem* flash_item = item;
+        QTimer::singleShot(1200, tree, [flash_item, tree] {
+            if (tree) flash_item->setForeground(0, QColor(theme::text_primary()));
+        });
+        notify::notify(notify::Kind::INFO,
+                       i18n::tr("renamed %s → %s")
+                           .replace("%s", old_base).replace("%s", new_base));
+    });
+
+    refresh_files_tree();
+    layout->addWidget(files_tree_, 1);
     return w;
 }
 
@@ -1183,34 +1404,47 @@ QWidget* Shell::shortcuts_panel() {
 
 void Shell::show_editor(bool on) {
     if (!central_) return;
-    central_->setCurrentIndex(on ? 1 : 0);
-    if (on) editor_dock(); // lazy-create
+    ui.fullscreen_view = !on;
+    central_->setCurrentIndex(on ? 0 : 1); // 0 = editor (always-on default),
+    if (on) editor_dock(); // lazy-create   // 1 = fullscreen viewport (F2/zen)
 }
 
-void Shell::toggle_zen() {
-    // Odin F1: sidebar (strip + panel) AND the editor flip in step; the
-    // editor re-docks on reopen (the central page, not the PiP frame).
-    ui.sidebar_open = !ui.sidebar_open;
-    if (strip_) strip_->setVisible(ui.sidebar_open);
-    ui.panel_open = ui.sidebar_open;
-    show_editor(!ui.sidebar_open);
-    apply_mode(ui.mode);
-}
-
-void Shell::toggle_editor() {
-    // F2: flip the editor page; reopening re-docks it (Odin ied.moved=false).
-    bool editor_up = central_ && central_->currentIndex() == 1;
-    show_editor(!editor_up);
-    if (ui.mode == Sidebar_Mode::FILES) {
-        ui.mode = Sidebar_Mode::CONTROLS;
-        apply_mode(ui.mode);
+// ---- Layout presets (P3-N4) ----
+// Normal | Zen | Theater | Mobile are mutually exclusive. Entering a preset
+// saves the Normal-state values ONCE; leaving restores them and returns to
+// Normal. No more 2^n flag matrix: toggling Zen while Theater is up leaves
+// Theater cleanly instead of interleaving hidden state.
+void Shell::set_layout(Ui_State::Layout_Preset preset) {
+    if (ui.layout == preset) {
+        set_layout(Ui_State::Layout_Preset::Normal); // toggle off -> Normal
+        return;
     }
-}
-
-void Shell::toggle_theater() {
-    // F4: bigger type + editor up + chrome hidden (Odin ToggleTheater).
-    ui.theater = !ui.theater;
-    if (ui.theater) {
+    // Leaving any active preset: restore the Normal-state values.
+    if (ui.layout != Ui_State::Layout_Preset::Normal) {
+        ui.font_size = ui.saved_ui_font;
+        ui.editor_font = ui.saved_ed_font;
+        if (editor_) editor_->set_editor_font(int(ui.saved_ed_font));
+        ui.panel_open = ui.saved_open;
+    }
+    ui.layout = preset;
+    if (preset == Ui_State::Layout_Preset::Normal) {
+        ui.sidebar_open = true;
+        if (strip_) strip_->setVisible(true);
+        show_editor(true);
+    } else if (preset == Ui_State::Layout_Preset::Zen) {
+        // F1: sidebar (strip + panel) gone, fullscreen viewport.
+        ui.saved_ui_font = ui.font_size;
+        ui.saved_ed_font = ui.editor_font;
+        ui.saved_open = ui.panel_open;
+        ui.sidebar_open = false;
+        if (strip_) strip_->setVisible(false);
+        ui.panel_open = false;
+        show_editor(false);
+    } else if (preset == Ui_State::Layout_Preset::Theater ||
+               preset == Ui_State::Layout_Preset::Mobile) {
+        // F4 bigger type + chrome hidden / F5 9:16 portrait. Theater and
+        // Mobile share the chrome path; only the host's window aspect
+        // differs (Mobile signals it via ui.layout for the resize).
         ui.saved_ui_font = ui.font_size;
         ui.saved_ed_font = ui.editor_font;
         ui.saved_open = ui.panel_open;
@@ -1219,35 +1453,15 @@ void Shell::toggle_theater() {
         if (editor_) editor_->set_editor_font(21);
         ui.panel_open = false;
         show_editor(true);
-    } else {
-        ui.font_size = ui.saved_ui_font;
-        ui.editor_font = ui.saved_ed_font;
-        if (editor_) editor_->set_editor_font(int(ui.saved_ed_font));
-        ui.panel_open = ui.saved_open;
     }
     apply_mode(ui.mode);
 }
 
-void Shell::toggle_mobile() {
-    // F5: 9:16 portrait for vertical recordings — same chrome path as
-    // theater; the window resize itself is the host's MOBILE_ENTER.
-    ui.mobile = !ui.mobile;
-    if (ui.mobile) {
-        ui.mobile_saved_ui_font = ui.font_size;
-        ui.mobile_saved_ed_font = ui.editor_font;
-        ui.mobile_saved_open = ui.panel_open;
-        ui.font_size = 18;
-        ui.editor_font = 21;
-        if (editor_) editor_->set_editor_font(21);
-        ui.panel_open = false;
-        show_editor(true);
-    } else {
-        ui.font_size = ui.mobile_saved_ui_font;
-        ui.editor_font = ui.mobile_saved_ed_font;
-        if (editor_) editor_->set_editor_font(int(ui.mobile_saved_ed_font));
-        ui.panel_open = ui.mobile_saved_open;
-    }
-    apply_mode(ui.mode);
+void Shell::toggle_editor() {
+    // F2: flip between the always-on editor (PiP preview floating) and a
+    // fullscreen viewport page.
+    bool editor_up = central_ && central_->currentIndex() == 0;
+    show_editor(!editor_up);
 }
 
 graph_editor::Node_View* Shell::graph_view_typed() {
@@ -1289,6 +1503,34 @@ void Shell::animate_panel_to(int target_w) {
     });
     anim->start(QAbstractAnimation::DeleteWhenStopped);
 }
+// Global theme switch: re-skins every PERSISTENT chrome widget from theme::'s
+// active palette. Panels/editor rebuild per mode/scene and read the palette at
+// build time, so they pick the theme up on the next apply_mode/scene_switched.
+void Shell::apply_chrome_theme() {
+    if (scene_list_) scene_list_->setStyleSheet(scene_list_qss());
+    if (scene_list_widget_)
+        scene_list_widget_->setStyleSheet(scene_list_items_qss());
+    if (topbar_) topbar_->setStyleSheet(topbar_qss());
+    if (strip_) strip_->setStyleSheet(strip_qss());
+    if (panel_) panel_->setStyleSheet(panel_qss());
+    if (panel_edge_) panel_edge_->setStyleSheet(panel_edge_qss());
+    // Icons: tinted at build time, so re-tint with the active theme's text.
+    const QColor icon(kIconColor);
+    if (save_btn_)
+        save_btn_->setIcon(tinted_icon(":/qlementine/icons/24/action/save-all.svg",
+                                       icon));
+    if (pause_btn_)
+        pause_btn_->setIcon(tinted_icon(ui.paused
+                                            ? ":/qlementine/icons/24/media/play.svg"
+                                            : ":/qlementine/icons/24/media/pause.svg",
+                                        icon));
+    if (gear_btn_)
+        gear_btn_->setIcon(tinted_icon(
+            ":/qlementine/icons/24/navigation/settings.svg", icon));
+    for (auto* btn : strip_buttons_) btn->update();
+    update();
+}
+
 void Shell::apply_mode(Sidebar_Mode mode) {
     // Mode switch owns the canvas: the floating scene list would otherwise
     // strand over the new panel (no native popup auto-dismiss here).
@@ -1308,45 +1550,42 @@ void Shell::apply_mode(Sidebar_Mode mode) {
         }
     }
 
-    // The dock is owned by Shell; the files panel only borrows it. Release it
-    // before the panel's children are deleted so it does not dangle.
-    if (editor_dock_) {
-        editor_dock_->hide();
-        editor_dock_->setParent(central_); // stays a stack page
-    }
-    while (panel_layout_->count() > 0) {
-        QLayoutItem* item = panel_layout_->takeAt(0);
-        if (item->widget()) item->widget()->deleteLater();
-        delete item;
-    }
+    // Persistent pages: build each mode's panel ONCE, then flip the stack
+    // index. Tree expand state, selection, scroll position and form edits
+    // all survive mode switches (the old clear-and-rebuild destroyed them).
+    // Page order mirrors Sidebar_Mode's enum order; LEARN/EFFECTS keep their
+    // pages for menu access, they just have no strip button.
+    auto ensure_page = [this](Sidebar_Mode mode) -> QWidget* {
+        int idx = panel_page_index_[(size_t)mode];
+        if (idx >= 0) return panel_stack_->widget(idx);
+        QWidget* page = nullptr;
+        switch (mode) {
+        case Sidebar_Mode::CONTROLS: page = controls_panel(); break;
+        case Sidebar_Mode::FILES: page = files_panel(); break;
+        case Sidebar_Mode::LEARN: page = learn_panel(); break;
+        case Sidebar_Mode::GRAPH: page = graph_view(); break;
+        case Sidebar_Mode::EXPORT: page = export_panel(); break;
+        case Sidebar_Mode::EFFECTS: page = effects_panel(); break;
+        case Sidebar_Mode::SHORTCUTS: page = shortcuts_panel(); break;
+        }
+        if (!page) return nullptr;
+        idx = panel_stack_->addWidget(page);
+        panel_page_index_[(size_t)mode] = idx;
+        return page;
+    };
     if (!ui.panel_open) {
         animate_panel_to(0);
         if (central_ && central_->layout()) central_->layout()->activate();
         return;
     }
-    // GRAPH: the QtNodes canvas is full-width in the center stack; the side
-    // panel would only duplicate the header, so collapse it.
-    int target = mode == Sidebar_Mode::GRAPH
-                     ? 0
-                     : panel_width_for(ui, mode, this->width()).toInt();
+    int target = panel_width_for(ui, mode, this->width()).toInt();
     animate_panel_to(target);
     if (central_ && central_->layout()) central_->layout()->activate();
-    QWidget* content = nullptr;
-    // Center surface: viewport for most modes, editor for FILES, graph for
-    // GRAPH. Glass keeps the EDITOR page up too (that is the point: code +
-    // shader); the host tick shrinks the SDL child to a PiP frame over the
-    // editor so the scene stays visible while editing.
-    if (central_) {
-        if (mode == Sidebar_Mode::FILES) central_->setCurrentIndex(1);
-        else if (mode == Sidebar_Mode::GRAPH) central_->setCurrentIndex(2);
-        else central_->setCurrentIndex(0);
-    }
-    switch (mode) {
-    case Sidebar_Mode::CONTROLS: content = controls_panel(); break;
-    case Sidebar_Mode::FILES: content = files_panel(); break;
-    case Sidebar_Mode::LEARN: content = learn_panel(); break;
-    case Sidebar_Mode::GRAPH: {
-        if (!mgr_.scenes.empty()) {
+    if (central_) central_->setCurrentIndex(0); // editor page, always
+    QWidget* page = ensure_page(mode);
+    if (page) {
+        // Scene-bound pages refresh their data on entry (cheap, in-place).
+        if (mode == Sidebar_Mode::GRAPH && !mgr_.scenes.empty()) {
             const auto& scene = mgr_.scenes[size_t(mgr_.current)];
             graph_view_->set_scene(scene);
             graph_view_->load_layout(QString::fromStdString(scene.title),
@@ -1354,30 +1593,87 @@ void Shell::apply_mode(Sidebar_Mode mode) {
                                          scene::scene_root_dir(roots_, scene.title)),
                                      scene);
         }
-        break; // graph_view_ lives in the central stack, not the panel
-    }
-    case Sidebar_Mode::EXPORT: content = export_panel(); break;
-    case Sidebar_Mode::EFFECTS: content = effects_panel(); break;
-    case Sidebar_Mode::SHORTCUTS: content = shortcuts_panel(); break;
-    }
-    if (!content) {
-        panel_layout_->addWidget(caption(i18n::tr("graph")));
-        if (!mgr_.scenes.empty()) {
-            const auto& scene = mgr_.scenes[size_t(mgr_.current)];
-            if (!scene.pipeline_error.empty())
-                panel_layout_->addWidget(new QLabel(QString::fromStdString(
-                    scene.pipeline_error))); // last-good contract: visible why
-        }
-        panel_layout_->addWidget(
-            new QLabel(i18n::tr("invalid changes keep the last valid pipeline")));
-    } else {
-        panel_layout_->addWidget(content, 1); // stretch: fills top to bottom
+        page->show();
+        panel_stack_->setCurrentWidget(page);
     }
     emit mode_changed(mode);
 }
 
+// Bake feedback: an amber dot rides the save button while a scene build is
+// running (the save → 1-3 s silence → preview-jump loop needed visible state).
+void Shell::set_baking(bool on) {
+    if (!save_btn_) return;
+    const QString prop = on ? "1" : "0";
+    if (save_btn_->property("baking") == prop) return;
+    save_btn_->setProperty("baking", prop);
+    // Restyle: amber border while baking; none when idle.
+    save_btn_->setStyleSheet(on ? "QPushButton { border: 1px solid #E8A857; }"
+                                : "QPushButton { border: none; }");
+    save_btn_->style()->unpolish(save_btn_);
+    save_btn_->style()->polish(save_btn_);
+    save_btn_->update();
+    if (!on) update_pipeline_error_bar(); // bake finished: surface failures
+}
+
+// O2: PiP context label — parked on the preview's top edge, shows WHAT is
+// rendering and at WHICH resolution. Global rect in Qt coords (top-left
+// origin); the host converts from the Cocoa PiP rect each tick.
+void Shell::set_pip_overlay(const QString& text, const QRect& global_rect) {
+    if (!pip_overlay_) {
+        pip_overlay_ = new QLabel(this);
+        pip_overlay_->setObjectName("pipOverlay");
+        pip_overlay_->setStyleSheet(
+            "QLabel#pipOverlay { background: rgba(19,20,24,200);"
+            " color: #828894; padding: 2px 8px; font-size: 8pt;"
+            " font-family: 'JetBrains Mono', monospace;"
+            " border-radius: 3px; }");
+        pip_overlay_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+    if (text.isEmpty() || global_rect.isEmpty()) {
+        pip_overlay_->hide();
+        return;
+    }
+    pip_overlay_->setText(text);
+    pip_overlay_->adjustSize();
+    // Top-left INSIDE the PiP, 6px inset (reads as a caption, not chrome).
+    pip_overlay_->move(global_rect.topLeft() + QPoint(6, 6));
+    pip_overlay_->raise();
+    pip_overlay_->show();
+}
+
+// P1-N2: the last bake failure, persistent and on-site (editor top). The
+// GRAPH panel kept the only copy before; this bar shows it where the user
+// already is, and survives until the next successful bake.
+void Shell::update_pipeline_error_bar() {
+    if (!pipeline_error_bar_) return;
+    if (mgr_.scenes.empty()) {
+        pipeline_error_bar_->hide();
+        return;
+    }
+    const auto& scene = mgr_.scenes[size_t(mgr_.current)];
+    if (scene.pipeline_error.empty()) {
+        pipeline_error_bar_->hide();
+        return;
+    }
+    pipeline_error_bar_->setText(QString("%1 · %2")
+                                     .arg(QString::fromStdString(scene.title),
+                                          QString::fromStdString(scene.pipeline_error)));
+    pipeline_error_bar_->show();
+}
+
 void Shell::scene_switched() {
     refresh_scenes();
+    refresh_files_tree(); // persistent tree: refill for the incoming scene
+    update_pipeline_error_bar(); // failure banner follows the active scene
+    // CONTROLS page shows the ACTIVE scene's reflected params: invalidate it
+    // on scene change (a persistent page would keep the old scene's params).
+    int& controls_idx = panel_page_index_[(size_t)Sidebar_Mode::CONTROLS];
+    if (controls_idx >= 0) {
+        QWidget* old = panel_stack_->widget(controls_idx);
+        panel_stack_->removeWidget(old);
+        if (old) old->deleteLater();
+        controls_idx = -1;
+    }
     apply_mode(ui.mode); // rebuild active panel for the new scene
     // Editor tabs follow the scene: drop the old unit's clean tabs, load
     // the new unit's files (dirty tabs survive; ied_close_unit rule).
@@ -1460,9 +1756,16 @@ void Shell::editor_zoom(bool in) {
 // (Cmd+,). Extracted from the gear lambda so both surfaces show the same
 // language/theme/font options.
 void Shell::open_settings_menu() {
+    // W4: the gear announces the active state (theme · editor font · lang)
+    // so the tooltip doubles as a wayfinding summary.
+    static const char* theme_names[] = {"dark", "light", "monokai", "solarized"};
+    gear_btn_->setToolTip(QString("settings · %1 · %2pt · %3")
+                              .arg(theme_names[int(ui.theme)])
+                              .arg(int(ui.editor_font))
+                              .arg(i18n::app_language == i18n::Language::EN ? "EN"
+                                   : i18n::app_language == i18n::Language::ES ? "ES"
+                                                                              : "PT"));
     QMenu settings(this);
-    QAction* lang_caption = settings.addAction(i18n::tr("language"));
-    lang_caption->setEnabled(false);
     auto* lang_menu = settings.addMenu(i18n::tr("language"));
     struct Lang { const char* tag; i18n::Language lang; };
     static const Lang langs[] = {{"EN", i18n::Language::EN},
@@ -1479,8 +1782,6 @@ void Shell::open_settings_menu() {
             apply_mode(ui.mode);
         });
     }
-    QAction* theme_caption = settings.addAction(i18n::tr("theme"));
-    theme_caption->setEnabled(false);
     auto* theme_menu = settings.addMenu(i18n::tr("theme"));
     struct Theme { const char* name; Editor_Theme theme; };
     static const Theme themes[] = {{"dark", Editor_Theme::DARK},
@@ -1494,7 +1795,13 @@ void Shell::open_settings_menu() {
         connect(a, &QAction::triggered, this, [this, t] {
             ui.theme = t.theme;
             prefs_save(ui);
-            if (editor_) editor_->set_theme(t.theme); // skin open tabs now
+            // Editor + WHOLE app chrome follow one skin: the editor tabs
+            // here, every Qlementine widget + the shell chrome via the
+            // App_Theme swap (enum order mirrors Editor_Theme's).
+            if (editor_) editor_->set_theme(t.theme);
+            theme::set_app_theme(theme::App_Theme(int(t.theme)));
+            apply_chrome_theme();
+            apply_mode(ui.mode); // current panel rebuilds with new palette
         });
     }
     connect(settings.addAction(i18n::tr("editor font")), &QAction::triggered,
@@ -1510,6 +1817,16 @@ void Shell::open_settings_menu() {
             });
         }
         sizes.exec(QCursor::pos());
+    });
+    // Pixel face for the code editor: Sergamon (the branding bitmap font)
+    // instead of JetBrains Mono. Experimental; persisted in ui.prefs.
+    auto* pixel = settings.addAction(i18n::tr("pixel code font"));
+    pixel->setCheckable(true);
+    pixel->setChecked(ui.editor_pixel_font);
+    connect(pixel, &QAction::toggled, this, [this](bool on) {
+        ui.editor_pixel_font = on;
+        prefs_save(ui);
+        if (editor_) editor_->set_pixel_font(on);
     });
     connect(settings.addAction(i18n::tr("ui font")), &QAction::triggered,
             this, [this] {

@@ -1,34 +1,53 @@
-// Visual identity for the Qt port: darkroom palette from artefacts/DESIGN.md,
-// JetBrains Mono for code/UI text, Sergamon (pixel) as the optional display
-// face for the branding bits. Palette-only styling (no QSS) keeps it native.
+// Visual identity for the Qt port: the EDITOR theme (DARK/LIGHT/MONOKAI/
+// SOLARIZED) drives the WHOLE app — one Qlementine theme JSON per editor skin
+// (assets/themes/*.json), swapped at runtime via QlementineStyle::setThemeJson-
+// Path. Fonts by role: JetBrains Mono for code/UI text, Sergamon (pixel) for
+// branding. App_Theme mirrors editor::Editor_Theme's order (cast between
+// them); documented coupling — keep both in sync.
 #pragma once
 
 #include <QApplication>
+#include <QString>
+
+namespace oclero::qlementine {
+class QlementineStyle; // real definition: oclero/qlementine/style/QlementineStyle.hpp
+}
 
 namespace theme {
 
-// Loads vendored fonts. Returns the Qt font ids for fallback wiring.
+// App-wide skins, one per editor theme. Order MUST match
+// editor::Editor_Theme (DARK, LIGHT, MONOKAI, SOLARIZED).
+enum class App_Theme { Dark, Light, Monokai, Solarized };
+
+// Loads vendored fonts.
 void load_fonts();
 
-// Applies the darkroom palette (near-black surfaces, proof-white text,
-// amber #E8A857 reserved for state).
-void apply_palette(QApplication& app);
+// One-time startup look: fonts + Qlementine style ownership (Dark theme).
+// host_main creates the QlementineStyle and hands it over here.
+void apply_palette(QApplication& app, oclero::qlementine::QlementineStyle* style);
+
+// Runtime switch: swaps the Qlementine theme (every widget, menu, scrollbar).
+// The Shell repolishes its chrome stylesheets + editor_->set_theme after.
+void set_app_theme(App_Theme theme);
+
+// The active skin.
+App_Theme app_theme();
+
+// Chrome palette of the ACTIVE theme (the old constexpr darkroom hexes; now
+// per-skin so the whole chrome re-skins on theme switch).
+QString surface_tray();
+QString surface_bench();
+QString surface_panel();
+QString text_primary();
+QString text_muted();
+QString frame_border();
+QString control_border();
+QString safelight();
 
 // Fonts by role.
-QFont code_font(int point_size);    // editor + monospace UI
+QFont code_font(int point_size);      // editor + monospace UI
+QFont pixel_code_font(int point_size); // Sergamon pixel face (code editor option)
 QFont ui_font(int point_size);      // labels, buttons, lists
 QFont display_font(int pixel_size); // Sergamon, branding/titlebar only
 
-// Surfaces and text, straight from artefacts/DESIGN.md (single source of
-// truth — inline hex in widget stylesheets was drifting: 4 near-identical
-// blacks across topbar/strip/panel/scene-list).
-constexpr const char* kSurfaceTray = "#191A1F";    // scene list overlay
-constexpr const char* kSurfaceBench = "#1A1B20";   // top bar + mode strip
-constexpr const char* kSurfacePanel = "#1E2026";   // side panel
-constexpr const char* kTextPrimary = "#DEE0E6";    // proof white
-constexpr const char* kTextMuted = "#828894";      // fog: captions, hints (≥4.5:1 on every surface — DESIGN.md's #757A85 measured 4.27:1)
-constexpr const char* kFrameBorder = "#FFFFFF17";  // separators/frames
-constexpr const char* kControlBorder = "#4A4D55";  // unchecked checkbox/radio outline
-
-constexpr const char* kSafelight = "#E8A857"; // amber: state, never decoration
 } // namespace theme

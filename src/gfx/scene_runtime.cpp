@@ -522,8 +522,11 @@ static bool parse_pass_stage(Scene_Pass& pass, Runtime_Scene& scene, const std::
     return true;
 }
 
-// Extracts widget attributes; separate pass over the raw JSON.
-static void parse_widgets(Runtime_Scene& scene, const refl::Json& root) {
+// Extracts widget attributes; separate pass over the raw JSON. module = the
+// reflection unit (scene entry or <scene>__<module> pass) the buffer came
+// from, so the UI can group params per file.
+static void parse_widgets(Runtime_Scene& scene, const refl::Json& root,
+                          const std::string& module) {
     const refl::Json& params = root["parameters"];
     for (const refl::Json& param : params.arr) {
         if (param["type"]["kind"].str != "constantBuffer") continue;
@@ -535,6 +538,8 @@ static void parse_widgets(Runtime_Scene& scene, const refl::Json& root) {
                 const refl::Json& args = attr["arguments"];
                 Uniform_Widget widget;
                 widget.label = field_name;
+                widget.module = module;
+                widget.param = param["name"].str;
                 bool known = true;
                 if (aname == "UiSlider" || aname == "NodeUISlider") {
                     widget.kind = Uniform_Widget::Kind::SLIDER;
@@ -587,7 +592,7 @@ static bool scene_parse_pass(SDL_GPUDevice* gpu, Runtime_Scene& scene, const std
         bool parse_ok = false;
         refl::Json root = refl::json_parse_file(compute_refl, parse_ok);
         if (!parse_ok) return false;
-        parse_widgets(scene, root);
+        parse_widgets(scene, root, name);
         if (!parse_pass_stage(pass, scene, compute_refl, refl::Stage_Kind::COMPUTE)) return false;
         pass.compute = create_compute_pipeline_raw(
             gpu, base + ".compute." + SCENE_FMT, pass.entry, pass.compute_counts, pass.thread);
@@ -600,8 +605,8 @@ static bool scene_parse_pass(SDL_GPUDevice* gpu, Runtime_Scene& scene, const std
         if (!parse_ok) return false;
         refl::Json froot = refl::json_parse_file(frag_refl, ok);
         if (!ok) return false;
-        parse_widgets(scene, vroot);
-        parse_widgets(scene, froot);
+        parse_widgets(scene, vroot, name);
+        parse_widgets(scene, froot, name);
         if (!parse_pass_stage(pass, scene, vert_refl, refl::Stage_Kind::VERTEX)) return false;
         if (!parse_pass_stage(pass, scene, frag_refl, refl::Stage_Kind::FRAGMENT)) return false;
         pass.graphics = create_graphics_pipeline_raw(

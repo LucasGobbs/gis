@@ -56,7 +56,13 @@ void build_native_menus(Shell& shell) {
     QAction* save = file->addAction(i18n::tr("save all"));
     save->setShortcut(QKeySequence::Save);
     QObject::connect(save, &QAction::triggered, [sh] {
-        if (sh) emit sh->save_all_requested();
+        if (sh) {
+            // Save the editor's dirty tabs to disk FIRST: the host's
+            // save_all_requested rebuilds from the files, and a rebuild over
+            // unsaved buffers compiles the old source (no visible change).
+            sh->save_all();
+            emit sh->save_all_requested();
+        }
     });
     file->addSeparator();
     QAction* png = file->addAction(i18n::tr("export png"));
