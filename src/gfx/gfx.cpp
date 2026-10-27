@@ -4,16 +4,15 @@
 namespace gfx {
 
 bool gfx_create(Gfx& gfx, SDL_Window* window, int width, int height) {
-    gfx.gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL, true, nullptr); // debug: validation on
+    (void)width; (void)height;
+    // Validation layers only when GIS_GPU_DEBUG is set.
+    gfx.gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL, SDL_getenv("GIS_GPU_DEBUG") != nullptr, nullptr);
     if (!gfx.gpu) return false;
     if (!SDL_ClaimWindowForGPUDevice(gfx.gpu, window)) {
         SDL_DestroyGPUDevice(gfx.gpu);
         gfx.gpu = nullptr;
         return false;
     }
-    gfx.window_width = width;
-    gfx.window_height = height;
-    gfx.shader_format = SDL_GPU_SHADERFORMAT_MSL;
     gfx.swapchain_format = SDL_GetGPUSwapchainTextureFormat(gfx.gpu, window);
     gfx.uploader.gfx = &gfx;
     return true;
@@ -21,24 +20,23 @@ bool gfx_create(Gfx& gfx, SDL_Window* window, int width, int height) {
 
 void gfx_destroy(Gfx& gfx) {
     assert(gfx.command_buffer == nullptr && !gfx.frame_open);
-    for (uint32_t i = 0; i < gfx.sampler_handles.pool.size(); ++i)
-        if (gfx.sampler_handles.pool[i].alive)
-            gfx_sampler_destroy(gfx, Sampler_Handle{{i, gfx.sampler_handles.pool[i].generation}});
+    SDL_WaitForGPUIdle(gfx.gpu);
     for (uint32_t i = 0; i < gfx.texture_handles.pool.size(); ++i)
         if (gfx.texture_handles.pool[i].alive)
             gfx_texture_destroy(gfx, Texture_Handle{{i, gfx.texture_handles.pool[i].generation}});
     for (uint32_t i = 0; i < gfx.buffer_handles.pool.size(); ++i)
         if (gfx.buffer_handles.pool[i].alive)
             gfx_buffer_destroy(gfx, Buffer_Handle{{i, gfx.buffer_handles.pool[i].generation}});
-    // Pending stagings: the device is about to die; release instead of
-    // waiting on their fence.
-    for (const Staging& s : gfx.uploader.pending) {
-        if (s.fence) SDL_ReleaseGPUFence(gfx.gpu, s.fence);
-        if (s.buffer) SDL_ReleaseGPUTransferBuffer(gfx.gpu, s.buffer);
-    }
-    gfx.uploader.free_stagings.clear();
-    gfx.uploader.pending.clear();
-    if (gfx.depth_texture) SDL_ReleaseGPUTexture(gfx.gpu, gfx.depth_texture);
+    // The GPU is idle: release every transfer buffer (and fence) we still hold.
+    Uploader& up = gfx.uploader;
+    for (const std::vector<Staging>* list : {&up.pending, &up.downloads, &up.free_stagings})
+        for (const Staging& s : *list) {
+            if (s.fence) SDL_ReleaseGPUFence(gfx.gpu, s.fence);
+            if (s.buffer) SDL_ReleaseGPUTransferBuffer(gfx.gpu, s.buffer);
+        }
+    up.free_stagings.clear();
+    up.pending.clear();
+    up.downloads.clear();
     SDL_DestroyGPUDevice(gfx.gpu);
     gfx.gpu = nullptr;
 }
@@ -63,10 +61,6 @@ void gfx_end_frame(Gfx& gfx) {
     gfx.frame_open = false;
 }
 
-float gfx_aspect_ratio(const Gfx& gfx) {
-    return float(gfx.window_width) / float(gfx.window_height);
-}
-
 // ---- Buffers ----
 
 Buffer_Handle gfx_buffer_create(Gfx& gfx, uint32_t size, SDL_GPUBufferUsageFlags usage) {
@@ -75,7 +69,7 @@ Buffer_Handle gfx_buffer_create(Gfx& gfx, uint32_t size, SDL_GPUBufferUsageFlags
     ci.size = size;
     Buffer resource;
     resource.handle = SDL_CreateGPUBuffer(gfx.gpu, &ci);
-    assert(resource.handle);
+    if (!resource.handle) return Buffer_Handle{};
     resource.size = size;
     resource.usage = usage;
     Buffer_Handle handle{{}};
@@ -92,25 +86,12 @@ Buffer_Handle gfx_buffer_create(Gfx& gfx, uint32_t size, SDL_GPUBufferUsageFlags
 Buffer_Handle gfx_buffer_create_from_bytes(Gfx& gfx, const void* data, size_t bytes,
                                            SDL_GPUBufferUsageFlags usage) {
     Buffer_Handle handle = gfx_buffer_create(gfx, uint32_t(bytes), usage);
+    if (!gfx.buffer_handles.contains(handle)) return handle;
     Buffer* resource = gfx_buffer_get(gfx, handle);
-    resource->length = uint32_t(bytes);
     resource->staging_data.assign((const uint8_t*)data, (const uint8_t*)data + bytes);
     return handle;
 }
 
-Buffer_Handle gfx_buffer_stage(Gfx& gfx, Buffer_Handle handle, const void* data, size_t bytes,
-                               SDL_GPUBufferUsageFlags usage) {
-    Buffer* resource = gfx_buffer_get(gfx, handle);
-    if (resource->size >= bytes && resource->usage == usage) {
-        resource->length = uint32_t(bytes);
-        resource->staging_data.assign((const uint8_t*)data, (const uint8_t*)data + bytes);
-        resource->data_submitted = false;
-        return handle;
-    }
-    SDL_WaitForGPUIdle(gfx.gpu);
-    gfx_buffer_destroy(gfx, handle);
-    return gfx_buffer_create_from_bytes(gfx, data, bytes, usage);
-}
 
 Buffer* gfx_buffer_get(Gfx& gfx, Buffer_Handle handle) {
     assert(gfx.buffer_handles.contains(handle) && "stale buffer handle");
@@ -141,7 +122,7 @@ Texture_Handle gfx_texture_create(Gfx& gfx, uint32_t width, uint32_t height,
     ci.num_levels = 1;
     Texture resource;
     resource.handle = SDL_CreateGPUTexture(gfx.gpu, &ci);
-    assert(resource.handle);
+    if (!resource.handle) return Texture_Handle{};
     resource.format = format;
     resource.usage = usage;
     resource.width = width;
@@ -162,55 +143,12 @@ Texture* gfx_texture_get(Gfx& gfx, Texture_Handle handle) {
     return &gfx.textures[handle.index];
 }
 
-bool gfx_texture_resize(Gfx& gfx, Texture_Handle& handle, uint32_t width, uint32_t height) {
-    if (width == 0 || height == 0) return false;
-    Texture* texture = gfx_texture_get(gfx, handle);
-    if (texture->width == width && texture->height == height) return false;
-    SDL_GPUTextureFormat format = texture->format;
-    SDL_GPUTextureUsageFlags usage = texture->usage;
-    SDL_WaitForGPUIdle(gfx.gpu);
-    gfx_texture_destroy(gfx, handle);
-    handle = gfx_texture_create(gfx, width, height, format, usage);
-    return true;
-}
-
 void gfx_texture_destroy(Gfx& gfx, Texture_Handle handle) {
     if (!gfx.texture_handles.contains(handle)) return;
     Texture& resource = gfx.textures[handle.index];
     if (resource.handle) SDL_ReleaseGPUTexture(gfx.gpu, resource.handle);
     resource = {};
     bool ok = gfx.texture_handles.release(handle);
-    assert(ok); (void)ok;
-}
-
-// ---- Samplers ----
-
-Sampler_Handle gfx_sampler_create(Gfx& gfx, const SDL_GPUSamplerCreateInfo& ci) {
-    Sampler resource;
-    resource.handle = SDL_CreateGPUSampler(gfx.gpu, &ci);
-    assert(resource.handle);
-    Sampler_Handle handle{{}};
-    {
-        Resource_Handle raw = gfx.sampler_handles.acquire();
-        handle.index = raw.index;
-        handle.generation = raw.generation;
-    }
-    if (handle.index == gfx.samplers.size()) gfx.samplers.push_back(resource);
-    else gfx.samplers[handle.index] = resource;
-    return handle;
-}
-
-Sampler* gfx_sampler_get(Gfx& gfx, Sampler_Handle handle) {
-    assert(gfx.sampler_handles.contains(handle) && "stale sampler handle");
-    return &gfx.samplers[handle.index];
-}
-
-void gfx_sampler_destroy(Gfx& gfx, Sampler_Handle handle) {
-    if (!gfx.sampler_handles.contains(handle)) return;
-    Sampler& resource = gfx.samplers[handle.index];
-    if (resource.handle) SDL_ReleaseGPUSampler(gfx.gpu, resource.handle);
-    resource = {};
-    bool ok = gfx.sampler_handles.release(handle);
     assert(ok); (void)ok;
 }
 
@@ -222,64 +160,68 @@ void uploader_begin(Uploader& up) {
     up.pass = SDL_BeginGPUCopyPass(up.command_buffer);
 }
 
-static Staging uploader_acquire_staging(Uploader& up, uint32_t size,
-                                        SDL_GPUTransferBufferUsage usage) {
+static bool uploader_acquire_staging(Uploader& up, uint32_t size,
+                                     SDL_GPUTransferBufferUsage usage, Staging& out) {
     for (size_t i = 0; i < up.free_stagings.size(); ++i) {
         Staging& s = up.free_stagings[i];
         if (s.usage != usage || s.size < size) continue;
-        Staging out = s;
+        out = s;
         up.free_stagings.erase(up.free_stagings.begin() + long(i));
-        return out;
+        return true;
     }
     SDL_GPUTransferBufferCreateInfo ci{};
     ci.usage = usage;
     ci.size = size;
-    Staging out;
+    out = Staging{};
     out.buffer = SDL_CreateGPUTransferBuffer(up.gfx->gpu, &ci);
+    if (!out.buffer) return false;
     out.size = size;
     out.device = up.gfx->gpu;
     out.usage = usage;
-    return out;
+    return true;
 }
 
-void uploader_upload_buffer(Uploader& up, Buffer_Handle handle) {
+// Copies `bytes` into a fresh upload staging; on failure the staging is recycled.
+static bool uploader_fill_staging(Uploader& up, const std::vector<uint8_t>& bytes, Staging& staging) {
+    if (!uploader_acquire_staging(up, uint32_t(bytes.size()), SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                                  staging))
+        return false;
+    void* mapped = SDL_MapGPUTransferBuffer(up.gfx->gpu, staging.buffer, false);
+    if (!mapped) {
+        up.free_stagings.push_back(staging);
+        return false;
+    }
+    std::memcpy(mapped, bytes.data(), bytes.size());
+    SDL_UnmapGPUTransferBuffer(up.gfx->gpu, staging.buffer);
+    return true;
+}
+
+bool uploader_upload_buffer(Uploader& up, Buffer_Handle handle) {
     Buffer* destination = gfx_buffer_get(*up.gfx, handle);
-    const std::vector<uint8_t>& bytes = destination->staging_data;
-    Staging staging = uploader_acquire_staging(up, uint32_t(bytes.size()),
-                                               SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD);
-    void* mapped = SDL_MapGPUTransferBuffer(up.gfx->gpu, staging.buffer, false);
-    std::memcpy(mapped, bytes.data(), bytes.size());
-    SDL_UnmapGPUTransferBuffer(up.gfx->gpu, staging.buffer);
+    Staging staging;
+    if (!uploader_fill_staging(up, destination->staging_data, staging)) return false;
     SDL_GPUTransferBufferLocation src{staging.buffer, 0};
-    SDL_GPUBufferRegion dst{destination->handle, 0, uint32_t(bytes.size())};
+    SDL_GPUBufferRegion dst{destination->handle, 0, uint32_t(destination->staging_data.size())};
     SDL_UploadToGPUBuffer(up.pass, &src, &dst, false);
-    destination->data_submitted = true;
+    destination->staging_data = {};
     up.pending.push_back(staging);
+    return true;
 }
 
-void uploader_upload_texture(Uploader& up, Texture_Handle handle) {
+bool uploader_upload_texture(Uploader& up, Texture_Handle handle) {
     Texture* destination = gfx_texture_get(*up.gfx, handle);
-    const std::vector<uint8_t>& bytes = destination->staging_data;
-    Staging staging = uploader_acquire_staging(up, uint32_t(bytes.size()),
-                                               SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD);
-    void* mapped = SDL_MapGPUTransferBuffer(up.gfx->gpu, staging.buffer, false);
-    std::memcpy(mapped, bytes.data(), bytes.size());
-    SDL_UnmapGPUTransferBuffer(up.gfx->gpu, staging.buffer);
+    Staging staging;
+    if (!uploader_fill_staging(up, destination->staging_data, staging)) return false;
     SDL_GPUTextureTransferInfo src{staging.buffer, 0, destination->width, destination->height};
     SDL_GPUTextureRegion dst{destination->handle, 0, 0, 0, 0, 0, destination->width,
                              destination->height, 1};
     SDL_UploadToGPUTexture(up.pass, &src, &dst, false);
     up.pending.push_back(staging);
+    return true;
 }
 
-void uploader_flush(Uploader& up) {
-    SDL_EndGPUCopyPass(up.pass);
-    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(up.command_buffer);
-    for (Staging& s : up.pending) s.fence = fence;
-    up.pass = nullptr;
-    up.command_buffer = nullptr;
-}
-
+// Only uploads are recycled here: downloads stay in `downloads` until the
+// caller polls and staging_release()s them.
 void uploader_flush_blocking(Uploader& up) {
     SDL_EndGPUCopyPass(up.pass);
     SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(up.command_buffer);
@@ -295,33 +237,16 @@ void uploader_flush_blocking(Uploader& up) {
     up.command_buffer = nullptr;
 }
 
-void uploader_collect(Uploader& up) {
-    // uploader_flush shares one fence across every pending staging of a
-    // submit: release it once and free all its stagings together.
-    for (;;) {
-        SDL_GPUFence* ready = nullptr;
-        for (const Staging& s : up.pending)
-            if (s.fence && SDL_QueryGPUFence(up.gfx->gpu, s.fence)) { ready = s.fence; break; }
-        if (!ready) return;
-        SDL_ReleaseGPUFence(up.gfx->gpu, ready);
-        for (size_t j = 0; j < up.pending.size();) {
-            if (up.pending[j].fence != ready) { ++j; continue; }
-            up.pending[j].fence = nullptr;
-            up.free_stagings.push_back(up.pending[j]);
-            up.pending.erase(up.pending.begin() + long(j));
-        }
-    }
-}
-
-static Staging uploader_download_begin(Uploader& up, uint32_t byte_size, bool& owns_pass) {
-    Staging staging = uploader_acquire_staging(up, byte_size, SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD);
-    staging.device = up.gfx->gpu;
+static bool uploader_download_begin(Uploader& up, uint32_t byte_size, Staging& staging,
+                                    bool& owns_pass) {
+    if (!uploader_acquire_staging(up, byte_size, SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, staging))
+        return false;
     owns_pass = up.pass == nullptr; // decide before opening: a shared pass belongs to its opener
     if (owns_pass) {
         up.command_buffer = SDL_AcquireGPUCommandBuffer(up.gfx->gpu);
         up.pass = SDL_BeginGPUCopyPass(up.command_buffer);
     }
-    return staging;
+    return true;
 }
 
 static void uploader_download_end(Uploader& up, Staging& staging, bool owns_pass) {
@@ -332,20 +257,19 @@ static void uploader_download_end(Uploader& up, Staging& staging, bool owns_pass
         SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(up.command_buffer);
         assert(fence);
         staging.fence = fence;
-        up.pending.push_back(staging);
         up.pass = nullptr;
         up.command_buffer = nullptr;
     } else {
-        staging.fence = nullptr; // shared pass: the opener's submit covers it
-        up.pending.push_back(staging);
+        staging.fence = nullptr; // shared pass: the opener's submit covers it, not pollable
     }
+    up.downloads.push_back(staging);
 }
 
 Staging uploader_download_texture_region_begin(Uploader& up, SDL_GPUTexture* source,
                                                int x, int y, uint32_t width, uint32_t height) {
-    uint32_t byte_size = 4 * width * height;
+    Staging staging;
     bool owns_pass = false;
-    Staging staging = uploader_download_begin(up, byte_size, owns_pass);
+    if (!uploader_download_begin(up, 4 * width * height, staging, owns_pass)) return Staging{};
     SDL_GPUTextureRegion src{source, 0, 0, uint32_t(x), uint32_t(y), 0, width, height, 1};
     SDL_GPUTextureTransferInfo dst{staging.buffer, 0, width, height};
     SDL_DownloadFromGPUTexture(up.pass, &src, &dst);
@@ -354,8 +278,9 @@ Staging uploader_download_texture_region_begin(Uploader& up, SDL_GPUTexture* sou
 }
 
 Staging uploader_download_buffer_begin(Uploader& up, SDL_GPUBuffer* source, uint32_t byte_size) {
+    Staging staging;
     bool owns_pass = false;
-    Staging staging = uploader_download_begin(up, byte_size, owns_pass);
+    if (!uploader_download_begin(up, byte_size, staging, owns_pass)) return Staging{};
     SDL_GPUBufferRegion src{source, 0, byte_size};
     SDL_GPUTransferBufferLocation dst{staging.buffer, 0};
     SDL_DownloadFromGPUBuffer(up.pass, &src, &dst);
@@ -375,9 +300,9 @@ const uint8_t* staging_read(const Staging& s) {
 
 void staging_release(Uploader& up, Staging s) {
     assert(s.fence && "staging has no pending fence");
-    for (size_t i = 0; i < up.pending.size(); ++i) {
-        if (up.pending[i].buffer == s.buffer) {
-            up.pending.erase(up.pending.begin() + long(i));
+    for (size_t i = 0; i < up.downloads.size(); ++i) {
+        if (up.downloads[i].buffer == s.buffer) {
+            up.downloads.erase(up.downloads.begin() + long(i));
             break;
         }
     }
@@ -386,5 +311,4 @@ void staging_release(Uploader& up, Staging s) {
     s.fence = nullptr;
     up.free_stagings.push_back(s);
 }
-
 } // namespace gfx

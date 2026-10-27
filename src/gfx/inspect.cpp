@@ -1,52 +1,17 @@
-// Inspect implementation: watch buffer + provenance readbacks over the gfx
-// uploader, and the watch-label source parser.
+// Inspect implementation: provenance readbacks over the gfx uploader, and
+// the watch-label source parser.
 #include "inspect.hpp"
 
+#include <cstdlib>
 #include <cstring>
-#include <fstream>
-#include <sstream>
 
 namespace inspect {
 
-bool Watch_Readback::begin(gfx::Uploader& up, SDL_GPUBuffer* buffer, uint32_t frame_id) {
-    if (pending_ || !buffer) return false;
-    staging_ = gfx::uploader_download_buffer_begin(up, buffer,
-                                                   DEBUG_WATCH_RECORD_SIZE * DEBUG_WATCH_COUNT);
-    frame_id_ = frame_id;
-    pending_ = true;
-    return true;
-}
-
-bool Watch_Readback::poll(gfx::Uploader& up, std::array<Watch_Sample, 16>& samples) {
-    if (!pending_ || !gfx::staging_ready(up, staging_)) return false;
-    const uint8_t* base = gfx::staging_read(staging_);
-    for (int i = 0; i < DEBUG_WATCH_COUNT; ++i) {
-        const uint8_t* record = base + size_t(i) * DEBUG_WATCH_RECORD_SIZE;
-        uint32_t record_frame = 0;
-        std::memcpy(&record_frame, record, 4);
-        if (record_frame != frame_id_) continue;
-        Watch_Sample& s = samples[size_t(i)];
-        s.valid = true;
-        std::memcpy(&s.type, record + 4, 4);
-        std::memcpy(&s.count, record + 8, 4);
-        std::memcpy(&s.pass, record + 12, 4);
-        for (int c = 0; c < 4; ++c) std::memcpy(&s.value[c], record + 16 + c * 4, 4);
-    }
-    gfx::staging_release(up, staging_);
-    pending_ = false;
-    return true;
-}
-
-void Watch_Readback::cancel(gfx::Uploader& up) {
-    if (!pending_) return;
-    while (!gfx::staging_ready(up, staging_)) {}
-    gfx::staging_release(up, staging_);
-    pending_ = false;
-}
 
 bool Provenance_Readback::begin(gfx::Uploader& up, SDL_GPUTexture* source, int x, int y) {
     if (pending_ || !source) return false;
     staging_ = gfx::uploader_download_texture_region_begin(up, source, x, y, 1, 1);
+    if (!staging_.buffer) return false;
     pending_ = true;
     return true;
 }
@@ -62,13 +27,6 @@ bool Provenance_Readback::poll(gfx::Uploader& up, Result& out) {
     gfx::staging_release(up, staging_);
     pending_ = false;
     return true;
-}
-
-void Provenance_Readback::cancel(gfx::Uploader& up) {
-    if (!pending_) return;
-    while (!gfx::staging_ready(up, staging_)) {}
-    gfx::staging_release(up, staging_);
-    pending_ = false;
 }
 
 std::vector<std::string> parse_watch_labels(const std::string& source) {

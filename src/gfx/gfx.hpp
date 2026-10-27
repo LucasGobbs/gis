@@ -22,7 +22,6 @@ struct Resource_Handle {
 
 struct Buffer_Handle : Resource_Handle {};
 struct Texture_Handle : Resource_Handle {};
-struct Sampler_Handle : Resource_Handle {};
 
 struct Handle_Slot {
     uint32_t generation = 0;
@@ -65,11 +64,9 @@ struct Handle_Pool {
 
 struct Buffer {
     SDL_GPUBuffer* handle = nullptr;
-    uint32_t length = 0;
     uint32_t size = 0;
     SDL_GPUBufferUsageFlags usage = 0;
     std::vector<uint8_t> staging_data;   // owned CPU copy, uploaded via Uploader
-    bool data_submitted = false;
 };
 
 struct Texture {
@@ -80,9 +77,6 @@ struct Texture {
     std::vector<uint8_t> staging_data;
 };
 
-struct Sampler {
-    SDL_GPUSampler* handle = nullptr;
-};
 
 // ---- Uploader (uploader.odin): fence-gated staging recycle ----
 
@@ -101,7 +95,8 @@ struct Gfx;
 struct Uploader {
     Gfx* gfx = nullptr;
     std::vector<Staging> free_stagings;
-    std::vector<Staging> pending;
+    std::vector<Staging> pending;     // uploads in flight
+    std::vector<Staging> downloads;   // readbacks owned by the caller until staging_release
     SDL_GPUCommandBuffer* command_buffer = nullptr;
     SDL_GPUCopyPass* pass = nullptr;
 };
@@ -110,19 +105,15 @@ struct Uploader {
 
 struct Gfx {
     SDL_GPUDevice* gpu = nullptr;
-    int window_width = 0, window_height = 0;
-    SDL_GPUShaderFormat shader_format = SDL_GPU_SHADERFORMAT_MSL;
     SDL_GPUTextureFormat swapchain_format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
-    SDL_GPUTexture* depth_texture = nullptr;
 
     SDL_GPUCommandBuffer* command_buffer = nullptr;
     SDL_GPUTexture* swapchain = nullptr;
     bool frame_open = false;
 
-    Handle_Pool buffer_handles, texture_handles, sampler_handles;
+    Handle_Pool buffer_handles, texture_handles;
     std::vector<Buffer> buffers;
     std::vector<Texture> textures;
-    std::vector<Sampler> samplers;
 
     Uploader uploader;
 };
@@ -133,16 +124,11 @@ void gfx_destroy(Gfx& gfx);
 
 bool gfx_begin_frame(Gfx& gfx, SDL_Window* window); // false: no swapchain texture this frame
 void gfx_end_frame(Gfx& gfx);
-float gfx_aspect_ratio(const Gfx& gfx);
 
 // Buffers.
 Buffer_Handle gfx_buffer_create(Gfx& gfx, uint32_t size, SDL_GPUBufferUsageFlags usage);
 Buffer_Handle gfx_buffer_create_from_bytes(Gfx& gfx, const void* data, size_t bytes,
                                            SDL_GPUBufferUsageFlags usage);
-// Returned handle must replace the caller's: it changes when the buffer is
-// recreated (too small / usage mismatch).
-Buffer_Handle gfx_buffer_stage(Gfx& gfx, Buffer_Handle handle, const void* data, size_t bytes,
-                               SDL_GPUBufferUsageFlags usage);
 Buffer* gfx_buffer_get(Gfx& gfx, Buffer_Handle handle);
 void gfx_buffer_destroy(Gfx& gfx, Buffer_Handle handle);
 
@@ -151,21 +137,15 @@ Texture_Handle gfx_texture_create(Gfx& gfx, uint32_t width, uint32_t height,
                                   SDL_GPUTextureFormat format,
                                   SDL_GPUTextureUsageFlags usage);
 Texture* gfx_texture_get(Gfx& gfx, Texture_Handle handle);
-bool gfx_texture_resize(Gfx& gfx, Texture_Handle& handle, uint32_t width, uint32_t height);
+
 void gfx_texture_destroy(Gfx& gfx, Texture_Handle handle);
 
-// Samplers.
-Sampler_Handle gfx_sampler_create(Gfx& gfx, const SDL_GPUSamplerCreateInfo& ci);
-Sampler* gfx_sampler_get(Gfx& gfx, Sampler_Handle handle);
-void gfx_sampler_destroy(Gfx& gfx, Sampler_Handle handle);
-
-// Uploader: per-frame begin -> record -> flush (or flush_blocking) -> collect.
+// Uploader: begin -> record -> flush_blocking. Downloads are tracked separately
+// and live until staging_release.
 void uploader_begin(Uploader& up);
-void uploader_upload_buffer(Uploader& up, Buffer_Handle handle);
-void uploader_upload_texture(Uploader& up, Texture_Handle handle);
-void uploader_flush(Uploader& up);
+bool uploader_upload_buffer(Uploader& up, Buffer_Handle handle);   // false: staging alloc/map failed
+bool uploader_upload_texture(Uploader& up, Texture_Handle handle);
 void uploader_flush_blocking(Uploader& up);
-void uploader_collect(Uploader& up);
 Staging uploader_download_texture_region_begin(Uploader& up, SDL_GPUTexture* source,
                                                int x, int y, uint32_t width, uint32_t height);
 Staging uploader_download_buffer_begin(Uploader& up, SDL_GPUBuffer* source, uint32_t byte_size);
