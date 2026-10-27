@@ -16,8 +16,9 @@ ModelVaryings vertMain(ModelVertex input, uint vertexIndex : SV_VertexID) {
 }
 
 [shader("fragment")]
-float4 pixelMain(ModelVaryings input) : SV_Target0 {
+float4 pixelMain(ModelVaryings input, bool is_front : SV_IsFrontFace) : SV_Target0 {
     float3 n = normalize(input.normal);
+    if (!is_front) n = -n;
     float3 L = normalize(float3(0.5, 0.8, -0.1));
     float dif = 0.35 + 0.65 * saturate(dot(n, L));
     return model_scene_fragment(input, Uniforms, skybox_tex, skybox_sampler, float3(0.7) * dif);

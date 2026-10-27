@@ -21,8 +21,9 @@ ModelVaryings vertMain(ModelVertex input, uint vertexIndex : SV_VertexID) {
 }
 
 [shader("fragment")]
-float4 pixelMain(ModelVaryings input) : SV_Target0 {
+float4 pixelMain(ModelVaryings input, bool is_front : SV_IsFrontFace) : SV_Target0 {
     float3 n = normalize(input.normal + float3(0.0, 0.0, 1e-8));
+    if (!is_front) n = -n;
 
     // Key light: warm, wrapped for a soft terminator.
     float3 L = normalize(float3(0.5, 0.8, -0.6));

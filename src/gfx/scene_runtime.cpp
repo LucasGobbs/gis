@@ -416,7 +416,10 @@ static SDL_GPUGraphicsPipeline* create_graphics_pipeline_raw(
     ci.fragment_shader = fs;
     ci.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     ci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    ci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    // BACK cull + CCW, as in legacy/src/scene_runtime.odin. CULL_NONE drew
+    // stair-step patches and a pole tear on the uv_sphere ball. Mixed-winding
+    // models are fixed at load (assets.cpp model_normalize_winding).
+    ci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
     ci.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     ci.target_info.num_color_targets = 1;
     static SDL_GPUColorTargetDescription target{};

@@ -37,8 +37,9 @@ ModelVaryings vertMain(ModelVertex input, uint vertexIndex : SV_VertexID) {
 }
 
 [shader("fragment")]
-float4 pixelMain(ModelVaryings input) : SV_Target0 {
+float4 pixelMain(ModelVaryings input, bool is_front : SV_IsFrontFace) : SV_Target0 {
     float3 n = normalize(input.normal);
+    if (!is_front) n = -n;
     float3 L = normalize(float3(0.5, 0.8, -0.1));
     // Wrapped diffuse: remap dot(n,l) from [-1,1] toward [0,1].
     float dif = saturate((dot(n, L) + Params.wrap) / (1.0 + Params.wrap));
