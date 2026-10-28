@@ -15,10 +15,6 @@ void plan_destroy(Plan& plan) {
     plan.output_pass = -1;
 }
 
-std::string endpoint(const std::string& node_key, const std::string& pin_name) {
-    return node_key + ":" + pin_name;
-}
-
 bool find_pass_endpoint(const std::vector<Pass_Descriptor>& passes, const std::string& ep,
                         int& pass_index, std::string& pin_name) {
     for (size_t i = 0; i < passes.size(); ++i) {
@@ -35,6 +31,12 @@ bool find_pass_endpoint(const std::vector<Pass_Descriptor>& passes, const std::s
 static bool pass_has_input(const Pass_Descriptor& pass, const std::string& name) {
     for (const std::string& input : pass.input_textures)
         if (input == name) return true;
+    return false;
+}
+
+static bool pass_has_sampler(const Pass_Descriptor& pass, const std::string& name) {
+    for (const std::string& sampler : pass.input_samplers)
+        if (sampler == name) return true;
     return false;
 }
 
@@ -108,9 +110,9 @@ Plan plan_build(const std::vector<Pass_Descriptor>& passes, const Graph_Json& do
         std::string output_pin;
         bool producer_ok = find_pass_endpoint(passes, link.from, producer, output_pin);
         if (!producer_ok) {
-            // Not a pass output: user resource or legacy fixed node. params is
+            // Not a pass output: user resource or legacy fixed node. settings is
             // wireless (broadcast uniforms), never a wired producer.
-            if (link.from == "params") return fail("params is wireless: remove wired link from " + link.to);
+            if (link.from == "params" || link.from == "settings") return fail("settings is wireless: remove wired link from " + link.to);
             Resource_Kind kind = Resource_Kind::TEXTURE;
             Resource_Source source = Resource_Source::FILE;
             size_t prefix_len = 0;
@@ -150,8 +152,8 @@ Plan plan_build(const std::vector<Pass_Descriptor>& passes, const Graph_Json& do
             bool consumer_ok = find_pass_endpoint(passes, link.to, consumer, input_name);
             if (!consumer_ok) continue;
             if (kind == Resource_Kind::SAMPLER) {
-                // Route targets a named SamplerState; existence checked at
-                // the bind site by name.
+                if (!pass_has_sampler(passes[consumer], input_name))
+                    return fail(passes[consumer].name + "." + input_name + " has no matching sampler");
             } else if (kind == Resource_Kind::TEXTURE) {
                 if (!pass_has_input(passes[consumer], input_name))
                     return fail(passes[consumer].name + "." + input_name + " has no matching input");
@@ -236,25 +238,6 @@ Plan plan_build(const std::vector<Pass_Descriptor>& passes, const Graph_Json& do
     error_message.clear();
     ok = true;
     return plan;
-}
-
-std::vector<bool> plan_path(const Plan& plan, int pass_count, int max_passes) {
-    std::vector<bool> path(max_passes, false);
-    if (plan.output_pass < 0 || plan.output_pass >= (pass_count < max_passes ? pass_count : max_passes))
-        return path;
-    path[plan.output_pass] = true;
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (const Route& route : plan.routes) {
-            if (route.consumer >= max_passes || route.producer >= max_passes) continue;
-            if (path[route.consumer] && !path[route.producer]) {
-                path[route.producer] = true;
-                changed = true;
-            }
-        }
-    }
-    return path;
 }
 
 bool plan_equal(const Plan& a, const Plan& b) {

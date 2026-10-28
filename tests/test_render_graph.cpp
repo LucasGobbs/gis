@@ -5,6 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <sstream>
@@ -67,6 +68,16 @@ TEST_CASE("plan_build migrates legacy bare viewport endpoint", "[render_graph]")
     REQUIRE(err.empty());
     REQUIRE(plan.output_pass == 0);
     plan_destroy(plan);
+}
+
+TEST_CASE("plan_build rejects wired settings link", "[render_graph]") {
+    Fixture fx;
+    fx.doc.links = {{"settings", "pass_1:b_tex"}};
+    std::string err;
+    bool ok = true;
+    plan_build(fx.passes, fx.doc, err, ok);
+    REQUIRE_FALSE(ok);
+    REQUIRE(err == "settings is wireless: remove wired link from pass_1:b_tex");
 }
 
 TEST_CASE("plan_build rejects resource into viewport", "[render_graph]") {
@@ -211,6 +222,7 @@ TEST_CASE("plan_equal round trip after save reload", "[render_graph]") {
 
 TEST_CASE("plan_build routes user sampler to pass", "[render_graph]") {
     Fixture fx;
+    fx.passes[1].input_samplers = {"input_sampler"};
     fx.doc.links = {
         {"uimg:assets/parchment.jpg:sampler", "pass_2:input_sampler"},
         {"pass_1:frame", "show2d:frame"},
@@ -224,6 +236,20 @@ TEST_CASE("plan_build routes user sampler to pass", "[render_graph]") {
     REQUIRE(plan.resources[0].consumer == 1);
     REQUIRE(plan.resources[0].input_name == "input_sampler");
     REQUIRE(plan.resources[0].path == "assets/parchment.jpg");
+    plan_destroy(plan);
+}
+
+TEST_CASE("plan_build rejects sampler route to undeclared sampler", "[render_graph]") {
+    Fixture fx;
+    fx.doc.links = {
+        {"uimg:assets/parchment.jpg:sampler", "pass_2:input_sampler"},
+        {"pass_1:frame", "show2d:frame"},
+    };
+    std::string err;
+    bool ok = true;
+    Plan plan = plan_build(fx.passes, fx.doc, err, ok);
+    REQUIRE_FALSE(ok);
+    REQUIRE(err.find("no matching sampler") != std::string::npos);
     plan_destroy(plan);
 }
 
@@ -405,4 +431,20 @@ TEST_CASE("resolve_bind_sampler: route matches by slot's input name", "[bind]") 
     SDL_GPUSampler* got = scene::resolve_bind_sampler(sc, res, 0, 1,  def);
     REQUIRE((got ==  user_s || got == def)); // route optional by design
     render_graph::plan_destroy(sc.pipeline);
+}
+
+TEST_CASE("json_parse_file reports truncated input instead of hanging", "[refl]") {
+    const auto path = std::filesystem::temp_directory_path() / "gis_truncated.json";
+    for (const char* text : {"{\"a\":1", "{\"a\":[1,2", "[1,", "{\"a\"", "", "{\"a\":\"x"}) {
+        std::ofstream(path, std::ios::binary) << text;
+        bool ok = true;
+        refl::json_parse_file(path.string(), ok);
+        REQUIRE_FALSE(ok);
+    }
+    std::ofstream(path, std::ios::binary) << "{\"a\":[1,2],\"b\":{}}";
+    bool ok = false;
+    refl::Json j = refl::json_parse_file(path.string(), ok);
+    REQUIRE(ok);
+    REQUIRE(j["a"].arr.size() == 2);
+    std::filesystem::remove(path);
 }

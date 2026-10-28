@@ -32,7 +32,6 @@ constexpr int PREVIEW_SIZE = 128;
 constexpr int DEBUG_WATCH_COUNT = 8;
 constexpr uint32_t MODEL_PITCH = 32;
 constexpr uint32_t MODEL_OFF_POS = 0, MODEL_OFF_NRM = 12, MODEL_OFF_UV = 24;
-constexpr const char* SHARED_SHADER_MODULES[] = {"common", "space", "camera", "noise", "sdf"};
 
 enum class Scene_Kind { GRAPHICS, COMPUTE };
 
@@ -72,6 +71,7 @@ struct Scene_Pass {
     Scene_Kind kind = Scene_Kind::GRAPHICS;
     SDL_GPUComputePipeline* compute = nullptr;
     SDL_GPUGraphicsPipeline* graphics = nullptr;
+    SDL_GPUGraphicsPipeline* graphics_double_sided = nullptr; // cull NONE, doubleSided meshes
     uint32_t thread[3] = {8, 8, 1};
     std::vector<std::string> sampler_textures;
     std::vector<std::string> sampler_names;
@@ -80,10 +80,7 @@ struct Scene_Pass {
     std::string entry_vert;
     std::string entry_frag;
     bool debug_compute_buffer = false;
-    uint32_t debug_compute_slot = 0;
     bool debug_fragment_buffer = false;
-    uint32_t debug_fragment_slot = 0;
-    std::string debug_watch_labels[DEBUG_WATCH_COUNT];
     bool uses_model = false;
     std::vector<SDL_GPUVertexAttribute> vertex_attrs;
     // reflection counts kept for rebuild
@@ -95,12 +92,10 @@ struct Scene_Pass {
 struct Runtime_Scene {
     std::string title;
     std::string source;
-    uint64_t mtime = 0; // latest modification across entry + modules
     bool loaded = false;
     bool user_owned = false;
     std::vector<Scene_Pass> passes;
     std::vector<Uniform_Widget> widgets;
-    Scene_Kind kind = Scene_Kind::GRAPHICS;
     bool uses_model = false;
     std::string model; // mesh node's assets/models basename ("" = default)
     // Per-pass uobj routes: pass index → model path (graph.json "object"
@@ -111,7 +106,6 @@ struct Runtime_Scene {
     // (defaults linear/clamp).
     std::map<std::string, std::pair<std::string, std::string>> node_sampler_settings;
     render_graph::Plan pipeline;
-    uint64_t pipeline_mtime = 0;
     std::string pipeline_error;
 };
 
@@ -146,10 +140,15 @@ struct Scene_Resources {
     uint32_t model_index_count = 0;
     SDL_GPUTexture* model_base_color_texture = nullptr;  // current model's base color
     SDL_GPUSampler* model_base_color_sampler = nullptr;
+    bool model_double_sided = false;
     // Per-pass model from uobj routes: pass index → uploaded buffers. Filled
     // at scene load; passes without a mesh route use the default above.
     std::map<int, SDL_GPUBuffer*> pass_model_vb;
     std::map<int, SDL_GPUBuffer*> pass_model_ib;
+    // Per-pass base color from the same uobj model (null = no texture in glb).
+    std::map<int, SDL_GPUTexture*> pass_model_base_color;
+    std::map<int, SDL_GPUSampler*> pass_model_base_sampler;
+    std::map<int, bool> pass_model_double_sided; // per-pass uobj mesh doubleSided
     // Graph-routed user textures/samplers (path → resolved GPU object).
     // Host-owned, app lifetime; loaded once per path, failures reported
     // once and left absent (bind falls through to the default).
@@ -158,7 +157,7 @@ struct Scene_Resources {
     std::map<int, uint32_t> pass_model_index_count;
     std::vector<SDL_GPUTexture*> pass_tex;
     SDL_GPUTexture* black_texture = nullptr;
-    SDL_GPUSampler* black_sampler = nullptr;
+    SDL_GPUTexture* white_texture = nullptr;
     SDL_GPUBuffer* debug_watch_buffer = nullptr;
 };
 
@@ -170,8 +169,6 @@ std::string scene_entry_path(const std::map<std::string, std::string>& scene_roo
                              const std::string& name);
 std::vector<std::string> scene_module_names(const std::map<std::string, std::string>& scene_roots,
                                             const std::string& name);
-uint64_t scene_latest_mtime(const std::map<std::string, std::string>& scene_roots,
-                            const std::string& name);
 
 // ---- Build (worker thread) ----
 bool scenes_build(const std::vector<std::string>& names,
@@ -184,7 +181,6 @@ struct Build_State {
     bool req = false;
     bool running = false;
     bool done = false;
-    bool ok = false;
     bool again = false;
     bool applying = false;
     bool stop = false;
@@ -203,11 +199,12 @@ struct Build_State {
 };
 
 void scene_request_build(Build_State& build, const std::vector<std::string>& names);
-// Applies a finished build on the caller (main) thread; returns true when a
-// build was consumed.
+// Applies a finished build on the caller (main) thread. Returns true only
+// when a rebuilt scene was swapped into manager.scenes[current] (false: no
+// build finished, manager empty, or the reload failed and the last-good
+// scene stays).
 bool scene_build_pump(Build_State& build, Scene_Manager& manager, SDL_GPUDevice* gpu,
-                      const std::map<std::string, std::string>& scene_roots,
-                      std::map<std::string, uint64_t>& scene_failed);
+                      const std::map<std::string, std::string>& scene_roots);
 
 // ---- Load / reload ----
 bool scene_load_into(SDL_GPUDevice* gpu, Runtime_Scene& dest, const std::string& name,
@@ -216,10 +213,6 @@ bool scene_load(Scene_Manager& manager, SDL_GPUDevice* gpu, const std::string& n
                 const std::map<std::string, std::string>& scene_roots);
 void scene_release(SDL_GPUDevice* gpu, Runtime_Scene& scene);
 void scene_release_pass(SDL_GPUDevice* gpu, Scene_Pass& pass);
-void scene_reload(Scene_Manager& manager, SDL_GPUDevice* gpu,
-                  const std::map<std::string, std::string>& scene_roots,
-                  const std::vector<std::string>& names,
-                  std::map<std::string, uint64_t>& scene_failed);
 
 // ---- Pipeline adapter (pipeline.odin) ----
 bool pipeline_scene_init(Runtime_Scene& scene,
@@ -231,7 +224,6 @@ int pipeline_plan_source(const render_graph::Plan& plan, int consumer,
 bool pipeline_plan_resource(const render_graph::Plan& plan, int consumer,
                             const std::string& input_name, render_graph::Resource_Kind kind,
                             std::string& path);
-bool pipeline_plan_equal(const render_graph::Plan& a, const render_graph::Plan& b);
 
 // ---- Submission ----
 SDL_GPUTexture* scene_pass_texture(const Runtime_Scene& scene, SDL_GPUTexture* scene_tex,
@@ -241,8 +233,6 @@ SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu,
                                  Runtime_Scene& scene, SDL_GPUTexture* scene_tex,
                                  Scene_Resources& resources, int width, int height,
                                  SDL_GPUGraphicsPipeline* preview_pipeline,
-                                 SDL_GPUGraphicsPipeline* blit_pipeline,
-                                 SDL_GPUSampler* blit_sampler,
                                  SDL_GPUSampler* preview_sampler,
                                  std::vector<SDL_GPUTexture*>& preview_tex);
 

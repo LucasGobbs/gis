@@ -19,14 +19,6 @@ struct Field {
     uint32_t size = 0;
 };
 
-struct Uniform_Widget {
-    enum class Kind { NONE, SLIDER, TOGGLE, COLOR } kind = Kind::NONE;
-    bool node = false; // NodeUISlider/NodeUICheck
-    float min = 0, max = 0, step = 0;
-    float value[3] = {0, 0, 0};
-    bool on = false;
-};
-
 struct CBuffer {
     std::string name;
     bool in_vert = false;
@@ -80,11 +72,10 @@ struct Json {
         return nullptr;
     }
     const Json& operator[](const char* key) const {
-        static const Json nil{};
+        static const Json missing{}; // not `nil`: an Objective-C macro in .mm includers
         const Json* v = get(key);
-        return v ? *v : nil;
+        return v ? *v : missing;
     }
-    int64_t as_int() const { return int64_t(num); }
 };
 
 Json json_parse_file(const std::string& path, bool& ok);
@@ -94,8 +85,6 @@ Json json_parse_file(const std::string& path, bool& ok);
 // debug_buffer_slot + the sampler/texture pairing from scene_runtime.odin.
 bool parse_stage_refl(Stage_Refl& out, const Json& root, Stage_Kind stage);
 
-void poke_f32(CBuffer& cb, uint32_t off, float v);
-void poke_u32(CBuffer& cb, uint32_t off, uint32_t v);
 
 // graph.json text -> Graph_Json (version/scene/nodes/links).
 bool parse_graph_json(render_graph::Graph_Json& out, const std::string& text);

@@ -39,7 +39,7 @@ struct Json_Parser {
     Json parse() {
         if (failed_) return Json{};
         skip_ws();
-        if (p >= end) fail("eof");
+        if (p >= end) { fail("eof"); return Json{}; }
         char c = *p;
         if (c == '{') return parse_obj();
         if (c == '[') return parse_arr();
@@ -136,11 +136,14 @@ struct Json_Parser {
         if (eat('}')) return j;
         while (true) {
             std::string key = parse_str();
-            if (!eat(':')) fail("colon");
+            if (failed_) return j;
+            if (!eat(':')) { fail("colon"); return j; }
             j.obj.emplace_back(std::move(key), parse());
+            if (failed_) return j;
             if (eat(',')) continue;
             if (eat('}')) break;
             fail("obj");
+            return j;
         }
         return j;
     }
@@ -150,9 +153,11 @@ struct Json_Parser {
         if (eat(']')) return j;
         while (true) {
             j.arr.push_back(parse());
+            if (failed_) return j; // fail() parks p at end: without this the loop never ends
             if (eat(',')) continue;
             if (eat(']')) break;
             fail("arr");
+            return j;
         }
         return j;
     }
@@ -176,12 +181,6 @@ static bool jcontains(const std::string& s, const char* needle) {
     return s.find(needle) != std::string::npos;
 }
 
-void poke_f32(CBuffer& cb, uint32_t off, float v) {
-    if (off + 4 <= cb.block.size()) std::memcpy(cb.block.data() + off, &v, 4);
-}
-void poke_u32(CBuffer& cb, uint32_t off, uint32_t v) {
-    if (off + 4 <= cb.block.size()) std::memcpy(cb.block.data() + off, &v, 4);
-}
 
 // ---- Reflection (scene_runtime.odin helpers) ----
 
@@ -360,6 +359,40 @@ bool parse_stage_refl(Stage_Refl& out, const Json& root, Stage_Kind stage) {
             }
         }
     }
+
+    // Hardcode model texture bindings for model-based graphics passes
+    if (stage == Stage_Kind::FRAGMENT) {
+        // Check if fragment shader takes ModelVaryings input (model-based pass)
+        bool has_model_varyings = false;
+        if (!eps.arr.empty()) {
+            for (const Json& p : eps.arr[0]["parameters"].arr) {
+                if (p["type"]["name"].str == "ModelVaryings") {
+                    has_model_varyings = true;
+                    break;
+                }
+            }
+        }
+
+        if (has_model_varyings) {
+            // Check if base_color_tex already found by reflection
+            bool has_base_color = false;
+            for (const auto& tex : out.sampler_textures) {
+                if (tex == "base_color_tex") {
+                    has_base_color = true;
+                    break;
+                }
+            }
+
+            // Inject only if reflection missed it
+            if (!has_base_color) {
+                size_t next_slot = out.sampler_textures.size();
+                out.sampler_textures.push_back("base_color_tex");
+                out.sampler_names.push_back("base_color_sampler");
+                std::fprintf(stderr, "refl: injected base_color_tex at slot %zu (model-based pass)\n", next_slot);
+            }
+        }
+    }
+
     return true;
 }
 

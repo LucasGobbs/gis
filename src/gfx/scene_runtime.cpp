@@ -7,6 +7,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
@@ -156,17 +157,6 @@ std::vector<std::string> scene_module_names(const std::map<std::string, std::str
     return mods;
 }
 
-uint64_t scene_latest_mtime(const std::map<std::string, std::string>& scene_roots,
-                            const std::string& name) {
-    uint64_t latest = file_mtime(scene_entry_path(scene_roots, name));
-    for (const std::string& mod : scene_module_names(scene_roots, name)) {
-        std::string path = scene_root_dir(scene_roots, name) + "/" + name + "/" + mod + ".slang";
-        uint64_t m = file_mtime(path);
-        if (m > latest) latest = m;
-    }
-    return latest;
-}
-
 // ---- Build manifest + subprocess (scenes_build) ----
 
 static void write_manifest(const std::vector<std::string>& names,
@@ -198,7 +188,9 @@ bool scenes_build(const std::vector<std::string>& names,
                   const std::map<std::string, std::string>& scene_roots) {
     // Cross-process exclusion via O_EXCL lockfile (crash-stale after 60s).
     const std::string lock_path = std::string(GENERATED_DIR) + "/.build.lock";
-    {
+    std::error_code ec;
+    std::filesystem::create_directories(GENERATED_DIR, ec); // fresh clone: dir may not exist yet
+    for (int attempt = 0; attempt < 2; ++attempt) {
         FILE* f = std::fopen(lock_path.c_str(), "wx"); // exclusive create
         if (f) {
             // Delete the lock when the scope closes: otherwise every save
@@ -216,29 +208,20 @@ bool scenes_build(const std::vector<std::string>& names,
             int rc = std::system(cmd.c_str());
             return rc == 0;
         }
-        // Stale lock: older than 60s → take over.
+        // Lock exists: stale (older than 60 s) means take over and retry once.
         struct stat st;
-        if (::stat(lock_path.c_str(), &st) == 0) {
-            uint64_t age = file_mtime(lock_path);
-            uint64_t now = uint64_t(::time(nullptr)) * 1000000000ull;
-            if (now - age > 60000000000ull) {
-                ::remove(lock_path.c_str());
-            } else {
-                return true; // held by another instance; next rescan picks up
-            }
-        }
-        return scenes_build(names, scene_roots); // retry once after stale removal
+        if (::stat(lock_path.c_str(), &st) != 0) return false; // cannot create it and it is not there
+        uint64_t age = file_mtime(lock_path);
+        uint64_t now = uint64_t(::time(nullptr)) * 1000000000ull;
+        if (now - age <= 60000000000ull) return true; // held by another instance; next rescan picks up
+        ::remove(lock_path.c_str());
     }
+    return false;
 }
 
 // ---- Worker thread (scene_build_worker / scene_request_build / pump) ----
 
 static void build_worker(Build_State* build) {
-    std::map<std::string, std::string> roots; // filled by pump-provided names? no:
-    // The worker needs the roots snapshot; the request copies it via the
-    // pending names' roots captured at request time. To keep the worker
-    // self-contained it re-scans disk (cheap, few dirs).
-    std::map<std::string, uint64_t> unused_failed;
     for (;;) {
         std::vector<std::string> names;
         {
@@ -248,17 +231,19 @@ static void build_worker(Build_State* build) {
             build->req = false;
             build->running = true;
             names = build->names;
-            // Wait for any in-flight apply to finish reading artifacts.
-            build->apply_cond.wait(lock, [&] { return !build->applying || build->stop; });
+            // Wait for an unconsumed result and any in-flight apply: the pump
+            // reads artifacts from the moment `done` is set until it finishes.
+            build->apply_cond.wait(lock, [&] {
+                return (!build->applying && !build->done) || build->stop;
+            });
             if (build->stop) return;
         }
+        // The worker re-scans disk for the roots snapshot (cheap, few dirs).
         std::map<std::string, std::string> roots_snapshot;
-        // Roots snapshot: scan (same result as the poller's).
         scene_names_on_disk(roots_snapshot);
-        bool ok = scenes_build(names, roots_snapshot);
+        scenes_build(names, roots_snapshot);
         {
             std::lock_guard<std::mutex> lock(build->mu);
-            build->ok = ok;
             build->running = false;
             build->done = true;
         }
@@ -281,8 +266,7 @@ void scene_request_build(Build_State& build, const std::vector<std::string>& nam
 }
 
 bool scene_build_pump(Build_State& build, Scene_Manager& manager, SDL_GPUDevice* gpu,
-                      const std::map<std::string, std::string>& scene_roots,
-                      std::map<std::string, uint64_t>& scene_failed) {
+                      const std::map<std::string, std::string>& scene_roots) {
     {
         std::lock_guard<std::mutex> lock(build.mu);
         if (!build.done) return false;
@@ -291,25 +275,19 @@ bool scene_build_pump(Build_State& build, Scene_Manager& manager, SDL_GPUDevice*
         // this pump is reading them on the main thread.
         build.applying = true;
     }
-    if (manager.scenes.empty()) {
-        {
-            std::lock_guard<std::mutex> lock(build.mu);
-            build.applying = false;
-        }
-        build.apply_cond.notify_all();
-        return true;
-    }
-
     // Reload active scene on the main thread (pipeline creation needs GPU).
-    Runtime_Scene& current = manager.scenes[size_t(manager.current)];
-    std::string name = current.title;
-    Runtime_Scene candidate;
-    if (scene_load_into(gpu, candidate, name, scene_roots)) {
-        scene_release(gpu, current);
-        current = std::move(candidate);
-    } else {
-        // Failed reload keeps the last-good pipeline running.
-        scene_failed[name] = scene_latest_mtime(scene_roots, name);
+    // A failed reload keeps the last-good pipeline running.
+    bool swapped = false;
+    std::string name;
+    if (!manager.scenes.empty()) {
+        Runtime_Scene& current = manager.scenes[size_t(manager.current)];
+        name = current.title;
+        Runtime_Scene candidate;
+        if (scene_load_into(gpu, candidate, name, scene_roots)) {
+            scene_release(gpu, current);
+            current = std::move(candidate);
+            swapped = true;
+        }
     }
     // Coalesced follow-up.
     bool again = false;
@@ -320,8 +298,8 @@ bool scene_build_pump(Build_State& build, Scene_Manager& manager, SDL_GPUDevice*
         build.applying = false;
     }
     build.apply_cond.notify_all();
-    if (again) scene_request_build(build, {name});
-    return true;
+    if (again && !name.empty()) scene_request_build(build, {name});
+    return swapped;
 }
 
 // ---- Pipeline creation from reflection (create_*_pipeline_raw) ----
@@ -345,21 +323,7 @@ static SDL_GPUShader* load_shader_raw(SDL_GPUDevice* gpu, const std::string& pat
     ci.num_uniform_buffers = counts.ubuf;
     ci.num_storage_buffers = counts.rw_buf;
     ci.num_storage_textures = counts.rw_tex;
-    // Slang emits gl_FragCoord as a TEXCOORD_1 varying filled by the vertex
-    // stage from a vertex-stage uniform; on this SDL+Metal path that uniform
-    // never reaches the vertex stage, so the varying arrives flat and scenes
-    // draw a single color. Workaround: rewrite the fragment MSL to derive
-    // pixel coordinates from the interpolated [[position]] instead. Y is
-    // flipped: slang's fragCoord is GL-style (bottom-up), Metal's position
-    // is top-down. The stage_in variable name varies per scene (_S14, _1...):
-    // extract it from the pixelMain signature; rewrite only when the field
-    // and the uses share it.
-    // The TEXCOORD_1 rewrite is DISABLED: the varying path works now that
-    // vertex uniforms are pushed correctly ([ub] dump proved iResolution
-    // arrives as (575,562,1)); the rewritten [[position]]-based coords
-    // produced a squeezed/mirrored gradient on this SDL+Metal path.
-    // (TEXCOORD_1 rewrite block deleted: it produced a squeezed/mirrored
-    // gradient; see git history.)
+    // Slang's TEXCOORD_1 fragCoord varying works on this SDL+Metal path; no MSL rewrite needed.
     SDL_GPUShader* out = SDL_CreateGPUShader(gpu, &ci);
     if (!out)
         std::fprintf(stderr, "[shader-fail] %s (%s): %s\n", path.c_str(),
@@ -386,9 +350,6 @@ static SDL_GPUComputePipeline* create_compute_pipeline_raw(SDL_GPUDevice* gpu,
     ci.num_samplers = counts.samplers;
     ci.num_readonly_storage_textures = counts.ro_tex;
     ci.num_readwrite_storage_textures = counts.rw_tex;
-    std::fprintf(stderr, "[create-compute] %s sam=%u ro_tex=%u rw_tex=%u ro_buf=%u rw_buf=%u ubuf=%u\n",
-                 msl_path.c_str(), counts.samplers, counts.ro_tex, counts.rw_tex,
-                 counts.ro_buf, counts.rw_buf, counts.ubuf);
     ci.num_readwrite_storage_buffers = counts.rw_buf;
     ci.num_uniform_buffers = counts.ubuf;
     ci.threadcount_x = thread[0];
@@ -397,63 +358,63 @@ static SDL_GPUComputePipeline* create_compute_pipeline_raw(SDL_GPUDevice* gpu,
     return SDL_CreateGPUComputePipeline(gpu, &ci);
 }
 
-static SDL_GPUGraphicsPipeline* create_graphics_pipeline_raw(
-    SDL_GPUDevice* gpu, const std::string& vert_path, const std::string& frag_path,
-    const std::string& entry_vert, const std::string& entry_frag,
-    const refl::ResourceCounts& vert_counts, const refl::ResourceCounts& frag_counts,
-    Scene_Pass& pass) {
-    SDL_GPUShader* vs = load_shader_raw(gpu, vert_path, entry_vert,
-                                        SDL_GPU_SHADERSTAGE_VERTEX, vert_counts);
-    if (!vs) return nullptr;
-    SDL_GPUShader* fs = load_shader_raw(gpu, frag_path, entry_frag,
-                                        SDL_GPU_SHADERSTAGE_FRAGMENT, frag_counts);
-    if (!fs) {
-        SDL_ReleaseGPUShader(gpu, vs);
-        return nullptr;
-    }
+// Builds a pipeline from an already-created shader pair. `cull` selects the
+// per-draw variant: doubleSided materials use NONE (second pipeline), others BACK.
+static SDL_GPUGraphicsPipeline* build_graphics_pipeline(SDL_GPUDevice* gpu, SDL_GPUShader* vs,
+                                                        SDL_GPUShader* fs, const Scene_Pass& pass,
+                                                        SDL_GPUCullMode cull) {
     SDL_GPUGraphicsPipelineCreateInfo ci{};
     ci.vertex_shader = vs;
     ci.fragment_shader = fs;
     ci.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     ci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    // BACK cull + CCW, as in legacy/src/scene_runtime.odin. CULL_NONE drew
-    // stair-step patches and a pole tear on the uv_sphere ball. Mixed-winding
-    // models are fixed at load (assets.cpp model_normalize_winding).
-    ci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
+    ci.rasterizer_state.cull_mode = cull;
     ci.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     ci.target_info.num_color_targets = 1;
-    static SDL_GPUColorTargetDescription target{};
+    SDL_GPUColorTargetDescription target{};
     target.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; // the scene texture
     ci.target_info.color_target_descriptions = &target;
+    SDL_GPUVertexBufferDescription vb_desc{0, MODEL_PITCH, SDL_GPU_VERTEXINPUTRATE_VERTEX, 0};
     if (pass.uses_model) {
-        static SDL_GPUVertexBufferDescription vb_desc{0, MODEL_PITCH,
-                                                      SDL_GPU_VERTEXINPUTRATE_VERTEX, 0};
         ci.vertex_input_state.num_vertex_buffers = 1;
         ci.vertex_input_state.vertex_buffer_descriptions = &vb_desc;
         ci.vertex_input_state.num_vertex_attributes = uint32_t(pass.vertex_attrs.size());
         ci.vertex_input_state.vertex_attributes = pass.vertex_attrs.data();
+        ci.target_info.has_depth_stencil_target = true;
         ci.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
         ci.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
         ci.depth_stencil_state.enable_depth_test = true;
         ci.depth_stencil_state.enable_depth_write = true;
     }
-    SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(gpu, &ci);
+    return SDL_CreateGPUGraphicsPipeline(gpu, &ci);
+}
+
+// Creates pass.graphics (and graphics_double_sided for model passes) from one
+// compiled shader pair.
+static bool create_graphics_pipelines(SDL_GPUDevice* gpu, const std::string& vert_path,
+                                      const std::string& frag_path, Scene_Pass& pass) {
+    SDL_GPUShader* vs = load_shader_raw(gpu, vert_path, pass.entry_vert,
+                                        SDL_GPU_SHADERSTAGE_VERTEX, pass.vert_counts);
+    if (!vs) return false;
+    SDL_GPUShader* fs = load_shader_raw(gpu, frag_path, pass.entry_frag,
+                                        SDL_GPU_SHADERSTAGE_FRAGMENT, pass.frag_counts);
+    if (!fs) {
+        SDL_ReleaseGPUShader(gpu, vs);
+        return false;
+    }
+    pass.graphics = build_graphics_pipeline(gpu, vs, fs, pass, SDL_GPU_CULLMODE_BACK);
+    if (pass.graphics && pass.uses_model)
+        pass.graphics_double_sided =
+            build_graphics_pipeline(gpu, vs, fs, pass, SDL_GPU_CULLMODE_NONE);
     SDL_ReleaseGPUShader(gpu, vs);
     SDL_ReleaseGPUShader(gpu, fs);
-    return pipeline;
+    return pass.graphics != nullptr;
 }
 
 // ---- Reflection parse into Scene_Pass (scene_parse_stage_refl + widgets) ----
 
-static bool parse_pass_stage(Scene_Pass& pass, Runtime_Scene& scene, const std::string& refl_path,
-                             refl::Stage_Kind stage) {
-    (void)scene;   // widgets already extracted by the caller's parse_widgets
-    bool ok = false;
-    refl::Json root = refl::json_parse_file(refl_path, ok);
-    if (!ok) return false;
-    refl::Stage_Refl st;
-    if (!refl::parse_stage_refl(st, root, stage)) return false;
-
+// Stage-specific entry, counts, thread size, samplers and model vertex layout.
+static void apply_stage_info(Scene_Pass& pass, const refl::Stage_Refl& st, refl::Stage_Kind stage) {
     if (stage == refl::Stage_Kind::COMPUTE) {
         pass.entry = st.entry;
         pass.thread[0] = st.thread[0];
@@ -461,7 +422,6 @@ static bool parse_pass_stage(Scene_Pass& pass, Runtime_Scene& scene, const std::
         pass.thread[2] = st.thread[2];
         pass.compute_counts = st.counts;
         pass.debug_compute_buffer = st.has_debug_storage;
-        pass.debug_compute_slot = st.debug_storage_slot;
         pass.sampler_textures = st.sampler_textures;
         pass.sampler_names = st.sampler_names;
     } else if (stage == refl::Stage_Kind::VERTEX) {
@@ -484,12 +444,13 @@ static bool parse_pass_stage(Scene_Pass& pass, Runtime_Scene& scene, const std::
         pass.entry_frag = st.entry;
         pass.frag_counts = st.counts;
         pass.debug_fragment_buffer = st.has_debug_storage;
-        pass.debug_fragment_slot = st.debug_storage_slot;
         pass.sampler_textures = st.sampler_textures;
         pass.sampler_names = st.sampler_names;
     }
+}
 
-    // Merge cbuffers into the pass; widgets go to the scene (dedup by label).
+// Merges the stage's cbuffers into the pass (shared by name across stages).
+static void merge_cbuffers(Scene_Pass& pass, const refl::Stage_Refl& st, refl::Stage_Kind stage) {
     for (const refl::CBuffer& src : st.cbuffers) {
         CBuffer* cb = nullptr;
         for (CBuffer& existing : pass.cbuffers) {
@@ -498,7 +459,7 @@ static bool parse_pass_stage(Scene_Pass& pass, Runtime_Scene& scene, const std::
         if (!cb) {
             CBuffer fresh;
             fresh.name = src.name;
-            for (const refl::Field& f : src.fields) { (void)f;
+            for (const refl::Field& f : src.fields) {
                 Uniform_Field uf;
                 uf.name = f.name;
                 uf.offset = f.offset;
@@ -513,62 +474,63 @@ static bool parse_pass_stage(Scene_Pass& pass, Runtime_Scene& scene, const std::
         if (stage == refl::Stage_Kind::COMPUTE) cb->compute_slot = src.compute_slot;
         else if (stage == refl::Stage_Kind::VERTEX) { cb->in_vert = true; cb->vert_slot = src.vert_slot; }
         else { cb->in_frag = true; cb->frag_slot = src.frag_slot; }
+    }
+}
 
-        // Widget attributes ([UiSlider]/[UiToggle]/[UiColor]).
-        for (const refl::Field& f : src.fields) { (void)f;
-            const refl::Json* fp = nullptr;
-            // Re-find the field's userAttribs from the JSON (fields parsed
-            // without attributes in refl.hpp).
-            (void)fp;
+static bool parse_pass_stage(Scene_Pass& pass, const refl::Json& root, refl::Stage_Kind stage) {
+    refl::Stage_Refl st;
+    if (!refl::parse_stage_refl(st, root, stage)) return false;
+    apply_stage_info(pass, st, stage);
+    merge_cbuffers(pass, st, stage);
+    return true;
+}
+
+// Fills `widget` from one userAttrib ([UiSlider]/[UiToggle]/[UiColor] and the
+// Node* variants); false for any other attribute.
+static bool widget_from_attrib(const refl::Json& attr, Uniform_Widget& widget) {
+    const std::string& aname = attr["name"].str;
+    const refl::Json& args = attr["arguments"];
+    if (aname == "UiSlider" || aname == "NodeUISlider") {
+        widget.kind = Uniform_Widget::Kind::SLIDER;
+        widget.node = aname == "NodeUISlider";
+        if (args.arr.size() >= 4) {
+            widget.min = float(args.arr[0].num);
+            widget.max = float(args.arr[1].num);
+            widget.step = float(args.arr[2].num);
+            widget.value[0] = float(args.arr[3].num);
         }
+    } else if (aname == "UiToggle" || aname == "NodeUICheck") {
+        widget.kind = Uniform_Widget::Kind::TOGGLE;
+        widget.node = aname == "NodeUICheck";
+        if (!args.arr.empty()) widget.on = args.arr[0].num != 0;
+    } else if (aname == "UiColor") {
+        widget.kind = Uniform_Widget::Kind::COLOR;
+        widget.value[0] = widget.value[1] = widget.value[2] = 1;
+        if (args.arr.size() >= 3) {
+            widget.value[0] = float(args.arr[0].num);
+            widget.value[1] = float(args.arr[1].num);
+            widget.value[2] = float(args.arr[2].num);
+        }
+    } else {
+        return false;
     }
     return true;
 }
 
 // Extracts widget attributes; separate pass over the raw JSON. module = the
 // reflection unit (scene entry or <scene>__<module> pass) the buffer came
-// from, so the UI can group params per file.
+// from, so the UI can group params per file. Widgets dedupe by label.
 static void parse_widgets(Runtime_Scene& scene, const refl::Json& root,
                           const std::string& module) {
-    const refl::Json& params = root["parameters"];
-    for (const refl::Json& param : params.arr) {
+    for (const refl::Json& param : root["parameters"].arr) {
         if (param["type"]["kind"].str != "constantBuffer") continue;
-        const refl::Json& fields = param["type"]["elementVarLayout"]["type"]["fields"];
-        for (const refl::Json& f : fields.arr) {
-            const std::string& field_name = f["name"].str;
+        for (const refl::Json& f : param["type"]["elementVarLayout"]["type"]["fields"].arr) {
             for (const refl::Json& attr : f["userAttribs"].arr) {
-                const std::string& aname = attr["name"].str;
-                const refl::Json& args = attr["arguments"];
                 Uniform_Widget widget;
-                widget.label = field_name;
+                widget.label = f["name"].str;
                 widget.module = module;
                 widget.param = param["name"].str;
-                bool known = true;
-                if (aname == "UiSlider" || aname == "NodeUISlider") {
-                    widget.kind = Uniform_Widget::Kind::SLIDER;
-                    widget.node = aname == "NodeUISlider";
-                    if (args.arr.size() >= 4) {
-                        widget.min = float(args.arr[0].num);
-                        widget.max = float(args.arr[1].num);
-                        widget.step = float(args.arr[2].num);
-                        widget.value[0] = float(args.arr[3].num);
-                    }
-                } else if (aname == "UiToggle" || aname == "NodeUICheck") {
-                    widget.kind = Uniform_Widget::Kind::TOGGLE;
-                    widget.node = aname == "NodeUICheck";
-                    if (!args.arr.empty()) widget.on = args.arr[0].num != 0;
-                } else if (aname == "UiColor") {
-                    widget.kind = Uniform_Widget::Kind::COLOR;
-                    widget.value[0] = widget.value[1] = widget.value[2] = 1;
-                    if (args.arr.size() >= 3) {
-                        widget.value[0] = float(args.arr[0].num);
-                        widget.value[1] = float(args.arr[1].num);
-                        widget.value[2] = float(args.arr[2].num);
-                    }
-                } else {
-                    known = false;
-                }
-                if (!known) continue;
+                if (!widget_from_attrib(attr, widget)) continue;
                 bool seen = false;
                 for (const Uniform_Widget& existing : scene.widgets)
                     if (existing.label == widget.label) { seen = true; break; }
@@ -580,45 +542,43 @@ static void parse_widgets(Runtime_Scene& scene, const refl::Json& root,
 
 // ---- scene_parse_pass + scene_parse_reflection ----
 
+static bool parse_stage_file(Runtime_Scene& scene, Scene_Pass& pass, const std::string& name,
+                             const std::string& refl_path, refl::Stage_Kind stage) {
+    bool ok = false;
+    refl::Json root = refl::json_parse_file(refl_path, ok);
+    if (!ok) return false;
+    parse_widgets(scene, root, name);
+    return parse_pass_stage(pass, root, stage);
+}
+
 static bool scene_parse_pass(SDL_GPUDevice* gpu, Runtime_Scene& scene, const std::string& name,
-                             const std::string& source, Scene_Pass& pass) {
-    (void)source;  // reflection comes from the generated artifacts, not the source
+                             Scene_Pass& pass) {
     pass.name = name;
     const std::string base = std::string(GENERATED_DIR) + "/" + name;
     const std::string compute_refl = base + ".compute." + SCENE_FMT + ".refl.json";
     const std::string vert_refl = base + ".vert." + SCENE_FMT + ".refl.json";
     const std::string frag_refl = base + ".frag." + SCENE_FMT + ".refl.json";
 
-    bool ok = false;
     if (std::ifstream(compute_refl).good()) {
         pass.kind = Scene_Kind::COMPUTE;
-        bool parse_ok = false;
-        refl::Json root = refl::json_parse_file(compute_refl, parse_ok);
-        if (!parse_ok) return false;
-        parse_widgets(scene, root, name);
-        if (!parse_pass_stage(pass, scene, compute_refl, refl::Stage_Kind::COMPUTE)) return false;
+        if (!parse_stage_file(scene, pass, name, compute_refl, refl::Stage_Kind::COMPUTE))
+            return false;
         pass.compute = create_compute_pipeline_raw(
             gpu, base + ".compute." + SCENE_FMT, pass.entry, pass.compute_counts, pass.thread);
         return pass.compute != nullptr;
     }
     if (std::ifstream(vert_refl).good() && std::ifstream(frag_refl).good()) {
         pass.kind = Scene_Kind::GRAPHICS;
-        bool parse_ok = false;
-        refl::Json vroot = refl::json_parse_file(vert_refl, parse_ok);
-        if (!parse_ok) return false;
-        refl::Json froot = refl::json_parse_file(frag_refl, ok);
-        if (!ok) return false;
-        parse_widgets(scene, vroot, name);
-        parse_widgets(scene, froot, name);
-        if (!parse_pass_stage(pass, scene, vert_refl, refl::Stage_Kind::VERTEX)) return false;
-        if (!parse_pass_stage(pass, scene, frag_refl, refl::Stage_Kind::FRAGMENT)) return false;
-        pass.graphics = create_graphics_pipeline_raw(
-            gpu, base + ".vert." + SCENE_FMT, base + ".frag." + SCENE_FMT, pass.entry_vert,
-            pass.entry_frag, pass.vert_counts, pass.frag_counts, pass);
-        if (!pass.graphics)
+        if (!parse_stage_file(scene, pass, name, vert_refl, refl::Stage_Kind::VERTEX) ||
+            !parse_stage_file(scene, pass, name, frag_refl, refl::Stage_Kind::FRAGMENT))
+            return false;
+        if (!create_graphics_pipelines(gpu, base + ".vert." + SCENE_FMT,
+                                       base + ".frag." + SCENE_FMT, pass)) {
             std::fprintf(stderr, "scene: failed to create graphics pipeline %s: %s\n",
                          (base + ".frag." + SCENE_FMT).c_str(), SDL_GetError());
-        return pass.graphics != nullptr;
+            return false;
+        }
+        return true;
     }
     return false;
 }
@@ -636,7 +596,7 @@ static bool scene_parse_reflection(SDL_GPUDevice* gpu, Runtime_Scene& scene,
     }
     for (size_t i = 0; i < names.size(); ++i) {
         Scene_Pass pass;
-        if (!scene_parse_pass(gpu, scene, names[i], sources[i], pass)) {
+        if (!scene_parse_pass(gpu, scene, names[i], pass)) {
             scene_release_pass(gpu, pass);
             return false;
         }
@@ -655,7 +615,6 @@ static bool scene_parse_reflection(SDL_GPUDevice* gpu, Runtime_Scene& scene,
         scene.passes.push_back(std::move(pass));
     }
     if (scene.passes.empty()) return false;
-    scene.kind = scene.passes[0].kind;
     return true;
 }
 
@@ -669,6 +628,7 @@ std::vector<render_graph::Pass_Descriptor> scene_pass_descriptors(const Runtime_
         d.key = pass.graph_key;
         d.name = pass.name;
         d.input_textures = pass.sampler_textures;
+        d.input_samplers = pass.sampler_names;
         d.output_pin = pass.kind == Scene_Kind::COMPUTE ? "out_tex" : "frame";
         d.uses_model = pass.uses_model;
         for (const CBuffer& cb : pass.cbuffers) d.uniform_blocks.push_back(cb.name);
@@ -689,7 +649,6 @@ bool pipeline_scene_init(Runtime_Scene& scene,
         candidate = render_graph::plan_default(scene_pass_descriptors(scene));
         scene.pipeline = std::move(candidate);
         scene.pipeline_error.clear();
-        scene.pipeline_mtime = file_mtime(path);
         return true;
     }
     std::stringstream ss;
@@ -737,12 +696,10 @@ bool pipeline_scene_init(Runtime_Scene& scene,
         candidate = render_graph::plan_default(scene_pass_descriptors(scene));
         scene.pipeline = std::move(candidate);
         scene.pipeline_error = error;
-        scene.pipeline_mtime = file_mtime(path);
         return true;
     }
     scene.pipeline = std::move(candidate);
     scene.pipeline_error.clear();
-    scene.pipeline_mtime = file_mtime(path);
     return true;
 }
 
@@ -766,15 +723,12 @@ bool pipeline_plan_resource(const render_graph::Plan& plan, int consumer,
     return false;
 }
 
-bool pipeline_plan_equal(const render_graph::Plan& a, const render_graph::Plan& b) {
-    return render_graph::plan_equal(a, b);
-}
-
 // ---- Load / release / reload ----
 
 void scene_release_pass(SDL_GPUDevice* gpu, Scene_Pass& pass) {
     if (pass.compute) SDL_ReleaseGPUComputePipeline(gpu, pass.compute);
     if (pass.graphics) SDL_ReleaseGPUGraphicsPipeline(gpu, pass.graphics);
+    if (pass.graphics_double_sided) SDL_ReleaseGPUGraphicsPipeline(gpu, pass.graphics_double_sided);
     pass = {};
 }
 
@@ -799,7 +753,6 @@ bool scene_load_into(SDL_GPUDevice* gpu, Runtime_Scene& dest, const std::string&
         std::ifstream f(dest.source);
         if (!f.good()) return false;
     }
-    dest.mtime = scene_latest_mtime(scene_roots, name);
     std::string error;
     if (!scene_parse_reflection(gpu, dest, scene_roots) ||
         !pipeline_scene_init(dest, scene_roots, error)) {
@@ -819,56 +772,6 @@ bool scene_load(Scene_Manager& manager, SDL_GPUDevice* gpu, const std::string& n
     return true;
 }
 
-void scene_reload(Scene_Manager& manager, SDL_GPUDevice* gpu,
-                  const std::map<std::string, std::string>& scene_roots,
-                  const std::vector<std::string>& names,
-                  std::map<std::string, uint64_t>& scene_failed) {
-    std::string current_title =
-        manager.scenes.empty() ? std::string() : manager.scenes[size_t(manager.current)].title;
-
-    for (const std::string& name : names) {
-        {
-            std::ifstream f(scene_entry_path(scene_roots, name));
-            if (!f.good()) continue;
-        }
-        // Graph.json participates in the gate: an external editor changing
-        // routing must re-plan even when no .slang changed.
-        uint64_t mtime = scene_latest_mtime(scene_roots, name);
-        {
-            std::string gp = render_graph::graph_path(
-                name, scene_root_dir(scene_roots, name));
-            uint64_t gm = file_mtime(gp);
-            if (gm > mtime) mtime = gm;
-        }
-        auto failed_it = scene_failed.find(name);
-        if (failed_it != scene_failed.end() && failed_it->second == mtime) continue;
-
-        long existing_index = -1;
-        for (size_t i = 0; i < manager.scenes.size(); ++i)
-            if (manager.scenes[i].title == name) { existing_index = long(i); break; }
-        if (existing_index >= 0 &&
-            manager.scenes[size_t(existing_index)].mtime == mtime)
-            continue;
-
-        bool succeeded = false;
-        if (existing_index >= 0) {
-            Runtime_Scene candidate;
-            if (scene_load_into(gpu, candidate, name, scene_roots)) {
-                scene_release(gpu, manager.scenes[size_t(existing_index)]);
-                manager.scenes[size_t(existing_index)] = std::move(candidate);
-                succeeded = true;
-            }
-        } else {
-            succeeded = scene_load(manager, gpu, name, scene_roots);
-        }
-        if (succeeded) {
-            scene_failed.erase(name);
-        } else if (scene_failed.find(name) == scene_failed.end()) {
-            scene_failed[name] = mtime;
-        }
-    }
-}
-
 // ---- Uniform fill + submission ----
 
 static void poke_f32(std::vector<uint8_t>& block, uint32_t offset, float value) {
@@ -878,55 +781,57 @@ static void poke_u32(std::vector<uint8_t>& block, uint32_t offset, uint32_t valu
     if (offset + 4 <= block.size()) std::memcpy(block.data() + offset, &value, 4);
 }
 
-void scene_write_uniforms(Runtime_Scene& scene, float res_x, float res_y, float time_s,
-                          bool color, float mouse_x, float mouse_y, bool mouse_click,
-                          const camera::Uniforms& cam) {
-    for (Scene_Pass& pass : scene.passes) {
-        for (CBuffer& cb : pass.cbuffers) {
-            for (const Uniform_Field& field : cb.fields) {
-                if (field.name == "iResolution") {
-                    poke_f32(cb.block, field.offset + 0, res_x);
-                    poke_f32(cb.block, field.offset + 4, res_y);
-                    poke_f32(cb.block, field.offset + 8, 1.0f);
-                } else if (field.name == "iTime") {
-                    poke_f32(cb.block, field.offset, time_s);
-                } else if (field.name == "iFbm") {
-                    poke_f32(cb.block, field.offset + 0, 6.0f);
-                    poke_f32(cb.block, field.offset + 4, 2.03f);
-                    poke_f32(cb.block, field.offset + 8, 0.5f);
-                } else if (field.name == "iColorMode") {
-                    poke_f32(cb.block, field.offset, color ? 1.0f : 0.0f);
-                } else if (field.name == "iMousePos") {
-                    poke_f32(cb.block, field.offset + 0, mouse_x);
-                    poke_f32(cb.block, field.offset + 4, mouse_y);
-                } else if (field.name == "iMouseClick") {
-                    poke_f32(cb.block, field.offset, mouse_click ? 1.0f : 0.0f);
-                } else if (field.name == "iViewProjection") {
-                    for (int i = 0; i < 16; ++i)
-                        poke_f32(cb.block, field.offset + uint32_t(i) * 4,
-                                 cam.view_projection[i]);
-                } else if (field.name == "iCameraPosition") {
-                    for (int i = 0; i < 3; ++i)
-                        poke_f32(cb.block, field.offset + uint32_t(i) * 4, cam.position[i]);
-                } else if (field.name == "iCameraRight") {
-                    for (int i = 0; i < 3; ++i)
-                        poke_f32(cb.block, field.offset + uint32_t(i) * 4, cam.right[i]);
-                } else if (field.name == "iCameraUp") {
-                    for (int i = 0; i < 3; ++i)
-                        poke_f32(cb.block, field.offset + uint32_t(i) * 4, cam.up[i]);
-                } else if (field.name == "iCameraForward") {
-                    for (int i = 0; i < 3; ++i)
-                        poke_f32(cb.block, field.offset + uint32_t(i) * 4, cam.forward[i]);
-                } else if (field.name == "iManual") {
-                    poke_f32(cb.block, field.offset, 1.0f);
-                } else if (field.name == "iDebugPixel" || field.name == "iDebugEnabled" ||
-                           field.name == "iDebugFrame") {
-                    poke_u32(cb.block, field.offset, 0);
-                }
-            }
-        }
+struct Frame_Values {
+    float res_x, res_y, time_s;
+    bool color;
+    float mouse_x, mouse_y;
+    bool mouse_click;
+    const camera::Uniforms& cam;
+};
+
+static void poke_floats(std::vector<uint8_t>& block, uint32_t offset, const float* v, int n) {
+    for (int i = 0; i < n; ++i) poke_f32(block, offset + uint32_t(i) * 4, v[i]);
+}
+
+// Per-frame values the app owns, matched by reflected field name.
+static void write_builtin_uniform(CBuffer& cb, const Uniform_Field& field,
+                                  const Frame_Values& fv) {
+    const std::string& name = field.name;
+    const uint32_t off = field.offset;
+    if (name == "iResolution") {
+        const float v[3] = {fv.res_x, fv.res_y, 1.0f};
+        poke_floats(cb.block, off, v, 3);
+    } else if (name == "iTime") {
+        poke_f32(cb.block, off, fv.time_s);
+    } else if (name == "iFbm") {
+        const float v[3] = {6.0f, 2.03f, 0.5f};
+        poke_floats(cb.block, off, v, 3);
+    } else if (name == "iColorMode") {
+        poke_f32(cb.block, off, fv.color ? 1.0f : 0.0f);
+    } else if (name == "iMousePos") {
+        const float v[2] = {fv.mouse_x, fv.mouse_y};
+        poke_floats(cb.block, off, v, 2);
+    } else if (name == "iMouseClick") {
+        poke_f32(cb.block, off, fv.mouse_click ? 1.0f : 0.0f);
+    } else if (name == "iViewProjection") {
+        poke_floats(cb.block, off, fv.cam.view_projection, 16);
+    } else if (name == "iCameraPosition") {
+        poke_floats(cb.block, off, fv.cam.position, 3);
+    } else if (name == "iCameraRight") {
+        poke_floats(cb.block, off, fv.cam.right, 3);
+    } else if (name == "iCameraUp") {
+        poke_floats(cb.block, off, fv.cam.up, 3);
+    } else if (name == "iCameraForward") {
+        poke_floats(cb.block, off, fv.cam.forward, 3);
+    } else if (name == "iManual") {
+        poke_f32(cb.block, off, 1.0f);
+    } else if (name == "iDebugPixel" || name == "iDebugEnabled" || name == "iDebugFrame") {
+        poke_u32(cb.block, off, 0);
     }
-    // Widgets fan out to every pass cbuffer matching by field name.
+}
+
+// Widgets fan out to every pass cbuffer matching by field name.
+static void write_widget_uniforms(Runtime_Scene& scene) {
     for (const Uniform_Widget& widget : scene.widgets) {
         for (Scene_Pass& pass : scene.passes) {
             for (CBuffer& cb : pass.cbuffers) {
@@ -940,15 +845,23 @@ void scene_write_uniforms(Runtime_Scene& scene, float res_x, float res_y, float 
                         poke_f32(cb.block, field.offset, widget.on ? 1.0f : 0.0f);
                         break;
                     case Uniform_Widget::Kind::COLOR:
-                        poke_f32(cb.block, field.offset + 0, widget.value[0]);
-                        poke_f32(cb.block, field.offset + 4, widget.value[1]);
-                        poke_f32(cb.block, field.offset + 8, widget.value[2]);
+                        poke_floats(cb.block, field.offset, widget.value, 3);
                         break;
                     }
                 }
             }
         }
     }
+}
+
+void scene_write_uniforms(Runtime_Scene& scene, float res_x, float res_y, float time_s,
+                          bool color, float mouse_x, float mouse_y, bool mouse_click,
+                          const camera::Uniforms& cam) {
+    const Frame_Values fv{res_x, res_y, time_s, color, mouse_x, mouse_y, mouse_click, cam};
+    for (Scene_Pass& pass : scene.passes)
+        for (CBuffer& cb : pass.cbuffers)
+            for (const Uniform_Field& field : cb.fields) write_builtin_uniform(cb, field, fv);
+    write_widget_uniforms(scene);
 }
 
 SDL_GPUTexture* scene_pass_texture(const Runtime_Scene& scene, SDL_GPUTexture* scene_tex,
@@ -1001,8 +914,14 @@ SDL_GPUTexture* resolve_bind_texture(const Runtime_Scene& scene,
     }
     if (input_name == "skybox_tex" && resources.skybox_texture)
         return resources.skybox_texture;
-    if (input_name == "base_color_tex" && resources.model_base_color_texture)
-        return resources.model_base_color_texture;
+    if (input_name == "base_color_tex") {
+        // Untextured model samples white: material color stays unscaled.
+        auto pm = resources.pass_model_base_color.find(pass_index);
+        if (pm != resources.pass_model_base_color.end())
+            return pm->second ? pm->second : resources.white_texture;
+        if (resources.model_base_color_texture) return resources.model_base_color_texture;
+        return resources.white_texture ? resources.white_texture : fallback;
+    }
     if (input_name == "input_tex") return resources.black_texture;
     return fallback;
 }
@@ -1019,8 +938,12 @@ SDL_GPUSampler* resolve_bind_sampler(const Runtime_Scene& scene,
     const std::string& name = scene.passes[size_t(pass_index)].sampler_textures[size_t(slot)];
 
     // Named sampler fallbacks for model textures
-    if (name == "base_color_tex" && resources.model_base_color_sampler)
-        return resources.model_base_color_sampler;
+    if (name == "base_color_tex") {
+        auto pm = resources.pass_model_base_sampler.find(pass_index);
+        if (pm != resources.pass_model_base_sampler.end() && pm->second)
+            return pm->second;
+        if (resources.model_base_color_sampler) return resources.model_base_color_sampler;
+    }
 
     std::string s_path;
     if (!pipeline_plan_resource(scene.pipeline, pass_index, name,
@@ -1030,16 +953,164 @@ SDL_GPUSampler* resolve_bind_sampler(const Runtime_Scene& scene,
     return it != resources.user_samplers.end() ? it->second : fallback;
 }
 
+// Texture/sampler bindings for one pass, in sampler_textures slot order.
+// Resolution order (legacy parity): producer pass wins, then a graph-routed
+// user texture, then the skybox/input_tex named fallbacks, then the app's
+// paper texture.
+static std::vector<SDL_GPUTextureSamplerBinding> bind_pass_samplers(
+    const Runtime_Scene& scene, SDL_GPUTexture* scene_tex, const Scene_Resources& resources,
+    int pass_index, const Scene_Pass& pass) {
+    const size_t sampler_count = pass.sampler_textures.size();
+    std::vector<SDL_GPUTextureSamplerBinding> bindings(sampler_count > 0 ? sampler_count : 1);
+    for (size_t slot = 0; slot < sampler_count; ++slot) {
+        const std::string& name = pass.sampler_textures[slot];
+        SDL_GPUTexture* texture = resources.paper_texture ? resources.paper_texture
+                                                          : resources.black_texture;
+        int producer = pipeline_plan_source(scene.pipeline, pass_index, name);
+        if (producer >= 0)
+            texture = scene_pass_texture(scene, scene_tex, resources, producer);
+        else
+            texture = resolve_bind_texture(scene, resources, pass_index, name, texture);
+        bindings[slot].texture = texture;
+        bindings[slot].sampler =
+            resolve_bind_sampler(scene, resources, pass_index, int(slot), resources.sampler);
+    }
+    return bindings;
+}
+
+static void encode_compute_pass(SDL_GPUCommandBuffer* cmd, Scene_Pass& pass,
+                                SDL_GPUTexture* out_tex,
+                                std::vector<SDL_GPUTextureSamplerBinding>& bindings,
+                                const Scene_Resources& resources, int width, int height) {
+    SDL_GPUStorageTextureReadWriteBinding tex_binding{};
+    tex_binding.texture = out_tex;
+    SDL_GPUStorageBufferReadWriteBinding buf_binding{};
+    buf_binding.buffer = resources.debug_watch_buffer;
+    SDL_GPUComputePass* compute_pass =
+        pass.debug_compute_buffer && resources.debug_watch_buffer
+            ? SDL_BeginGPUComputePass(cmd, &tex_binding, 1, &buf_binding, 1)
+            : SDL_BeginGPUComputePass(cmd, &tex_binding, 1, nullptr, 0);
+    SDL_BindGPUComputePipeline(compute_pass, pass.compute);
+    const size_t sampler_count = pass.sampler_textures.size();
+    if (sampler_count > 0)
+        SDL_BindGPUComputeSamplers(compute_pass, 0, bindings.data(), uint32_t(sampler_count));
+    push_scene_uniforms(cmd, pass, true);
+    uint32_t tx = pass.thread[0], ty = pass.thread[1];
+    SDL_DispatchGPUCompute(compute_pass, uint32_t((width + tx - 1) / tx),
+                           uint32_t((height + ty - 1) / ty), 1);
+    SDL_EndGPUComputePass(compute_pass);
+}
+
+struct Model_Draw {
+    SDL_GPUBuffer* vb;
+    SDL_GPUBuffer* ib;
+    uint32_t index_count;
+    bool double_sided;
+};
+
+// Per-pass uobj model when routed, else the default model.
+static Model_Draw resolve_pass_model(const Scene_Resources& resources, int pass_index,
+                                     const Scene_Pass& pass) {
+    Model_Draw d{resources.model_vb, resources.model_ib, resources.model_index_count,
+                 resources.model_double_sided};
+    if (!pass.uses_model) return d;
+    auto vb = resources.pass_model_vb.find(pass_index);
+    if (vb != resources.pass_model_vb.end()) {
+        auto ib = resources.pass_model_ib.find(pass_index);
+        auto count = resources.pass_model_index_count.find(pass_index);
+        d.vb = vb->second;
+        d.ib = ib != resources.pass_model_ib.end() ? ib->second : nullptr;
+        d.index_count = count != resources.pass_model_index_count.end() ? count->second : 0;
+    }
+    auto dbl = resources.pass_model_double_sided.find(pass_index);
+    if (dbl != resources.pass_model_double_sided.end()) d.double_sided = dbl->second;
+    return d;
+}
+
+// Model draw: fullscreen background first (iManual=1), then the indexed model
+// depth-tested on top (iManual=0), matching the common.slang
+// model_scene_vertex branch.
+static void draw_model(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* render_pass,
+                       Scene_Pass& pass, const Model_Draw& d) {
+    SDL_BindGPUGraphicsPipeline(render_pass, d.double_sided && pass.graphics_double_sided
+                                                 ? pass.graphics_double_sided
+                                                 : pass.graphics);
+    SDL_GPUBufferBinding vb_binding{d.vb, 0};
+    SDL_BindGPUVertexBuffers(render_pass, 0, &vb_binding, 1);
+    SDL_GPUBufferBinding ib_binding{d.ib, 0};
+    SDL_BindGPUIndexBuffer(render_pass, &ib_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+    scene_set_manual(pass, 1);
+    push_scene_uniforms(cmd, pass, false);
+    SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
+    scene_set_manual(pass, 0);
+    push_scene_uniforms(cmd, pass, false);
+    SDL_DrawGPUIndexedPrimitives(render_pass, d.index_count, 1, 0, 0, 0);
+}
+
+static void encode_graphics_pass(SDL_GPUCommandBuffer* cmd, Scene_Pass& pass, int pass_index,
+                                 SDL_GPUTexture* out_tex,
+                                 std::vector<SDL_GPUTextureSamplerBinding>& bindings,
+                                 const Scene_Resources& resources, int width, int height) {
+    SDL_GPUColorTargetInfo color_target{};
+    color_target.texture = out_tex;
+    color_target.load_op = SDL_GPU_LOADOP_CLEAR;
+    color_target.store_op = SDL_GPU_STOREOP_STORE;
+    color_target.clear_color = pass.uses_model ? SDL_FColor{0.93f, 0.91f, 0.86f, 1}
+                                               : SDL_FColor{0, 0, 0, 1};
+    SDL_GPUDepthStencilTargetInfo depth_target{};
+    depth_target.texture = resources.depth_tex;
+    depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
+    depth_target.clear_depth = 1.0f;
+    depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    SDL_GPURenderPass* render_pass =
+        SDL_BeginGPURenderPass(cmd, &color_target, 1, pass.uses_model ? &depth_target : nullptr);
+    SDL_BindGPUGraphicsPipeline(render_pass, pass.graphics);
+    if (!pass.sampler_textures.empty()) {
+        // Only contiguous bound slots; gaps (nullptr texture) stop the run.
+        uint32_t bound = 0;
+        for (SDL_GPUTextureSamplerBinding& b : bindings) {
+            if (!b.texture) break;
+            ++bound;
+        }
+        if (bound > 0) SDL_BindGPUFragmentSamplers(render_pass, 0, bindings.data(), bound);
+    }
+    if (pass.debug_fragment_buffer && resources.debug_watch_buffer) {
+        SDL_BindGPUFragmentStorageBuffers(render_pass, 0, &resources.debug_watch_buffer, 1); // SDL array slot; Metal maps storage buffers after uniform buffers
+    }
+    SDL_GPUViewport vp{0, 0, float(width), float(height), 0.0f, 1.0f};
+    SDL_SetGPUViewport(render_pass, &vp);
+    const Model_Draw model = resolve_pass_model(resources, pass_index, pass);
+    if (pass.uses_model && model.vb && model.ib) {
+        draw_model(cmd, render_pass, pass, model);
+    } else {
+        push_scene_uniforms(cmd, pass, false);
+        SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
+    }
+    SDL_EndGPURenderPass(render_pass);
+}
+
+static void blit_to_preview(SDL_GPUCommandBuffer* cmd, SDL_GPUGraphicsPipeline* pipeline,
+                            SDL_GPUSampler* sampler, SDL_GPUTexture* source,
+                            SDL_GPUTexture* target) {
+    SDL_GPUColorTargetInfo pt{};
+    pt.texture = target;
+    pt.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    pt.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* pp = SDL_BeginGPURenderPass(cmd, &pt, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(pp, pipeline);
+    SDL_GPUTextureSamplerBinding bind{source, sampler};
+    SDL_BindGPUFragmentSamplers(pp, 0, &bind, 1);
+    SDL_DrawGPUPrimitives(pp, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(pp);
+}
+
 SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu, Runtime_Scene& scene,
                                  SDL_GPUTexture* scene_tex, Scene_Resources& resources,
                                  int width, int height, SDL_GPUGraphicsPipeline* preview_pipeline,
-                                 SDL_GPUGraphicsPipeline* blit_pipeline, SDL_GPUSampler* blit_sampler,
                                  SDL_GPUSampler* preview_sampler,
                                  std::vector<SDL_GPUTexture*>& preview_tex) {
-    (void)blit_pipeline; (void)blit_sampler; // host blits the swapchain itself
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(gpu);
     if (!cmd) return nullptr;
-
 
     for (int pass_index : scene.pipeline.order) {
         Scene_Pass& pass = scene.passes[size_t(pass_index)];
@@ -1054,140 +1125,23 @@ SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu, Runtime_Scene& scene,
             for (const Uniform_Field& field : cb.fields)
                 if (field.name == "iDebugPass") poke_u32(cb.block, field.offset, uint32_t(pass_index));
 
-        size_t sampler_count = pass.sampler_textures.size();
-        std::vector<SDL_GPUTextureSamplerBinding> bindings(
-            sampler_count > 0 ? sampler_count : 1);
-        for (size_t slot = 0; slot < sampler_count; ++slot) {
-            const std::string& name = pass.sampler_textures[slot];
-            // Resolution order (legacy parity): producer pass wins, then a
-            // graph-routed user texture, then the skybox/input_tex named
-            // fallbacks, then the app's paper texture.
-            SDL_GPUTexture* texture = resources.paper_texture
-                                          ? resources.paper_texture
-                                          : resources.black_texture;
-            int producer = pipeline_plan_source(scene.pipeline, pass_index, name);
-            if (producer >= 0) {
-                texture = scene_pass_texture(scene, scene_tex, resources, producer);
-            } else {
-                texture = resolve_bind_texture(scene, resources, pass_index, name, texture);
-            }
-            bindings[slot].texture = texture;
-            bindings[slot].sampler =
-                resolve_bind_sampler(scene, resources, pass_index, slot, resources.sampler);
-        }
-
-        if (pass.kind == Scene_Kind::COMPUTE) {
-            SDL_GPUStorageTextureReadWriteBinding tex_binding{};
-            tex_binding.texture = out_tex;
-            SDL_GPUStorageBufferReadWriteBinding buf_binding{};
-            buf_binding.buffer = resources.debug_watch_buffer;
-            SDL_GPUComputePass* compute_pass =
-                pass.debug_compute_buffer && resources.debug_watch_buffer
-                    ? SDL_BeginGPUComputePass(cmd, &tex_binding, 1, &buf_binding, 1)
-                    : SDL_BeginGPUComputePass(cmd, &tex_binding, 1, nullptr, 0);
-            SDL_BindGPUComputePipeline(compute_pass, pass.compute);
-            if (sampler_count > 0)
-                SDL_BindGPUComputeSamplers(compute_pass, 0, bindings.data(),
-                                           uint32_t(sampler_count));
-            push_scene_uniforms(cmd, pass, true);
-            uint32_t tx = pass.thread[0], ty = pass.thread[1];
-            SDL_DispatchGPUCompute(compute_pass, uint32_t((width + tx - 1) / tx),
-                                   uint32_t((height + ty - 1) / ty), 1);
-            SDL_EndGPUComputePass(compute_pass);
-        } else {
-            SDL_GPUColorTargetInfo color_target{};
-            color_target.texture = out_tex;
-            color_target.load_op = SDL_GPU_LOADOP_CLEAR;
-            color_target.store_op = SDL_GPU_STOREOP_STORE;
-            color_target.clear_color = pass.uses_model ? SDL_FColor{0.93f, 0.91f, 0.86f, 1}
-                                                       : SDL_FColor{0, 0, 0, 1};
-            SDL_GPUDepthStencilTargetInfo depth_target{};
-            depth_target.texture = resources.depth_tex;
-            depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
-            depth_target.clear_depth = 1.0f;
-            depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
-            SDL_GPURenderPass* render_pass =
-                SDL_BeginGPURenderPass(cmd, &color_target, 1,
-                                       pass.uses_model ? &depth_target : nullptr);
-            SDL_BindGPUGraphicsPipeline(render_pass, pass.graphics);
-            if (sampler_count > 0) {
-                // Only contiguous bound slots; gaps (nullptr texture) stop the run.
-                uint32_t bound = 0;
-                for (SDL_GPUTextureSamplerBinding& b : bindings) {
-                    if (!b.texture) break;
-                    ++bound;
-                }
-                if (bound > 0) SDL_BindGPUFragmentSamplers(render_pass, 0, bindings.data(), bound);
-            }
-            if (pass.debug_fragment_buffer && resources.debug_watch_buffer) {
-                SDL_BindGPUFragmentStorageBuffers(render_pass, 0, &resources.debug_watch_buffer, 1); // SDL array slot; Metal maps storage buffers after uniform buffers
-            }
-            SDL_GPUViewport vp{0, 0, float(width), float(height), 0.0f, 1.0f};
-            SDL_SetGPUViewport(render_pass, &vp);
-            SDL_GPUBuffer* pass_vb = resources.model_vb;
-            SDL_GPUBuffer* pass_ib = resources.model_ib;
-            uint32_t pass_idx_count = resources.model_index_count;
-            if (pass.uses_model) {
-                if (auto vb = resources.pass_model_vb.find(size_t(pass_index));
-                    vb != resources.pass_model_vb.end()) {
-                    pass_vb = vb->second;
-                    pass_ib = resources.pass_model_ib[size_t(pass_index)];
-                    pass_idx_count = resources.pass_model_index_count[size_t(pass_index)];
-                }
-            }
-            if (pass.uses_model && pass_vb && pass_ib) {
-                // Model draw: fullscreen background first (iManual=1), then
-                // the indexed model depth-tested on top (iManual=0), matching
-                // the common.slang model_scene_vertex branch.
-                SDL_GPUBufferBinding vb_binding{pass_vb, 0};
-                SDL_BindGPUVertexBuffers(render_pass, 0, &vb_binding, 1);
-                SDL_GPUBufferBinding ib_binding{pass_ib, 0};
-                SDL_BindGPUIndexBuffer(render_pass, &ib_binding,
-                                       SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                scene_set_manual(pass, 1);
-                push_scene_uniforms(cmd, pass, false);
-                SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
-                scene_set_manual(pass, 0);
-                push_scene_uniforms(cmd, pass, false);
-                SDL_DrawGPUIndexedPrimitives(render_pass, pass_idx_count, 1, 0, 0, 0);
-            } else {
-                push_scene_uniforms(cmd, pass, false);
-                SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
-            }
-            SDL_EndGPURenderPass(render_pass);
-        }
+        std::vector<SDL_GPUTextureSamplerBinding> bindings =
+            bind_pass_samplers(scene, scene_tex, resources, pass_index, pass);
+        if (pass.kind == Scene_Kind::COMPUTE)
+            encode_compute_pass(cmd, pass, out_tex, bindings, resources, width, height);
+        else
+            encode_graphics_pass(cmd, pass, pass_index, out_tex, bindings, resources, width, height);
     }
 
     // Previews: linear-blit each pass output (+ final) into fixed targets.
-    if (preview_pipeline && preview_sampler &&
-        preview_tex.size() == scene.passes.size() + 1) {
+    if (preview_pipeline && preview_sampler && preview_tex.size() == scene.passes.size() + 1) {
         for (int pass_index : scene.pipeline.order) {
             SDL_GPUTexture* source = scene_pass_texture(scene, scene_tex, resources, pass_index);
             SDL_GPUTexture* target = preview_tex[size_t(pass_index)];
             if (!source || !target) continue;
-
-            SDL_GPUColorTargetInfo pt{};
-            pt.texture = target;
-            pt.load_op = SDL_GPU_LOADOP_DONT_CARE;
-            pt.store_op = SDL_GPU_STOREOP_STORE;
-            SDL_GPURenderPass* pp = SDL_BeginGPURenderPass(cmd, &pt, 1, nullptr);
-            SDL_BindGPUGraphicsPipeline(pp, preview_pipeline);
-            SDL_GPUTextureSamplerBinding bind{source, preview_sampler};
-            SDL_BindGPUFragmentSamplers(pp, 0, &bind, 1);
-            SDL_DrawGPUPrimitives(pp, 3, 1, 0, 0);
-            SDL_EndGPURenderPass(pp);
+            blit_to_preview(cmd, preview_pipeline, preview_sampler, source, target);
         }
-        SDL_GPUTexture* final_target = preview_tex.back();
-        SDL_GPUColorTargetInfo pt{};
-        pt.texture = final_target;
-        pt.load_op = SDL_GPU_LOADOP_DONT_CARE;
-        pt.store_op = SDL_GPU_STOREOP_STORE;
-        SDL_GPURenderPass* pp = SDL_BeginGPURenderPass(cmd, &pt, 1, nullptr);
-        SDL_BindGPUGraphicsPipeline(pp, preview_pipeline);
-        SDL_GPUTextureSamplerBinding bind{scene_tex, preview_sampler};
-        SDL_BindGPUFragmentSamplers(pp, 0, &bind, 1);
-        SDL_DrawGPUPrimitives(pp, 3, 1, 0, 0);
-        SDL_EndGPURenderPass(pp);
+        blit_to_preview(cmd, preview_pipeline, preview_sampler, scene_tex, preview_tex.back());
     }
 
     // NOTE: the scene->swapchain blit happens in the HOST's frame command
