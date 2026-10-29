@@ -7,34 +7,16 @@
     ],
     "nodes": [
         {
-            "key": "params",
-            "kind": "params",
+            "key": "settings",
+            "kind": "settings",
             "x": 0,
             "y": 0
         },
         {
             "key": "gfx:scenes/graphics3d_2/graphics3d_2",
             "kind": "graphics",
-            "x": 235.8163299560547,
-            "y": -84.6564712524414
-        },
-        {
-            "key": "show2d",
-            "kind": "output",
-            "x": 420,
-            "y": 40
-        },
-        {
-            "key": "params",
-            "kind": "params",
-            "x": 0,
-            "y": 0
-        },
-        {
-            "key": "gfx:scenes/graphics3d_2/graphics3d_2",
-            "kind": "graphics",
-            "x": 235.8163299560547,
-            "y": -84.6564712524414
+            "x": 158.55731201171875,
+            "y": -302.05975341796875
         },
         {
             "key": "show2d",

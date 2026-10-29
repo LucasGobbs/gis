@@ -1,78 +1,28 @@
 {
     "links": [
+        {
+            "from": "gfx:scenes/graphics2d/graphics2d:frame",
+            "to": "show2d:frame"
+        }
     ],
     "nodes": [
         {
-            "key": "params",
-            "kind": "params",
-            "x": 0,
-            "y": 0
+            "key": "settings",
+            "kind": "settings",
+            "x": 40.0,
+            "y": 40.0
         },
         {
-            "key": "gfx:scenes/graphics3d_2/graphics3d_2",
+            "key": "gfx:scenes/graphics2d/graphics2d",
             "kind": "graphics",
-            "x": 235.8163299560547,
-            "y": -84.6564712524414
+            "x": 340.0,
+            "y": 40.0
         },
         {
             "key": "show2d",
             "kind": "output",
-            "x": 420,
-            "y": 40
-        },
-        {
-            "key": "params",
-            "kind": "params",
-            "x": 0,
-            "y": 0
-        },
-        {
-            "key": "gfx:scenes/graphics3d_2/graphics3d_2",
-            "kind": "graphics",
-            "x": 235.8163299560547,
-            "y": -84.6564712524414
-        },
-        {
-            "key": "show2d",
-            "kind": "output",
-            "x": 420,
-            "y": 40
-        },
-        {
-            "key": "params",
-            "kind": "params",
-            "x": 0,
-            "y": 0
-        },
-        {
-            "key": "gfx:scenes/graphics3d_2/graphics3d_2",
-            "kind": "graphics",
-            "x": 235.8163299560547,
-            "y": -84.6564712524414
-        },
-        {
-            "key": "show2d",
-            "kind": "output",
-            "x": 420,
-            "y": 40
-        },
-        {
-            "key": "params",
-            "kind": "params",
-            "x": 0,
-            "y": 0
-        },
-        {
-            "key": "gfx:scenes/graphics3d_2/graphics3d_2",
-            "kind": "graphics",
-            "x": 235.8163299560547,
-            "y": -84.6564712524414
-        },
-        {
-            "key": "show2d",
-            "kind": "output",
-            "x": 420,
-            "y": 40
+            "x": 640.0,
+            "y": 40.0
         }
     ],
     "scene": "graphics2d",

@@ -6,39 +6,39 @@
         },
         {
             "from": "gfx:scenes/01_hello_pixel/pass_2:frame",
-            "to": "show2d"
+            "to": "show2d:frame"
         }
     ],
     "nodes": [
         {
-            "key": "params",
-            "kind": "params",
-            "x": 0,
-            "y": 0
+            "key": "settings",
+            "kind": "settings",
+            "x": -65.0975112915039,
+            "y": -501.54241943359375
         },
         {
             "key": "gfx:scenes/01_hello_pixel/01_hello_pixel",
             "kind": "graphics",
-            "x": 0,
-            "y": 0
+            "x": 192.44895935058594,
+            "y": -582.197509765625
         },
         {
             "key": "comp:scenes/01_hello_pixel/pass_1:computeMain",
             "kind": "compute",
-            "x": 0,
-            "y": 0
+            "x": -227.5675506591797,
+            "y": -325.46771240234375
         },
         {
             "key": "gfx:scenes/01_hello_pixel/pass_2",
             "kind": "graphics",
-            "x": 474,
-            "y": 18.399999618530273
+            "x": 638.2632446289062,
+            "y": -274.2199401855469
         },
         {
             "key": "show2d",
             "kind": "output",
-            "x": 780,
-            "y": 40
+            "x": 1110.7861328125,
+            "y": -135.33604431152344
         }
     ],
     "scene": "01_hello_pixel",

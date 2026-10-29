@@ -1,8 +1,16 @@
 {
     "links": [
         {
+            "from": "uobj:assets/models/stanford_dragon_pbr.glb:ModelVertex",
+            "to": "gfx:scenes/dragon_showcase/dragon_showcase:ModelVertex"
+        },
+        {
             "from": "uimg:assets/skybox/skybox-night.png:texture",
             "to": "gfx:scenes/dragon_showcase/dragon_showcase:skybox_tex"
+        },
+        {
+            "from": "uimg:assets/skybox/skybox-night.png:sampler",
+            "to": "gfx:scenes/dragon_showcase/dragon_showcase:skybox_sampler"
         },
         {
             "from": "gfx:scenes/dragon_showcase/dragon_showcase:frame",
@@ -11,38 +19,38 @@
     ],
     "nodes": [
         {
-            "key": "params",
-            "kind": "params",
-            "x": 364.66131591796875,
-            "y": -276.7572937011719
+            "key": "settings",
+            "kind": "settings",
+            "x": 311.42852783203125,
+            "y": -372.7767333984375
         },
         {
             "file": "stanford_dragon_pbr.glb",
             "key": "uobj:assets/models/stanford_dragon_pbr.glb:ModelVertex",
             "kind": "mesh",
             "model": "stanford_dragon_pbr",
-            "x": 280.34783935546875,
-            "y": -180.7458953857422
+            "x": 265.44384765625,
+            "y": 22.942169189453125
         },
         {
             "address": "repeat",
             "file": "assets/skybox/skybox-night.png",
             "key": "uimg:assets/skybox/skybox-night.png:texture",
             "kind": "texture",
-            "x": 269.3670349121094,
-            "y": -91.29653930664062
+            "x": 264.3990478515625,
+            "y": -113.65254974365234
         },
         {
             "key": "gfx:scenes/dragon_showcase/dragon_showcase",
             "kind": "graphics",
-            "x": 560.6589965820312,
-            "y": -115.09016418457031
+            "x": 662.3385009765625,
+            "y": -324.6744384765625
         },
         {
             "key": "show2d",
             "kind": "output",
-            "x": 810.0371704101562,
-            "y": -66.74073791503906
+            "x": 961.5188598632812,
+            "y": -77.11619567871094
         }
     ],
     "scene": "dragon_showcase",

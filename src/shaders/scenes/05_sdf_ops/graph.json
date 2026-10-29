@@ -7,8 +7,8 @@
     ],
     "nodes": [
         {
-            "key": "params",
-            "kind": "params",
+            "key": "settings",
+            "kind": "settings",
             "x": 139.3014678955078,
             "y": -106.9117660522461
         },

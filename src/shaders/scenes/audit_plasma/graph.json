@@ -7,21 +7,21 @@
     ],
     "nodes": [
         {
-            "key": "params",
-            "kind": "params",
+            "key": "settings",
+            "kind": "settings",
             "x": 0,
-            "y": 40
+            "y": -170
         },
         {
             "key": "gfx:scenes/audit_plasma/audit_plasma",
             "kind": "graphics",
-            "x": 180,
-            "y": 40
+            "x": 0,
+            "y": 0
         },
         {
             "key": "show2d",
             "kind": "output",
-            "x": 420,
+            "x": 560,
             "y": 40
         }
     ],
