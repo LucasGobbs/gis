@@ -34,11 +34,9 @@ float3x3 spin_y(float t) {
 [shader("vertex")]
 ModelVaryings vertMain(ModelVertex input, uint vertexIndex : SV_VertexID) {
     if (Uniforms.iManual < 0.5) {
-        // Spin the model around its Y axis; the dragon's origin sits at
-        // its base, so lift the pivot to the visual middle first.
+        // Loader centers the model at origin (unit radius): spin about it.
         float3x3 R = spin_y(Uniforms.iTime * 0.6);
-        input.position = mul(R, input.position - float3(0.0, 9.0, 0.0)) +
-                         float3(0.0, 9.0, 0.0);
+        input.position = mul(R, input.position);
         input.normal = normalize(mul(R, input.normal));
     }
     return model_scene_vertex(input, vertexIndex, Uniforms);
@@ -46,6 +44,9 @@ ModelVaryings vertMain(ModelVertex input, uint vertexIndex : SV_VertexID) {
 
 [shader("fragment")]
 float4 pixelMain(ModelVaryings input, bool is_front : SV_IsFrontFace) : SV_Target0 {
+    // Sample model texture UNCONDITIONALLY (ensures Slang marks binding as used)
+    float4 base_color_sample = base_color_tex.Sample(base_color_sampler, input.uv);
+
     if (Uniforms.iManual > 0.5)
         return model_scene_fragment(input, Uniforms, skybox_tex,
                                     skybox_sampler, float3(0.0));
@@ -59,28 +60,24 @@ float4 pixelMain(ModelVaryings input, bool is_front : SV_IsFrontFace) : SV_Targe
     // that sweep of the skybox across the surface IS the effect).
     float3 r = reflect(-vdir, n);
     float2 suv = float2(atan2(r.z, r.x) / 6.2831853 + 0.5,
-                        acos(saturate(r.y)) / 3.14159265);
+                        acos(clamp(r.y, -1.0, 1.0)) / 3.14159265);
     float3 env = skybox_tex.SampleLevel(skybox_sampler, suv, 0).rgb;
 
-    // Sample base color texture; fallback to bronze if unavailable
-    float3 base = float3(0.80, 0.52, 0.22);
-    float4 tex_sample = base_color_tex.Sample(base_color_sampler, input.uv);
-    if (tex_sample.a > 0.0 || (tex_sample.r + tex_sample.g + tex_sample.b) > 0.0) {
-        base = tex_sample.rgb;
-    }
+    // Base color is always bound (white when the model has no image).
+    float3 base = base_color_sample.rgb;
 
     // Chrome-ish shading: env reflection modulated by fresnel, plus a
     // wrapped diffuse base tinted by texture so the silhouette never dies.
     float fresnel = pow(1.0 - saturate(dot(n, vdir)), 3.0);
     float3 L = normalize(float3(0.5, 0.8, -0.6));
-    float wrap = 0.5;
+    float wrap = 0.2;
     float dif = saturate((dot(n, L) + wrap) / (1.0 + wrap));
     float3 H = normalize(L + vdir);
     float spe = pow(saturate(dot(n, H)), 48.0) * 0.6;
 
     float3 col = base * (0.35 + 0.85 * dif) +
-                 env * lerp(0.35, 0.9, fresnel) +
-                 env * spe;
+                 env * lerp(0.05, 0.35, fresnel) +
+                 env * spe * 0.4;
     // Soft filmic-ish curve so highlights roll off instead of clipping.
     col = col / (col + 0.6) * 1.1;
     return model_scene_fragment(input, Uniforms, skybox_tex,

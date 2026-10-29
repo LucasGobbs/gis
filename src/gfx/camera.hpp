@@ -21,7 +21,7 @@ namespace camera {
 inline constexpr float kDist = 2.6f;             // orbit sphere radius
 inline constexpr float kFovScale = 1.2f;         // 1 / tan(fov/2)
 inline constexpr float kNear = 0.5f;
-inline constexpr float kFar = 5.0f;
+inline constexpr float kFar = 50.0f;
 inline constexpr float kAutorotateYawRate = 0.4f; // rad/s (frame.odin)
 inline constexpr float kDefaultPitch = 0.55f;     // rad (frame.odin AUTOROTATE)
 

@@ -366,7 +366,7 @@ public float4 model_scene_fragment(
             uniforms.iCameraForward
         );
         float2 suv = float2(atan2(dir.z, dir.x) / 6.2831853 + 0.5,
-                            acos(saturate(dir.y)) / 3.14159265);
+                            acos(clamp(dir.y, -1.0, 1.0)) / 3.14159265);
         float3 col = skyboxTex.SampleLevel(skyboxSampler, suv, 0).rgb;
         float2 fragCoord = (input.ndc * 0.5 + 0.5) * uniforms.iResolution.xy;
         col = gizmo3d(fragCoord, uniforms.iResolution,

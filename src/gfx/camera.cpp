@@ -21,6 +21,7 @@ void cross3(const float* a, const float* b, float* out) {
 
 void normalize3(float* v) {
     const float len = std::sqrt(dot3(v, v));
+    if (len == 0.0f) return; // zero vector stays zero instead of NaN
     v[0] /= len;
     v[1] /= len;
     v[2] /= len;
