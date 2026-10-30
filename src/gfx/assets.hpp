@@ -25,6 +25,8 @@ struct Model {
     uint32_t index_count = 0;
     std::string name;   // UI label (filename or "icosphere")
     std::string source; // file path or generator note
+    gfx::Texture_Handle base_color_texture;  // RGBA basecolor from GLB; fallback to black
+    SDL_GPUSampler* texture_sampler = nullptr;
 };
 
 struct Assets {
