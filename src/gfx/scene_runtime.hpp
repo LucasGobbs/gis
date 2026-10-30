@@ -6,6 +6,7 @@
 #pragma once
 
 #include "gfx.hpp"
+#include "camera.hpp"
 #include "render_graph/refl.hpp"
 #include "render_graph/render_graph.hpp"
 
@@ -101,10 +102,19 @@ struct Runtime_Scene {
     std::vector<Uniform_Widget> widgets;
     Scene_Kind kind = Scene_Kind::GRAPHICS;
     bool uses_model = false;
+    std::string model; // mesh node's assets/models basename ("" = default)
+    // Per-pass uobj routes: pass index → model path (graph.json "object"
+    // nodes). The host uploads each and fills Scene_Resources maps.
+    std::map<int, std::string> pass_model_paths;
+    // Texture node sampler settings: node key ("uimg:<path>:texture") →
+    // {filter, address} from the graph editor node fields; "" = unset
+    // (defaults linear/clamp).
+    std::map<std::string, std::pair<std::string, std::string>> node_sampler_settings;
     render_graph::Plan pipeline;
     uint64_t pipeline_mtime = 0;
     std::string pipeline_error;
 };
+
 struct Scene_Manager {
     std::vector<Runtime_Scene> scenes;
     int current = 0;
@@ -131,9 +141,21 @@ struct Scene_Resources {
     SDL_GPUSampler* sampler = nullptr;
     SDL_GPUTexture* paper_texture = nullptr;
     SDL_GPUTexture* skybox_texture = nullptr; // null = none (-1 in Odin)
-    SDL_GPUBuffer* model_vb = nullptr;
+    SDL_GPUBuffer* model_vb = nullptr;        // default (no uobj route)
     SDL_GPUBuffer* model_ib = nullptr;
     uint32_t model_index_count = 0;
+    SDL_GPUTexture* model_base_color_texture = nullptr;  // current model's base color
+    SDL_GPUSampler* model_base_color_sampler = nullptr;
+    // Per-pass model from uobj routes: pass index → uploaded buffers. Filled
+    // at scene load; passes without a mesh route use the default above.
+    std::map<int, SDL_GPUBuffer*> pass_model_vb;
+    std::map<int, SDL_GPUBuffer*> pass_model_ib;
+    // Graph-routed user textures/samplers (path → resolved GPU object).
+    // Host-owned, app lifetime; loaded once per path, failures reported
+    // once and left absent (bind falls through to the default).
+    std::map<std::string, SDL_GPUTexture*> user_textures;
+    std::map<std::string, SDL_GPUSampler*> user_samplers;
+    std::map<int, uint32_t> pass_model_index_count;
     std::vector<SDL_GPUTexture*> pass_tex;
     SDL_GPUTexture* black_texture = nullptr;
     SDL_GPUSampler* black_sampler = nullptr;
@@ -224,9 +246,24 @@ SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu,
                                  SDL_GPUSampler* preview_sampler,
                                  std::vector<SDL_GPUTexture*>& preview_tex);
 
+// Bind resolution (submit loop), exposed for unit tests. resolve_bind_
+// texture: producer (caller-side) > user texture route > named fallbacks
+// (skybox_tex/input_tex) > fallback. resolve_bind_sampler: the SAMPLER
+// route's image file → host sampler object for that slot.
+SDL_GPUTexture* resolve_bind_texture(const Runtime_Scene& scene,
+                                     const Scene_Resources& resources, int pass_index,
+                                     const std::string& input_name,
+                                     SDL_GPUTexture* fallback);
+SDL_GPUSampler* resolve_bind_sampler(const Runtime_Scene& scene,
+                                     const Scene_Resources& resources, int pass_index,
+                                     int slot, SDL_GPUSampler* fallback);
+
 // Uniform fill (scene_write_uniforms): values the app pokes per frame.
+// The camera uniforms (iViewProjection + iCamera*) come from the host's
+// camera::Uniforms (src/gfx/camera.hpp) — the host owns the camera state.
 void scene_write_uniforms(Runtime_Scene& scene, float res_x, float res_y, float time_s,
-                          bool color, float mouse_x, float mouse_y, bool mouse_click);
+                          bool color, float mouse_x, float mouse_y, bool mouse_click,
+                          const camera::Uniforms& cam);
 
 // Watches.
 bool scene_has_debug_watches(const Runtime_Scene& scene);

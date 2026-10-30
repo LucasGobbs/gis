@@ -3,7 +3,7 @@
 // scene_request_build → worker (goose-build subprocess) → scene_build_pump
 // applies on the calling (main) thread.
 #include "scene_runtime.hpp"
-
+#include "camera.hpp"
 #include <SDL3/SDL.h>
 
 #include <algorithm>
@@ -706,6 +706,29 @@ bool pipeline_scene_init(Runtime_Scene& scene,
         bool ok = false;
         candidate = render_graph::plan_build(scene_pass_descriptors(scene), doc, build_err, ok);
         if (!ok) error = build_err;
+        // Mesh node's model pick (Plan: dragon showcase). First mesh node
+        // with a "model" field wins; empty = host default (models[0]).
+        for (const auto& n : doc.nodes) {
+            if (n.kind == "mesh" && !n.model.empty()) {
+                scene.model = n.model;
+                break;
+            }
+        }
+        // Texture node sampler settings for the host's sampler-route
+        // override (per-node filter/address; "" = host defaults).
+        for (const auto& n : doc.nodes) {
+            if (n.kind == "texture" && !n.file.empty())
+                scene.node_sampler_settings[n.key] = {
+                    n.filter.empty() ? "linear" : n.filter,
+                    n.address.empty() ? "clamp" : n.address};
+        }
+        // Per-pass uobj routes: each MODEL route names a glb; the pass draws
+        // THAT model (graph inputs drive geometry).
+        for (const auto& r : candidate.resources) {
+            if (r.kind == render_graph::Resource_Kind::MODEL &&
+                r.consumer >= 0 && !r.path.empty())
+                scene.pass_model_paths[size_t(r.consumer)] = r.path;
+        }
     }
     if (!error.empty()) {
         // Last-good contract (Odin parity): a broken graph.json must not take
@@ -856,7 +879,8 @@ static void poke_u32(std::vector<uint8_t>& block, uint32_t offset, uint32_t valu
 }
 
 void scene_write_uniforms(Runtime_Scene& scene, float res_x, float res_y, float time_s,
-                          bool color, float mouse_x, float mouse_y, bool mouse_click) {
+                          bool color, float mouse_x, float mouse_y, bool mouse_click,
+                          const camera::Uniforms& cam) {
     for (Scene_Pass& pass : scene.passes) {
         for (CBuffer& cb : pass.cbuffers) {
             for (const Uniform_Field& field : cb.fields) {
@@ -878,14 +902,21 @@ void scene_write_uniforms(Runtime_Scene& scene, float res_x, float res_y, float 
                 } else if (field.name == "iMouseClick") {
                     poke_f32(cb.block, field.offset, mouse_click ? 1.0f : 0.0f);
                 } else if (field.name == "iViewProjection") {
-                    // identity (2D scenes ignore it)
                     for (int i = 0; i < 16; ++i)
                         poke_f32(cb.block, field.offset + uint32_t(i) * 4,
-                                 (i % 5 == 0) ? 1.0f : 0.0f);
-                } else if (field.name == "iCameraPosition" || field.name == "iCameraRight" ||
-                           field.name == "iCameraUp" || field.name == "iCameraForward") {
+                                 cam.view_projection[i]);
+                } else if (field.name == "iCameraPosition") {
                     for (int i = 0; i < 3; ++i)
-                        poke_f32(cb.block, field.offset + uint32_t(i) * 4, 0.0f);
+                        poke_f32(cb.block, field.offset + uint32_t(i) * 4, cam.position[i]);
+                } else if (field.name == "iCameraRight") {
+                    for (int i = 0; i < 3; ++i)
+                        poke_f32(cb.block, field.offset + uint32_t(i) * 4, cam.right[i]);
+                } else if (field.name == "iCameraUp") {
+                    for (int i = 0; i < 3; ++i)
+                        poke_f32(cb.block, field.offset + uint32_t(i) * 4, cam.up[i]);
+                } else if (field.name == "iCameraForward") {
+                    for (int i = 0; i < 3; ++i)
+                        poke_f32(cb.block, field.offset + uint32_t(i) * 4, cam.forward[i]);
                 } else if (field.name == "iManual") {
                     poke_f32(cb.block, field.offset, 1.0f);
                 } else if (field.name == "iDebugPixel" || field.name == "iDebugEnabled" ||
@@ -950,6 +981,55 @@ static void scene_set_manual(Scene_Pass& pass, float value) {
             if (field.name == "iManual") poke_f32(cb.block, field.offset, value);
 }
 
+// Bind resolution for the submit loop, split out for testability (no GPU
+// needed: the maps hold plain pointers). Returns the texture to bind, or
+// `fallback` when no graph route applies (caller keeps paper/skybox).
+// Order: producer pass (handled by the caller) > user texture route >
+// named skybox/input_tex fallbacks > `fallback`.
+SDL_GPUTexture* resolve_bind_texture(const Runtime_Scene& scene,
+                                     const Scene_Resources& resources, int pass_index,
+                                     const std::string& input_name,
+                                     SDL_GPUTexture* fallback) {
+    std::string tex_path;
+    if (pipeline_plan_resource(scene.pipeline, pass_index, input_name,
+                               render_graph::Resource_Kind::TEXTURE, tex_path)) {
+        auto it = resources.user_textures.find(tex_path);
+        if (it != resources.user_textures.end()) return it->second;
+        // Route present but asset failed to load: bind black (the user
+        // decision — a visible hole beats silently showing paper).
+        return resources.black_texture ? resources.black_texture : fallback;
+    }
+    if (input_name == "skybox_tex" && resources.skybox_texture)
+        return resources.skybox_texture;
+    if (input_name == "base_color_tex" && resources.model_base_color_texture)
+        return resources.model_base_color_texture;
+    if (input_name == "input_tex") return resources.black_texture;
+    return fallback;
+}
+
+// Sampler override for a bound slot: the plan's SAMPLER route names the
+// image file; the owning texture node's filter/address selects the host
+// sampler. No route / no object = the app default sampler.
+SDL_GPUSampler* resolve_bind_sampler(const Runtime_Scene& scene,
+                                     const Scene_Resources& resources, int pass_index,
+                                     int slot, SDL_GPUSampler* fallback) {
+    if (pass_index < 0 || pass_index >= int(scene.passes.size())) return fallback;
+    if (slot >= int(scene.passes[size_t(pass_index)].sampler_textures.size()))
+        return fallback;
+    const std::string& name = scene.passes[size_t(pass_index)].sampler_textures[size_t(slot)];
+
+    // Named sampler fallbacks for model textures
+    if (name == "base_color_tex" && resources.model_base_color_sampler)
+        return resources.model_base_color_sampler;
+
+    std::string s_path;
+    if (!pipeline_plan_resource(scene.pipeline, pass_index, name,
+                                render_graph::Resource_Kind::SAMPLER, s_path))
+        return fallback;
+    auto it = resources.user_samplers.find(s_path);
+    return it != resources.user_samplers.end() ? it->second : fallback;
+}
+
 SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu, Runtime_Scene& scene,
                                  SDL_GPUTexture* scene_tex, Scene_Resources& resources,
                                  int width, int height, SDL_GPUGraphicsPipeline* preview_pipeline,
@@ -979,22 +1059,21 @@ SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu, Runtime_Scene& scene,
             sampler_count > 0 ? sampler_count : 1);
         for (size_t slot = 0; slot < sampler_count; ++slot) {
             const std::string& name = pass.sampler_textures[slot];
-            // Default = the app's paper texture (Odin resources.paper_index);
-            // a producer pass wins, then a user-resource route, then the
-            // skybox/input_tex named fallbacks.
+            // Resolution order (legacy parity): producer pass wins, then a
+            // graph-routed user texture, then the skybox/input_tex named
+            // fallbacks, then the app's paper texture.
             SDL_GPUTexture* texture = resources.paper_texture
                                           ? resources.paper_texture
                                           : resources.black_texture;
             int producer = pipeline_plan_source(scene.pipeline, pass_index, name);
             if (producer >= 0) {
                 texture = scene_pass_texture(scene, scene_tex, resources, producer);
-            } else if (name == "skybox_tex" && resources.skybox_texture) {
-                texture = resources.skybox_texture;
-            } else if (name == "input_tex") {
-                texture = resources.black_texture;
+            } else {
+                texture = resolve_bind_texture(scene, resources, pass_index, name, texture);
             }
             bindings[slot].texture = texture;
-            bindings[slot].sampler = resources.sampler;
+            bindings[slot].sampler =
+                resolve_bind_sampler(scene, resources, pass_index, slot, resources.sampler);
         }
 
         if (pass.kind == Scene_Kind::COMPUTE) {
@@ -1045,13 +1124,24 @@ SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu, Runtime_Scene& scene,
             }
             SDL_GPUViewport vp{0, 0, float(width), float(height), 0.0f, 1.0f};
             SDL_SetGPUViewport(render_pass, &vp);
-            if (pass.uses_model && resources.model_vb && resources.model_ib) {
+            SDL_GPUBuffer* pass_vb = resources.model_vb;
+            SDL_GPUBuffer* pass_ib = resources.model_ib;
+            uint32_t pass_idx_count = resources.model_index_count;
+            if (pass.uses_model) {
+                if (auto vb = resources.pass_model_vb.find(size_t(pass_index));
+                    vb != resources.pass_model_vb.end()) {
+                    pass_vb = vb->second;
+                    pass_ib = resources.pass_model_ib[size_t(pass_index)];
+                    pass_idx_count = resources.pass_model_index_count[size_t(pass_index)];
+                }
+            }
+            if (pass.uses_model && pass_vb && pass_ib) {
                 // Model draw: fullscreen background first (iManual=1), then
                 // the indexed model depth-tested on top (iManual=0), matching
                 // the common.slang model_scene_vertex branch.
-                SDL_GPUBufferBinding vb_binding{resources.model_vb, 0};
+                SDL_GPUBufferBinding vb_binding{pass_vb, 0};
                 SDL_BindGPUVertexBuffers(render_pass, 0, &vb_binding, 1);
-                SDL_GPUBufferBinding ib_binding{resources.model_ib, 0};
+                SDL_GPUBufferBinding ib_binding{pass_ib, 0};
                 SDL_BindGPUIndexBuffer(render_pass, &ib_binding,
                                        SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 scene_set_manual(pass, 1);
@@ -1059,7 +1149,7 @@ SDL_GPUFence* submit_scene_frame(SDL_GPUDevice* gpu, Runtime_Scene& scene,
                 SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
                 scene_set_manual(pass, 0);
                 push_scene_uniforms(cmd, pass, false);
-                SDL_DrawGPUIndexedPrimitives(render_pass, resources.model_index_count, 1, 0, 0, 0);
+                SDL_DrawGPUIndexedPrimitives(render_pass, pass_idx_count, 1, 0, 0, 0);
             } else {
                 push_scene_uniforms(cmd, pass, false);
                 SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);

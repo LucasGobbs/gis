@@ -285,6 +285,7 @@ bool load_gltf(gfx::Gfx& gfx, const std::string& path, Model& out) {
                         gfx::uploader_upload_texture(gfx.uploader, out.base_color_texture);
                         gfx::uploader_flush_blocking(gfx.uploader);
                         resource->staging_data.clear();
+                        out.base_color_tex = resource->handle;  // cache GPU pointer
                         std::fprintf(stderr, "model: %s extracted base color texture %dx%d\n",
                                      path.c_str(), w, h);
                     }
