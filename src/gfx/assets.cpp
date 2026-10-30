@@ -60,7 +60,41 @@ gfx::Texture_Handle load_texture(gfx::Gfx& gfx, const std::string& path, bool& o
     return handle;
 }
 
-// Recenters/rescales interleaved vertices so the model fits the unit sphere.
+// Mixed-winding models (the dragon glb ships ~40% of its triangles wound
+// against the rest) shimmer under culling: whichever side the pipeline
+// culls, part of the surface disappears as the mesh rotates — patches of
+// background flicker through the model. Normalize each triangle against
+// the SMOOTH NORMALS the glb already carries (authoritative surface
+// orientation, correct on concave parts where a center-direction test
+// fails): flip the index triple when the geometric normal disagrees with
+// the average vertex normal. Models without normals keep their winding
+// (nothing to validate against).
+static void model_normalize_winding(std::vector<uint32_t>& indices,
+                                    const std::vector<uint8_t>& vertices,
+                                    bool has_normals) {
+    if (!has_normals || indices.size() < 3) return;
+    auto slot = [&](uint32_t i) -> const float* {
+        return reinterpret_cast<const float*>(&vertices[size_t(i) * MODEL_PITCH]);
+    };
+    for (size_t t = 0; t + 2 < indices.size(); t += 3) {
+        const float* a = slot(indices[t]);
+        const float* b = slot(indices[t + 1]);
+        const float* c = slot(indices[t + 2]);
+        const float e1[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const float e2[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        const float nx = e1[1] * e2[2] - e1[2] * e2[1];
+        const float ny = e1[2] * e2[0] - e1[0] * e2[2];
+        const float nz = e1[0] * e2[1] - e1[1] * e2[0];
+        const float na[3] = {a[3], a[4], a[5]};
+        const float nb[3] = {b[3], b[4], b[5]};
+        const float nc[3] = {c[3], c[4], c[5]};
+        const float dot = nx * na[0] + ny * na[1] + nz * na[2] +
+                          nx * nb[0] + ny * nb[1] + nz * nb[2] +
+                          nx * nc[0] + ny * nc[1] + nz * nc[2];
+        if (dot < 0.0f) std::swap(indices[t + 1], indices[t + 2]);
+    }
+}
+
 static void model_normalize_bounds(std::vector<uint8_t>& vertices) {
     size_t n = vertices.size() / MODEL_PITCH;
     if (n == 0) return;
@@ -107,6 +141,46 @@ static Model model_upload(gfx::Gfx& gfx, std::vector<uint8_t>& vertices,
     return model;
 }
 
+// Area-weighted smooth normals for glbs without a NORMAL accessor
+// (stanford_dragon.glb). Zero normals normalize to NaN in the shader and
+// render black. shortcut: normals are per primitive-vertex, so seams split
+// across primitives; weld by position when a multi-primitive model needs it.
+static void model_compute_normals(const std::vector<uint32_t>& indices,
+                                  std::vector<uint8_t>& vertices) {
+    auto at = [&](uint32_t v) {
+        return reinterpret_cast<float*>(&vertices[size_t(v) * MODEL_PITCH]);
+    };
+    for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+        const float* a = at(indices[i]);
+        const float* b = at(indices[i + 1]);
+        const float* c = at(indices[i + 2]);
+        const float e1[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const float e2[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        const float n[3] = {e1[1] * e2[2] - e1[2] * e2[1],
+                            e1[2] * e2[0] - e1[0] * e2[2],
+                            e1[0] * e2[1] - e1[1] * e2[0]};
+        for (size_t k = 0; k < 3; ++k) {
+            float* p = at(indices[i + k]);
+            p[3] += n[0];
+            p[4] += n[1];
+            p[5] += n[2];
+        }
+    }
+    for (size_t v = 0; v < vertices.size() / MODEL_PITCH; ++v) {
+        float* p = at(uint32_t(v));
+        const float len = std::sqrt(p[3] * p[3] + p[4] * p[4] + p[5] * p[5]);
+        if (len > 0.0f) {
+            p[3] /= len;
+            p[4] /= len;
+            p[5] /= len;
+        } else {
+            p[3] = 0.0f;
+            p[4] = 0.0f;
+            p[5] = 1.0f;
+        }
+    }
+}
+
 bool load_gltf(gfx::Gfx& gfx, const std::string& path, Model& out) {
     cgltf_options options = {};
     cgltf_data* data = nullptr;
@@ -124,6 +198,8 @@ bool load_gltf(gfx::Gfx& gfx, const std::string& path, Model& out) {
 
     std::vector<uint8_t> vertices;
     std::vector<uint32_t> indices;
+    bool had_normals = false;
+    bool any_nrm = false;
     for (size_t mi = 0; mi < data->meshes_count; ++mi) {
         const cgltf_mesh& mesh = data->meshes[mi];
         for (size_t pi = 0; pi < mesh.primitives_count; ++pi) {
@@ -138,6 +214,7 @@ bool load_gltf(gfx::Gfx& gfx, const std::string& path, Model& out) {
                 else if (attr.type == cgltf_attribute_type_normal) nrm_acc = attr.data;
                 else if (attr.type == cgltf_attribute_type_texcoord) uv_acc = attr.data;
             }
+            any_nrm |= nrm_acc != nullptr;
             if (!pos_acc) continue;
 
             // Unpack each attribute stream once, then interleave.
@@ -183,6 +260,97 @@ bool load_gltf(gfx::Gfx& gfx, const std::string& path, Model& out) {
         }
     }
     cgltf_free(data);
+    had_normals = any_nrm;
+    if (!any_nrm) model_compute_normals(indices, vertices);
+    std::fprintf(stderr, "model: %s loaded %zu vertices, %zu indices\n",
+                 path.c_str(), vertices.size() / MODEL_PITCH, indices.size());
+
+    // Detect globally inverted normals: compare smooth normals to geometric normals.
+    // If majority of triangles have smooth normals pointing opposite to geometric
+    // normals, the model was exported with inverted normals → flip all normals
+    // BEFORE model_normalize_winding (which relies on correct smooth normals).
+    if (had_normals && !indices.empty()) {
+        auto pt = [&](uint32_t i) -> const float* {
+            return reinterpret_cast<const float*>(&vertices[size_t(i) * MODEL_PITCH]);
+        };
+        int agree = 0, disagree = 0;
+        for (size_t t = 0; t + 2 < indices.size(); t += 3) {
+            const float* a = pt(indices[t]);
+            const float* b = pt(indices[t + 1]);
+            const float* c = pt(indices[t + 2]);
+            const float e1[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+            const float e2[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+            const float nx = e1[1] * e2[2] - e1[2] * e2[1];
+            const float ny = e1[2] * e2[0] - e1[0] * e2[2];
+            const float nz = e1[0] * e2[1] - e1[1] * e2[0];
+
+            // Average of 3 vertex normals (more stable than single vertex at hard edges)
+            const float avg_nx = (a[3] + b[3] + c[3]) / 3.0f;
+            const float avg_ny = (a[4] + b[4] + c[4]) / 3.0f;
+            const float avg_nz = (a[5] + b[5] + c[5]) / 3.0f;
+
+            const float dot = nx * avg_nx + ny * avg_ny + nz * avg_nz;
+            if (dot > 0.0f) agree++; else disagree++;
+        }
+        std::fprintf(stderr, "model: %s normal check: %d agree, %d disagree (%.1f%% inverted)\n",
+                     path.c_str(), agree, disagree,
+                     100.0f * disagree / (agree + disagree));
+        if (disagree > agree) {
+            std::fprintf(stderr, "model: %s FLIPPING all normals (majority inverted)\n", path.c_str());
+            // Majority of normals point inward → flip all normals
+            size_t n = vertices.size() / MODEL_PITCH;
+            for (size_t i = 0; i < n; ++i) {
+                float* nrm = reinterpret_cast<float*>(&vertices[i * MODEL_PITCH + MODEL_OFF_NRM]);
+                nrm[0] = -nrm[0];
+                nrm[1] = -nrm[1];
+                nrm[2] = -nrm[2];
+            }
+        }
+    }
+
+    model_normalize_winding(indices, vertices, had_normals);
+
+    // Model-specific override for problematic models
+    bool force_flip_normals = false;
+    if (path.find("stanford_dragon_pbr.glb") != std::string::npos) {
+        force_flip_normals = true;
+        std::fprintf(stderr, "model: %s applying manual override (flip normals)\n", path.c_str());
+    }
+
+    if (force_flip_normals && had_normals) {
+        size_t n = vertices.size() / MODEL_PITCH;
+        for (size_t i = 0; i < n; ++i) {
+            float* nrm = reinterpret_cast<float*>(&vertices[i * MODEL_PITCH + MODEL_OFF_NRM]);
+            nrm[0] = -nrm[0];
+            nrm[1] = -nrm[1];
+            nrm[2] = -nrm[2];
+        }
+    }
+
+    // Signed-volume global winding check: models exported with inverted normals
+    // fool model_normalize_winding (dot stays positive for CW triangles), leaving
+    // the whole mesh CW. A negative signed volume means the mesh is inside-out;
+    // flip every triangle to restore CCW.  Safe for models that are already
+    // correct (positive volume → no-op).
+    if (!indices.empty()) {
+        auto pt = [&](uint32_t i) -> const float* {
+            return reinterpret_cast<const float*>(&vertices[size_t(i) * MODEL_PITCH]);
+        };
+        double vol = 0.0;
+        for (size_t t = 0; t + 2 < indices.size(); t += 3) {
+            const float* a = pt(indices[t]);
+            const float* b = pt(indices[t + 1]);
+            const float* c = pt(indices[t + 2]);
+            vol += double(a[0]) * (double(b[1]) * c[2] - double(b[2]) * c[1])
+                 + double(a[1]) * (double(b[2]) * c[0] - double(b[0]) * c[2])
+                 + double(a[2]) * (double(b[0]) * c[1] - double(b[1]) * c[0]);
+        }
+        std::fprintf(stderr, "model: %s signed volume: %.6e %s\n",
+                     path.c_str(), vol, vol < 0.0 ? "(FLIPPING winding)" : "(ok)");
+        if (vol < 0.0)
+            for (size_t t = 0; t + 2 < indices.size(); t += 3)
+                std::swap(indices[t + 1], indices[t + 2]);
+    }
     if (indices.empty()) {
         std::fprintf(stderr, "model: %s has no triangles\n", path.c_str());
         return false;
