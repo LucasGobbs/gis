@@ -11,11 +11,10 @@
 
 namespace input_map {
 
-static QString mod_key_to_qt(const QString& mods, const QString& key);
 
 // Maps one key token onto the Qt key (glove names == SDL keycodes minus '_').
 static int key_to_qt(const QString& raw) {
-    const std::map<QString, int> named = {
+    static const std::map<QString, int> named = {
         {"escape", Qt::Key_Escape},     {"tab", Qt::Key_Tab},
         {"space", Qt::Key_Space},       {"return", Qt::Key_Return},
         {"enter", Qt::Key_Return},      {"backspace", Qt::Key_Backspace},

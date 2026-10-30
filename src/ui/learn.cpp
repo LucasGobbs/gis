@@ -7,7 +7,6 @@
 // and click-to-copy (line on click, block on double-click), like md_learn.
 #include "learn.hpp"
 #include "i18n.hpp"
-#include "editor.hpp"
 #include "theme.hpp"
 
 #include <QApplication>
@@ -15,15 +14,13 @@
 #include <QFile>
 #include <QMouseEvent>
 #include <QLabel>
-#include <QMenu>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QScrollArea>
+#include <QSet>
 #include <QVBoxLayout>
 #include <QWidget>
 
-#include <algorithm>
-#include <cstring>
 #include <string>
 #include <vector>
 
@@ -40,27 +37,27 @@ struct Code_Colors {
            chip_bg, code_bg, string;
 };
 
-static Code_Colors code_colors(editor::Editor_Theme theme) {
+static Code_Colors code_colors(theme::App_Theme theme) {
     switch (theme) {
-    case editor::Editor_Theme::MONOKAI:
+    case theme::App_Theme::Monokai:
         return {QColor(0xf8, 0xf8, 0xf2), QColor(0xf9, 0x26, 0x72),
                 QColor(0xa6, 0xe2, 0x2e), QColor(0xae, 0x81, 0xff),
                 QColor(0x66, 0xd9, 0xef), QColor(0x75, 0x71, 0x5e),
                 QColor(0x1e, 0x1f, 0x1a), QColor(0x27, 0x28, 0x22),
                 QColor(0xe6, 0xdb, 0x74)};
-    case editor::Editor_Theme::SOLARIZED:
+    case theme::App_Theme::Solarized:
         return {QColor(0x93, 0xa1, 0xa1), QColor(0x85, 0x99, 0x00),
                 QColor(0x26, 0x8b, 0xd2), QColor(0xd3, 0x36, 0x82),
                 QColor(0x2a, 0xa1, 0x98), QColor(0x58, 0x6e, 0x75),
                 QColor(0x07, 0x36, 0x42), QColor(0x00, 0x2b, 0x36),
                 QColor(0x2a, 0xa1, 0x98)};
-    case editor::Editor_Theme::LIGHT:
+    case theme::App_Theme::Light:
         return {QColor(0x1f, 0x20, 0x24), QColor(0x1c, 0x46, 0x9c),
                 QColor(0x78, 0x35, 0x96), QColor(0x9c, 0x42, 0x2e),
                 QColor(0x1d, 0x6b, 0x33), QColor(0x6f, 0x74, 0x7e),
                 QColor(0xf2, 0xf3, 0xf5), QColor(0xe8, 0xea, 0xef),
                 QColor(0x1d, 0x6b, 0x33)};
-    default: // DARK = Darkroom (editor.cpp kEditorSkins tokens).
+    default: // Dark = Darkroom (editor.cpp kEditorSkins tokens).
         return {QColor(0xd7, 0xda, 0xe2), QColor(0xe8, 0xa8, 0x57),
                 QColor(0x9e, 0xc2, 0xf2), QColor(0xf2, 0x8c, 0x7a),
                 QColor(0xc9, 0x9e, 0xf2), QColor(0x7e, 0x83, 0x8e),
@@ -148,14 +145,16 @@ static QString highlight_code_line(const QString& line, const Code_Colors& c) {
 class Code_Block : public QWidget {
 public:
     Code_Block(const QStringList& lines, const Code_Colors& c, QWidget* parent)
-        : QWidget(parent) {
+        : QWidget(parent), lines_(lines) {
         setStyleSheet(QString("background: %1; border-radius: 6px;")
                           .arg(c.code_bg.name()));
         auto* layout = new QVBoxLayout(this);
         layout->setContentsMargins(12, 8, 12, 8);
         layout->setSpacing(0);
-        for (const QString& cl : lines) {
-            auto* label = new QLabel(highlight_code_line(cl, c));
+        for (const QString& cl : lines_) {
+            // Blank source lines keep their row height (an empty QLabel collapses).
+            auto* label = new QLabel(cl.isEmpty() ? QString("&nbsp;")
+                                                  : highlight_code_line(cl, c));
             label->setTextFormat(Qt::RichText);
             label->setTextInteractionFlags(Qt::TextSelectableByMouse);
             label->setStyleSheet(QString("color: %1; background: transparent;"
@@ -177,29 +176,20 @@ protected:
     }
 
 private:
+    // The labels hold rich text; the clipboard gets the plain source lines
+    // (layout item i == lines_[i]).
     void copy_line_at(const QPoint& pos) {
-        const auto* layout_c = layout();
-        for (int i = 0; i < layout_c->count(); ++i) {
-            auto* item = layout_c->itemAt(i);
-            if (!item->widget()) continue;
-            QRect r = item->geometry();
+        for (int i = 0; i < layout()->count(); ++i) {
+            const QRect r = layout()->itemAt(i)->geometry();
             if (pos.y() >= r.top() && pos.y() < r.bottom()) {
-                QApplication::clipboard()->setText(item->widget()->toolTip().isEmpty()
-                                                       ? static_cast<QLabel*>(item->widget())->text()
-                                                       : item->widget()->toolTip());
+                QApplication::clipboard()->setText(lines_.value(i));
                 break;
             }
         }
     }
-    void copy_block() {
-        QString all;
-        const auto* layout_c = layout();
-        for (int i = 0; i < layout_c->count(); ++i) {
-            if (auto* label = qobject_cast<QLabel*>(layout_c->itemAt(i)->widget()))
-                all += label->text() + "\n";
-        }
-        QApplication::clipboard()->setText(all.trimmed());
-    }
+    void copy_block() { QApplication::clipboard()->setText(lines_.join('\n').trimmed()); }
+
+    QStringList lines_;
 };
 
 // ---- md4c renderer (block/span callbacks into widget emission) ----
@@ -209,7 +199,7 @@ struct Render_Ctx {
     QVBoxLayout* layout = nullptr;
     Code_Colors colors;
     QStringList prose;      // paragraph accumulator
-    QStringList code_lines; // fenced block accumulator
+    QString code_text;      // fenced block accumulator (raw, split on leave)
     bool in_code = false;
     bool in_list_item = false;
     bool in_span_code = false;
@@ -244,12 +234,14 @@ void Render_Ctx::add_link(const QString& label, const QString& target) {
         auto* chip = new QPushButton(label, layout->parentWidget());
         chip->setCursor(Qt::PointingHandCursor);
         chip->setFlat(true);
+        const QColor a = theme::safelight_rgb();
         chip->setStyleSheet(
             QString("QPushButton { text-align: left; color: %1;"
-                    " background: rgba(232,168,87,0.10); border: 1px solid"
-                    " rgba(232,168,87,0.35); border-radius: 5px; padding: 4px 10px; }"
-                    "QPushButton:hover { background: rgba(232,168,87,0.22); }")
-                .arg(theme::safelight()));
+                    " background: rgba(%2,%3,%4,0.10); border: 1px solid"
+                    " rgba(%2,%3,%4,0.35); border-radius: 5px; padding: 4px 10px; }"
+                    "QPushButton:hover { background: rgba(%2,%3,%4,0.22); }")
+                .arg(theme::safelight())
+                .arg(a.red()).arg(a.green()).arg(a.blue()));
         QObject::connect(chip, &QPushButton::clicked, view, [view = view, target] {
             view->follow_link_public(target);
         });
@@ -286,7 +278,7 @@ static int cb_enter_block(MD_BLOCKTYPE type, void* detail, void* ud) {
     case MD_BLOCK_CODE:
         ctx->flush_paragraph();
         ctx->in_code = true;
-        ctx->code_lines.clear();
+        ctx->code_text.clear();
         break;
     case MD_BLOCK_LI:
         ctx->flush_paragraph();
@@ -309,10 +301,12 @@ static int cb_leave_block(MD_BLOCKTYPE type, void* detail, void* ud) {
         break;
     case MD_BLOCK_CODE: {
         ctx->in_code = false;
-        auto* block = new Code_Block(ctx->code_lines, ctx->colors,
-                                     ctx->layout->parentWidget());
-        ctx->layout->addWidget(block);
-        ctx->code_lines.clear();
+        // md4c delivers indent, line and "\n" as separate chunks: split here.
+        QStringList lines = ctx->code_text.split('\n');
+        if (!lines.isEmpty() && lines.last().isEmpty()) lines.removeLast();
+        ctx->layout->addWidget(new Code_Block(lines, ctx->colors,
+                                              ctx->layout->parentWidget()));
+        ctx->code_text.clear();
         break;
     }
     case MD_BLOCK_H: {
@@ -435,7 +429,7 @@ static int cb_text(MD_TEXTTYPE type, const MD_CHAR* data, MD_SIZE size, void* ud
     }
     case MD_TEXT_NORMAL:
     case MD_TEXT_NULLCHAR:
-        if (ctx->in_code) ctx->code_lines << text;
+        if (ctx->in_code) ctx->code_text += text;
         else if (ctx->in_span_code) ctx->span_code_text += text;
         else if (!ctx->link_href.isEmpty()) ctx->link_label += text;
         else if (ctx->pending_heading > 0) ctx->heading_text += text;
@@ -443,7 +437,7 @@ static int cb_text(MD_TEXTTYPE type, const MD_CHAR* data, MD_SIZE size, void* ud
         else ctx->prose << text.toHtmlEscaped();
         break;
     case MD_TEXT_CODE:
-        if (ctx->in_code) ctx->code_lines << text;
+        if (ctx->in_code) ctx->code_text += text;
         else ctx->span_code_text += text; // MD_SPAN_CODE body
         break;
     default:
@@ -465,23 +459,25 @@ Trail_View::Trail_View(QWidget* parent) : QWidget(parent) {
     page_layout_ = new QVBoxLayout(page_);
     page_layout_->setContentsMargins(18, 14, 18, 18);
     page_layout_->setSpacing(8);
-    page_->setLayout(page_layout_);
     scroll_->setWidget(page_);
     layout->addWidget(scroll_);
     load("index");
 }
 
 void Trail_View::load(const QString& page) {
-    if (!load_page(page)) return;
-}
-
-bool Trail_View::load_page(const QString& page) {
-    QFile f(QString("%1/%2.md").arg(kTrailDir, page));
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
-    current_page_ = page.isEmpty() ? "index" : page;
+    const QString name = page.isEmpty() ? QString("index") : page;
+    QFile f(QString("%1/%2.md").arg(kTrailDir, name));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return; // missing page: stay put
+    current_page_ = name;
     render(QString::fromUtf8(f.readAll()));
     scroll_->verticalScrollBar()->setValue(0);
-    return true;
+}
+
+// Prose colors and code tokens are baked at render time: re-render when the
+// app skin changed while the page was hidden.
+void Trail_View::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    if (rendered_theme_ != theme::app_theme()) render(page_text_);
 }
 
 void Trail_View::follow_link_public(const QString& target) {
@@ -524,7 +520,9 @@ void Trail_View::render(const QString& text) {
     Render_Ctx ctx;
     ctx.view = this;
     ctx.layout = page_layout_;
-    ctx.colors = code_colors(editor_theme_);
+    ctx.colors = code_colors(theme::app_theme());
+    page_text_ = text;
+    rendered_theme_ = theme::app_theme();
 
     MD_PARSER parser = {};
     parser.abi_version = 0;

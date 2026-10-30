@@ -2,18 +2,29 @@
 
 // Stage 5+6: code editor (QScintilla-based) and the slangd LSP client.
 // Editor: tabs follow the scene unit (entry + pass_N modules), dirty
-// tracking, save-all on Cmd+S, navigation history, squiggles from build
+// tracking, save-all on Cmd+S, navigation history, squiggles from LSP
 // diagnostics (cleared on edit, message on hover), Cmd+F find bar,
 // Cmd+= / Cmd+- font zoom. LSP: QProcess slangd over stdio JSON-RPC,
 // diagnostics with a 280 ms debounce (18 frames at 60 fps), completion,
-// hover, goto-def, rename.
+// hover, goto-def.
+// Env switches: GIS_NO_LSP (never spawn slangd), GIS_REDUCED_MOTION (steady
+// bar caret instead of the pulsing block).
 
 #include <map>
+#include <tuple>
+#include <vector>
+#include <QByteArray>
+#include <QMap>
+#include <QSet>
 #include <QString>
 #include <QTabWidget>
 #include <QWidget>
 
 class QProcess;
+class QJsonObject;
+class QJsonValue;
+class QTimer;
+class QWheelEvent;
 
 class QsciScintilla;
 class QLineEdit;
@@ -26,7 +37,6 @@ namespace editor {
 struct Open_Doc {
     QString rel;      // editor-files name (no .slang): scenes/<scene>/<name>
     QString path;     // absolute file path
-    QString text;     // last loaded/saved text
     bool loaded = false;
     bool dirty = false;
     QsciScintilla* widget = nullptr;
@@ -48,6 +58,7 @@ class Editor : public QTabWidget {
     Q_OBJECT
 public:
     explicit Editor(QWidget* parent = nullptr);
+    ~Editor() override;
 
     // Files list (ied_rescan): every .slang under src/shaders + gis_scenes.
     void rescan();
@@ -60,45 +71,35 @@ public:
     void set_theme(Editor_Theme theme);
     int save_all();
     int dirty_count() const;
-    QString status() const { return status_; }
     // Closes the active tab (Cmd+W / File>Close); dirty tabs survive, same
     // rule as the tab's close button.
     void close_current_tab();
 
-    // Build diagnostics -> squiggles on matching open docs.
-    void apply_diagnostics(const std::vector<editor::Diagnostic>& diags);
     // Opens the Cmd+F find bar (find/next in the current tab).
     void open_find();
     // Font zoom: Cmd+= / Cmd+- across all open tabs; persists in prefs.
     void zoom_in();
     void zoom_out();
-    // Current skin (LEARN reads it to mirror code-token colors).
-    Editor_Theme theme() const { return theme_; }
     void set_editor_font(int pt);
     // Pixel-face toggle for the code text (Sergamon); re-skins open tabs.
     void set_pixel_font(bool on);
-    bool pixel_font() const { return pixel_font_; }
     // Toggles the split view: code | SHADER PREVIEW. The host catches
     // split_toggled and shrinks the SDL preview window to the right half.
     void split_current();
     bool split_on() const;
-    QWidget* editor_dock_host();
 
     // LSP lifecycle (stage 6): slangd on the active doc.
-    void lsp_start(const QString& workspace_root);
-    void lsp_stop();
+    void lsp_start();
     void lsp_did_open(const QString& uri, const QString& text);
     void lsp_did_change(const QString& uri, const QString& text);
     void lsp_did_save(const QString& uri);
     void lsp_completion(const QString& uri, int line, int col);
     void lsp_hover(const QString& uri, int line, int col);
     void lsp_goto_def(const QString& uri, int line, int col);
-    void lsp_rename(const QString& uri, int line, int col, const QString& new_name);
     void send_lsp_notify(const QString& method, const QString& params_json);
 
 signals:
     void status_changed(const QString& status);
-    void diagnostics_ready(const std::vector<editor::Diagnostic>& diags);
     void font_changed(int pt);
     void split_toggled(bool on);
     // plan6 graph sync: the user activated this file's tab (rel path).
@@ -111,36 +112,50 @@ private slots:
     void on_lsp_finished(int exit_code, int status); // QProcess::ExitStatus as int (keeps the header QProcess-free)
 
 private:
+    // ---- construction ----
+    void build_empty_state();
+    void build_find_bar();
+    void build_split_button();
+    QsciScintilla* create_edit(const QString& text);
+    void wire_doc_signals(QsciScintilla* edit, const QString& path);
+
+    // ---- chrome ----
     QWidget* empty_state_ = nullptr;
     void update_empty_state();
     // Chrome pieces of the editor that follow the code skin (find bar,
     // split button) — restyled from the shared skin table, no literals.
     void set_find_bar_theme();
     void update_split_btn_theme();
+    // Tab chrome (Plan 03 §2): per-tab text colors follow active/dirty
+    // state; called from set_find_bar_theme, on_tab_changed, on_modified.
+    void sync_tab_colors();
+
+    // ---- viewport events ----
     // Editor viewport event filter: Cmd+click -> definition; Cmd hover ->
-    // underline the identifier under the cursor. Per-viewport (load_named).
+    // underline the identifier under the cursor. Per-viewport (create_edit).
     bool eventFilter(QObject* watched, QEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     bool line_col_at(QsciScintilla* edit, const QPoint& vp, int& line, int& col);
     void update_link_underline(QsciScintilla* edit, const QPoint& vp, bool cmd);
-    // Tab chrome (Plan 03 §2): per-tab text colors follow active/dirty
-    // state; called from set_find_bar_theme, on_tab_changed, on_modified.
-    void sync_tab_colors();
-public: // TEMP-PROF (Plan 01 shim reads the active tab; revert with probes)
+    void scroll_horizontal(QsciScintilla* edit, const QWheelEvent* wheel);
+    void scroll_vertical(QsciScintilla* edit, const QWheelEvent* wheel);
+
+    // ---- docs ----
+    // Tabs are movable: docs are always resolved by widget, never by index.
     QsciScintilla* current_editor();
-private:
     QString file_path_for_rel(const QString& rel) const;
     Open_Doc* find_doc(const QString& rel);
     Open_Doc* doc_for_widget(QWidget* widget);
-    void send_lsp(int id, const QString& method, const QString& params_json);
-    void handle_lsp_message(const QByteArray& payload);
+    Open_Doc* doc_at(int tab_index);
+    Open_Doc* doc_for_uri(const QString& uri);
+    // Single close path (tab X, Cmd+W, unit switch): refuses dirty docs.
+    bool close_tab(int index);
     QString doc_uri(const QsciScintilla* edit) const;
-    QString diag_message_at(const QString& uri, long pos) const;
+    QString diag_message_at(const QString& uri, long pos);
 
     std::vector<QString> files_;
     std::vector<Open_Doc> open_docs_;
     QString status_;
-    QString unit_prefix_;
     Editor_Theme theme_ = Editor_Theme::DARK;
     // Font size (pt) applied to every doc's lexer + widget.
     int font_size_ = 12;
@@ -153,13 +168,31 @@ private:
     double scroll_acc_ = 0;
     // Shift+wheel horizontal scroll: pending character columns.
     double h_scroll_acc_ = 0;
-    // LSP state.
+    // True while a Cmd-hover link underline is painted (skip the clear otherwise).
+    bool link_underline_on_ = false;
+
+    // ---- LSP ----
+    bool write_lsp(const QString& body);
+    bool send_lsp(int id, const QString& method, const QString& params_json);
+    // Sends a request and registers its id only if the write happened.
+    void lsp_request(const QString& method, const QString& params_json);
+    // Process gone (exit or failed start): free it and reset the session.
+    void drop_lsp();
+    void handle_lsp_message(const QByteArray& payload);
+    void answer_server_request(const QJsonObject& obj);
+    void handle_lsp_response(const QJsonObject& obj);
+    void on_lsp_initialized();
+    void apply_publish_diagnostics(const QJsonObject& params);
+    void apply_diagnostics_for_uri(const QString& uri, const std::vector<Diagnostic>& diags);
+    void show_hover(const QJsonValue& result);
+    void open_definition(const QJsonValue& result);
+    void show_completions(const QJsonValue& result);
+
     QProcess* lsp_ = nullptr;
-    QString lsp_root_;
     QByteArray lsp_buffer_;
     int lsp_next_id_ = 1;
     QMap<int, QString> lsp_pending_; // id -> method
-    QMap<QString, int> lsp_versions_; // uri -> didChange version
+    QMap<QString, int> lsp_versions_; // uri -> last didOpen/didChange version
     QMap<QString, QTimer*> lsp_timers_; // rel -> 280 ms debounce timer
     bool lsp_initialized_ = false;   // initialize/initialized handshake done
     QSet<QString> opened_on_server_; // didOpen sent for this server session
@@ -170,10 +203,11 @@ private:
     // slangd answers null — it does for declaration lines and cross-module
     // symbols).
     QString last_def_word_;
-    QString last_def_uri_;
     // Diagnostics currently painted, per uri; cleared when that doc's text
     // changes so stale squiggles never outlive the code that produced them.
     std::map<QString, std::vector<Diagnostic>> live_diags_;
+
+    // ---- find bar / split ----
     // Find bar: line edit + status docked over the active editor.
     QWidget* find_bar_ = nullptr;
     QLineEdit* find_edit_ = nullptr;

@@ -44,7 +44,7 @@ void notify(Kind kind, const QString& text) {
     while ((int)g_notices.size() > kMax) g_notices.erase(g_notices.begin());
 }
 
-QString kind_color(const Notice& n) {
+static QString kind_color(const Notice& n) {
     // Semantic palette from the active skin: info = signature blue,
     // warn = safelight amber, error = bake-failure red.
     switch (n.kind) {
@@ -86,6 +86,7 @@ public:
         }
         while ((int)cards.size() < (int)g_notices.size()) {
             auto* label = new QLabel(this);
+            label->setTextFormat(Qt::PlainText); // toast text may contain <...>
             label->setStyleSheet(
                 QString("QLabel { background: %1; border-radius: 6px;"
                         " padding: 8px 12px; color: %2; font-size: 9pt; }")
@@ -125,16 +126,14 @@ public:
     }
 };
 
-static Toast_Layer* g_layer = nullptr;
-
 void attach(QWidget* host) {
-    g_layer = new Toast_Layer(host);
-    g_layer->setObjectName("toast_layer");
-    host->installEventFilter(g_layer);
+    auto* layer = new Toast_Layer(host);
+    layer->setObjectName("toast_layer");
+    host->installEventFilter(layer);
     // Qt::ToolTip is a top-level window: geometry must be global (host maps
     // into the frameless Shell window, which itself can be moved).
-    g_layer->setGeometry(QRect(host->mapToGlobal(QPoint(0, 0)), host->size()));
-    g_layer->show();
+    layer->setGeometry(QRect(host->mapToGlobal(QPoint(0, 0)), host->size()));
+    layer->show();
 }
 
 } // namespace notify

@@ -10,10 +10,10 @@
 #include <QString>
 #include <QWidget>
 
+#include "theme.hpp"
+
 class QScrollArea;
 class QVBoxLayout;
-
-#include "editor.hpp"
 
 namespace learn {
 
@@ -26,15 +26,15 @@ public:
     // Click target for the renderer's link widgets (public: the md4c
     // callbacks construct them).
     void follow_link_public(const QString& target);
-    // Mirrors the code editor's skin (LEARN highlights match the editor).
-    void set_editor_theme(editor::Editor_Theme theme) { editor_theme_ = theme; }
 
 signals:
     // Scene chip clicked in the trail prose.
     void scene_requested(const QString& scene_title);
 
+protected:
+    void showEvent(QShowEvent* event) override;
+
 private:
-    bool load_page(const QString& page); // returns false when missing
     void render(const QString& text);
     void follow_link(const QString& target);
 
@@ -42,7 +42,8 @@ private:
     QWidget* page_ = nullptr;
     QVBoxLayout* page_layout_ = nullptr;
     QString current_page_ = "index";
-    editor::Editor_Theme editor_theme_ = editor::Editor_Theme::DARK;
+    QString page_text_;                  // last rendered markdown (re-render on skin change)
+    theme::App_Theme rendered_theme_ = theme::App_Theme::Dark;
 };
 
 } // namespace learn

@@ -1,4 +1,3 @@
-#include "perf_probe.hpp" // TEMP-PROF: diagnosis instrumentation, remove after Plan 01
 // Editor implementation: QScintilla tabs per open doc, unit loading, save
 // all, and the slangd LSP client over stdio JSON-RPC.
 #include "editor.hpp"
@@ -10,18 +9,15 @@
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qsciscintillabase.h>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QLineEdit>
 #include <QLabel>
 #include <QTabBar>
 #include <QToolTip>
 #include <QTimer>
-#include <QPointer>
 #include <QPushButton>
 #include <Qsci/qscilexercpp.h>
-#include <QSplitter>
-#include <cmath>
 
-#include <QApplication>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -30,14 +26,19 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QProcess>
-#include <cstdlib>
-#include <cstdio>
-
+#include <QUrl>
+#include <algorithm>
 #include <cmath>
 
 namespace editor {
 
 static const char* kShaderDir = "src/shaders";
+
+// LSP document URI of a file path.
+static QString uri_for(const QString& path) {
+    return "file://" + QFileInfo(path).absoluteFilePath();
+}
+
 // P2-N5: the empty state teaches the app's model on first run and after the
 // last tab closes. The overlay is a child of the QTabWidget, raised above the
 // (empty) tab area; hidden the moment any tab exists.
@@ -65,9 +66,6 @@ struct Editor_Skin {
            preproc, operator_, margin_bg, margin_fg, caret_line,
            selection_bg, selection_fg;
 };
-// One table per skin — the single source the editor, the find bar, the
-// LEARN renderer and graph chrome read (no per-widget hex literals).
-// Order = the Editor_Theme enum (DARK first).
 constexpr Editor_Skin kEditorSkins[] = {
     // DARK = Darkroom: quiet proof text, one accent per token class.
     {QColor(0x13, 0x14, 0x18), QColor(0xd7, 0xda, 0xe2),
@@ -114,11 +112,31 @@ static const Editor_Skin& skin_for(editor::Editor_Theme theme) {
     return kEditorSkins[int(theme)];
 }
 
+// Scintilla colours are 0x00BBGGRR (alpha is ignored).
+static quint32 sci_bgr(const QColor& c) {
+    return quint32(c.red()) | (quint32(c.green()) << 8) | (quint32(c.blue()) << 16);
+}
+
 // plan7: gutter width = digits of the last line number (+1 spare slot).
 // The old fixed "000" slot clipped files over 999 lines.
 static QString gutter_digits(QsciScintilla* edit) {
     int digits = QString::number(qMax(1, edit->lines())).size() + 1;
     return QString("0").repeated(digits);
+}
+
+// [start, end) of the identifier touching `col` (empty when not over a word).
+static std::pair<int, int> word_bounds(const QString& text, int col) {
+    const auto is_word = [](QChar c) { return c.isLetterOrNumber() || c == '_'; };
+    int s = std::min(col, int(text.size()));
+    int e = s;
+    while (s > 0 && is_word(text[s - 1])) --s;
+    while (e < text.size() && is_word(text[e])) ++e;
+    return {s, e};
+}
+
+static void goto_line(QsciScintilla* ed, int line) {
+    ed->setCursorPosition(line, 0);
+    ed->ensureLineVisible(line);
 }
 
 void Editor::set_find_bar_theme() {
@@ -135,10 +153,6 @@ void Editor::set_find_bar_theme() {
                 "QPushButton:hover { background: rgba(255,255,255,0.12); }")
             .arg(es.margin_bg.name(), es.selection_bg.darker(140).name(),
                  es.text.name(), es.comment.name()));
-    // plan7: the tab row IS editor chrome — same skin, one hairline accent
-    // under the selected tab. Scoped to the QTabBar (a stylesheet on the
-    // QTabWidget would repolish the Scintilla viewport); proved innocent
-    // in the plan7 bisect (the white paper was the skin-table order bug).
     // plan7: the tab row IS editor chrome — same skin, one hairline accent
     // under the selected tab. Scoped to the QTabBar (a stylesheet on the
     // QTabWidget would repolish the Scintilla viewport); proved innocent
@@ -168,11 +182,11 @@ void Editor::set_find_bar_theme() {
 void Editor::sync_tab_colors() {
     const Editor_Skin& es = skin_for(theme_);
     for (int i = 0; i < count(); ++i) {
-        if (i >= (int)open_docs_.size()) break;
+        const Open_Doc* doc = doc_at(i);
+        if (!doc) continue;
         const bool active = i == currentIndex();
-        tabBar()->setTabTextColor(i, open_docs_[size_t(i)].dirty
-                                         ? theme::safelight()
-                                         : (active ? es.text : es.comment));
+        tabBar()->setTabTextColor(i, doc->dirty ? theme::safelight()
+                                                : (active ? es.text : es.comment));
     }
 }
 
@@ -196,17 +210,22 @@ Editor::Editor(QWidget* parent) : QTabWidget(parent) {
     // default (ElideRight) would truncate long names otherwise.
     setElideMode(Qt::ElideNone);
     connect(this, &QTabWidget::currentChanged, this, &Editor::on_tab_changed);
-    connect(this, &QTabWidget::tabCloseRequested, this, [this](int index) {
-        if (index < 0 || index >= (int)open_docs_.size()) return;
-        QWidget* w = open_docs_[size_t(index)].widget;
-        removeTab(index);
-        open_docs_.erase(open_docs_.begin() + index);
-        if (w) w->deleteLater();
-        update_empty_state();
-    });
+    connect(this, &QTabWidget::tabCloseRequested, this, &Editor::close_tab);
+    build_empty_state();
+    build_find_bar();
+    build_split_button();
+}
 
-    // Empty state (P2-N5): teaches the model on first run and after the last
-    // tab closes. One line, muted; gone the moment a tab exists.
+Editor::~Editor() {
+    if (!lsp_) return;
+    lsp_->disconnect(this); // no slot may run against a half-destroyed Editor
+    lsp_->kill();
+    lsp_->waitForFinished(500);
+}
+
+// Empty state (P2-N5): teaches the model on first run and after the last
+// tab closes. One line, muted; gone the moment a tab exists.
+void Editor::build_empty_state() {
     empty_state_ = new QWidget(this);
     empty_state_->setStyleSheet("background: transparent;");
     auto* es_layout = new QVBoxLayout(empty_state_);
@@ -219,8 +238,11 @@ Editor::Editor(QWidget* parent) : QTabWidget(parent) {
     es_label->setAlignment(Qt::AlignCenter);
     es_layout->addWidget(es_label);
     update_empty_state();
-    // Cmd+F find bar: floats over the active tab (QTabWidget corner widgets
-    // only own the tab-row strip, which reads as chrome, not overlay).
+}
+
+// Cmd+F find bar: floats over the active tab (QTabWidget corner widgets
+// only own the tab-row strip, which reads as chrome, not overlay).
+void Editor::build_find_bar() {
     find_bar_ = new QWidget(this);
     find_bar_->setObjectName("findBar");
     set_find_bar_theme();
@@ -265,10 +287,13 @@ Editor::Editor(QWidget* parent) : QTabWidget(parent) {
     auto* esc_sc = new QShortcut(QKeySequence("Escape"), find_bar_);
     esc_sc->setContext(Qt::WidgetWithChildrenShortcut);
     connect(esc_sc, &QShortcut::activated, this, &Editor::hide_find);
-    // Split toggle lives OUTSIDE the tab row: a floating button docked at
-    // the tab widget's bottom-right. The tab-row corners collide with the
-    // PiP preview (top-right) or the first tab (top-left); the bottom
-    // strip stays free in every preview mode.
+}
+
+// Split toggle lives OUTSIDE the tab row: a floating button docked at
+// the tab widget's bottom-right. The tab-row corners collide with the
+// PiP preview (top-right) or the first tab (top-left); the bottom
+// strip stays free in every preview mode.
+void Editor::build_split_button() {
     split_btn_ = new QPushButton("⫿", this);
     split_btn_->setObjectName("splitBtn");
     split_btn_->setToolTip(i18n::tr("split editor"));
@@ -322,6 +347,17 @@ Open_Doc* Editor::doc_for_widget(QWidget* widget) {
     return nullptr;
 }
 
+Open_Doc* Editor::doc_at(int tab_index) {
+    if (tab_index < 0 || tab_index >= count()) return nullptr;
+    return doc_for_widget(widget(tab_index));
+}
+
+Open_Doc* Editor::doc_for_uri(const QString& uri) {
+    for (Open_Doc& doc : open_docs_)
+        if (uri_for(doc.path) == uri) return &doc;
+    return nullptr;
+}
+
 // Slang lexer: C++ rules + slang type keywords in keyword set 2 (styled
 // distinctly from the base C++ keywords). Without this, float2/RWTexture2D/
 // SamplerState render as plain identifiers.
@@ -349,6 +385,70 @@ public:
     }
 };
 
+static QColor lexer_color(const Editor_Skin& s, int style) {
+    if (style == QsciLexerCPP::Keyword) return s.keyword;
+    if (style == QsciLexerCPP::KeywordSet2 || style == QsciLexerCPP::GlobalClass)
+        return s.type;
+    if (style == QsciLexerCPP::Comment ||
+        style == QsciLexerCPP::CommentLine ||
+        style == QsciLexerCPP::CommentLineDoc ||
+        style == QsciLexerCPP::CommentDoc ||
+        style == QsciLexerCPP::CommentDocKeyword ||
+        style == QsciLexerCPP::CommentDocKeywordError)
+        return s.comment;
+    if (style == QsciLexerCPP::Number || style == QsciLexerCPP::UUID)
+        return s.number;
+    if (style == QsciLexerCPP::DoubleQuotedString ||
+        style == QsciLexerCPP::SingleQuotedString ||
+        style == QsciLexerCPP::UnclosedString ||
+        style == QsciLexerCPP::VerbatimString ||
+        style == QsciLexerCPP::RawString)
+        return s.string;
+    if (style == QsciLexerCPP::PreProcessor) return s.preproc;
+    if (style == QsciLexerCPP::Operator) return s.operator_;
+    return s.text;
+}
+
+// Living caret (delight): a block caret in the theme accent that breathes via
+// a 90ms pulse instead of the stock hard blink. SC_CARETSTYLE_BLOCK = 2;
+// CARETPERIOD 0 disables the stock blink so the pulse owns the rhythm.
+// Reduced motion: steady bar, no timer. ONE timer per edit: re-skins only
+// update its colors (apply_skin runs on every theme switch).
+static void apply_caret_style(QsciScintilla* edit, const Editor_Skin& s) {
+    auto* pulse = edit->findChild<QTimer*>("caretPulse");
+    if (qEnvironmentVariableIsSet("GIS_REDUCED_MOTION")) {
+        if (pulse) pulse->stop();
+        edit->SendScintilla(QsciScintillaBase::SCI_SETCARETSTYLE, 1ul);
+        return;
+    }
+    edit->SendScintilla(QsciScintillaBase::SCI_SETCARETSTYLE, 2ul); // block
+    edit->SendScintilla(QsciScintillaBase::SCI_SETCARETWIDTH, 3ul);
+    edit->SendScintilla(QsciScintillaBase::SCI_SETCARETPERIOD, 0ul);
+    if (!pulse) {
+        pulse = new QTimer(edit);
+        pulse->setObjectName("caretPulse");
+        pulse->setInterval(90);
+        // Scintilla ignores the alpha byte of the caret colour, so the wave
+        // blends accent over paper instead.
+        QObject::connect(pulse, &QTimer::timeout, edit,
+                         [edit, pulse, phase = 0.0]() mutable {
+            phase += 0.18;
+            if (phase >= 1.0) phase = 0.0;
+            const double wave = 0.35 + 0.55 * (0.5 - 0.5 * cos(phase * 2.0 * M_PI));
+            const QColor accent = pulse->property("accent").value<QColor>();
+            const QColor paper = pulse->property("paper").value<QColor>();
+            const QColor c = QColor::fromRgbF(
+                paper.redF() + (accent.redF() - paper.redF()) * wave,
+                paper.greenF() + (accent.greenF() - paper.greenF()) * wave,
+                paper.blueF() + (accent.blueF() - paper.blueF()) * wave);
+            edit->SendScintilla(QsciScintillaBase::SCI_SETCARETFORE,
+                                static_cast<unsigned long>(sci_bgr(c)));
+        });
+    }
+    pulse->setProperty("accent", theme::safelight_rgb());
+    pulse->setProperty("paper", s.paper);
+    pulse->start();
+}
 
 static void apply_skin(QsciScintilla* edit, Editor_Theme theme, const QFont& code_face) {
     const Editor_Skin& s = skin_for(theme);
@@ -357,7 +457,8 @@ static void apply_skin(QsciScintilla* edit, Editor_Theme theme, const QFont& cod
     // Caret line: NO background band (user wants the row visually unchanged).
     // The affordance is the line-number margin: caret rows get a brighter
     // number via SCI_SETCARETLINEBACKALPHA 0 below + per-locator styling in
-    // on_modified. Keep the derived color for matched-brace/indent guides.
+    // install_caret_row_numbers. Keep the derived color for matched-brace/
+    // indent guides.
     QColor caret_line = s.caret_line;
     if (theme != Editor_Theme::DARK)
         caret_line = QColor::fromRgbF(
@@ -366,33 +467,9 @@ static void apply_skin(QsciScintilla* edit, Editor_Theme theme, const QFont& cod
             s.paper.blueF() * 0.85 + s.text.blueF() * 0.15);
     auto* lexer = dynamic_cast<Slang_Lexer*>(edit->lexer());
     if (lexer) {
-        auto color = [&s](int style) {
-            if (style == QsciLexerCPP::Keyword) return s.keyword;
-            if (style == QsciLexerCPP::KeywordSet2 ||
-                style == QsciLexerCPP::GlobalClass)
-                return s.type;
-            if (style == QsciLexerCPP::Comment ||
-                style == QsciLexerCPP::CommentLine ||
-                style == QsciLexerCPP::CommentLineDoc ||
-                style == QsciLexerCPP::CommentDoc ||
-                style == QsciLexerCPP::CommentDocKeyword ||
-                style == QsciLexerCPP::CommentDocKeywordError)
-                return s.comment;
-            if (style == QsciLexerCPP::Number || style == QsciLexerCPP::UUID)
-                return s.number;
-            if (style == QsciLexerCPP::DoubleQuotedString ||
-                style == QsciLexerCPP::SingleQuotedString ||
-                style == QsciLexerCPP::UnclosedString ||
-                style == QsciLexerCPP::VerbatimString ||
-                style == QsciLexerCPP::RawString)
-                return s.string;
-            if (style == QsciLexerCPP::PreProcessor) return s.preproc;
-            if (style == QsciLexerCPP::Operator) return s.operator_;
-            return s.text;
-        };
         lexer->setFont(code_face);
         for (int style = 0; style <= QsciLexerCPP::RawString; ++style) {
-            lexer->setColor(color(style), style);
+            lexer->setColor(lexer_color(s, style), style);
             lexer->setPaper(paper, style);
         }
     }
@@ -404,34 +481,7 @@ static void apply_skin(QsciScintilla* edit, Editor_Theme theme, const QFont& cod
     edit->setMarginsBackgroundColor(margin_bg);
     edit->setMarginsForegroundColor(s.margin_fg);
     edit->setCaretForegroundColor(s.text);
-    // Living caret (delight): a block caret in the theme accent that
-    // breathes via a 90ms alpha pulse instead of the stock hard blink.
-    // SC_CARETSTYLE_BLOCK = 2; CARETPERIOD 0 disables the stock blink so
-    // the pulse owns the rhythm. Reduced motion: steady bar, no timer.
-    if (qEnvironmentVariableIsSet("GIS_REDUCED_MOTION")) {
-        edit->SendScintilla(QsciScintillaBase::SCI_SETCARETSTYLE, 1ul);
-    } else {
-        edit->SendScintilla(QsciScintillaBase::SCI_SETCARETSTYLE, 2ul); // block
-        edit->SendScintilla(QsciScintillaBase::SCI_SETCARETWIDTH, 3ul);
-        edit->SendScintilla(QsciScintillaBase::SCI_SETCARETPERIOD, 0ul);
-        auto* pulse = new QTimer(edit);
-        pulse->setInterval(90);
-        const QColor caret_accent(0xE8, 0xA8, 0x57);
-        QPointer<QsciScintilla> guard(edit);
-        auto* phase = new double(0.0); // owned by the connection context
-        QObject::connect(pulse, &QTimer::timeout, edit, [guard, caret_accent, phase]() {
-            if (!guard) return;
-            *phase += 0.18;
-            if (*phase >= 1.0) *phase = 0.0;
-            const double wave =
-                0.35 + 0.55 * (0.5 - 0.5 * cos(*phase * 2.0 * M_PI));
-            QColor c = caret_accent;
-            c.setAlphaF(wave);
-            guard->SendScintilla(QsciScintillaBase::SCI_SETCARETFORE,
-                                 static_cast<unsigned long>(c.rgba()));
-        });
-        pulse->start();
-    }
+    apply_caret_style(edit, s);
     edit->setCaretLineVisible(true);
     edit->setCaretLineBackgroundColor(QColor(0, 0, 0, 0)); // no band: row unchanged
     edit->SendScintilla(QsciScintillaBase::SCI_SETCARETLINEBACKALPHA, 0ul);
@@ -455,26 +505,42 @@ static void apply_skin(QsciScintilla* edit, Editor_Theme theme, const QFont& cod
     edit->setMatchedBraceForegroundColor(theme::safelight_rgb());
 }
 
-void Editor::load_named(const QString& rel) {
-    if (Open_Doc* existing = find_doc(rel)) {
-        setCurrentIndex(int(existing - open_docs_.data()));
-        return;
-    }
-    QString path = file_path_for_rel(rel);
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        status_ = "could not read " + path;
-        emit status_changed(status_);
-        return;
-    }
-    QString text = QString::fromUtf8(f.readAll());
+// Caret affordance: brighter LINE NUMBER on the caret row (the band is
+// off). Scintilla paints margin numbers with one shared style (33), so a
+// per-row look needs a style offset: margin 1 uses styles 256+line.
+static void install_caret_row_numbers(QsciScintilla* edit, const QColor& caret_num) {
+    // SCI_SETMARGINSTYLEOFFSET = 2537 (missing from this QScintilla's enum).
+    constexpr long kNumStyleBase = 256;
+    edit->SendScintilla(2537, 1ul, kNumStyleBase);
+    edit->SendScintilla(QsciScintillaBase::SCI_SETCARETLINEVISIBLEALWAYS, 1ul);
+    const quint32 caret_bgr = caret_num.alpha() == 255 ? sci_bgr(caret_num)
+                                                       : 0x00e6e0deul;
+    QObject::connect(edit, &QsciScintillaBase::SCN_UPDATEUI, edit,
+                     [edit, base = kNumStyleBase, caret_bgr] {
+        // SCI_MARGINSETSTYLEFORE = 2538 (missing from this QScintilla's enum).
+        auto paint = [edit, base](int ln, quint32 rgb) {
+            if (ln < 0) return;
+            edit->SendScintilla(2538, ln + base, rgb);
+        };
+        // Dim = whatever style 33 (STYLE_LINENUMBER) currently paints. Styles
+        // 256+line default to black on the dark paper, so every VISIBLE row's
+        // style carries the dim color; the caret row is then repainted bright
+        // on top. ~40 SendScintilla calls per update: trivial.
+        quint32 dim = quint32(edit->SendScintilla(QsciScintillaBase::SCI_STYLEGETFORE, 33ul));
+        long first = long(edit->SendScintilla(QsciScintillaBase::SCI_GETFIRSTVISIBLELINE));
+        long vis = long(edit->SendScintilla(QsciScintillaBase::SCI_LINESONSCREEN)) + 1;
+        for (long ln = first; ln < first + vis; ++ln) paint(int(ln), dim);
+        int line = int(edit->SendScintilla(QsciScintillaBase::SCI_LINEFROMPOSITION,
+                                           long(edit->SendScintilla(
+                                               QsciScintillaBase::SCI_GETCURRENTPOS))));
+        paint(line, caret_bgr); // BGR quint32 of the skin's bright number color
+    });
+}
 
-    Open_Doc doc;
-    doc.rel = rel;
-    doc.path = path;
-    doc.text = text;
-    doc.loaded = true;
-
+// The Scintilla widget for one doc: lexer, margins, scrolling, skin, caret
+// row numbers, link/diagnostic indicators, viewport filters. No doc/tab
+// registration (load_named) and no signal wiring (wire_doc_signals).
+QsciScintilla* Editor::create_edit(const QString& text) {
     auto* edit = new QsciScintilla(this);
     auto* lexer = new Slang_Lexer(edit);
     lexer->setFont(editor_font());
@@ -505,39 +571,7 @@ void Editor::load_named(const QString& rel) {
     edit->setAutoCompletionSource(QsciScintilla::AcsNone);
     edit->setAutoCompletionThreshold(2);
     apply_skin(edit, theme_, editor_font());
-    // Caret affordance: brighter LINE NUMBER on the caret row (the band is
-    // off). Scintilla paints margin numbers with one shared style (33), so a
-    // per-row look needs a style offset: margin 1 uses styles 256+line.
-    // SCI_SETMARGINSTYLEOFFSET = 2537 (missing from this QScintilla's enum).
-    constexpr long kNumStyleBase = 256;
-    edit->SendScintilla(2537, 1ul, kNumStyleBase);
-    edit->SendScintilla(QsciScintillaBase::SCI_SETCARETLINEVISIBLEALWAYS, 1ul);
-    const QColor caret_num = skin_for(theme_).selection_fg; // bright caret-row number
-    const quint32 caret_bgr = caret_num.alpha() == 255
-                                  ? quint32(caret_num.red()) |
-                                        (quint32(caret_num.green()) << 16) |
-                                        (quint32(caret_num.blue()) << 8)
-                                  : 0x00e6e0deul;
-    QObject::connect(edit, &QsciScintillaBase::SCN_UPDATEUI, edit,
-                     [edit, base = kNumStyleBase, caret_bgr] {
-        // SCI_MARGINSETSTYLEFORE = 2538 (missing from this QScintilla's enum).
-        auto paint = [edit, base](int ln, quint32 rgb) {
-            if (ln < 0) return;
-            edit->SendScintilla(2538, ln + base, rgb);
-        };
-        // Dim = whatever style 33 (STYLE_LINENUMBER) currently paints. Styles
-        // 256+line default to black on the dark paper, so every VISIBLE row's
-        // style carries the dim color; the caret row is then repainted bright
-        // on top. ~40 SendScintilla calls per update: trivial.
-        quint32 dim = quint32(edit->SendScintilla(QsciScintillaBase::SCI_STYLEGETFORE, 33ul));
-        long first = long(edit->SendScintilla(QsciScintillaBase::SCI_GETFIRSTVISIBLELINE));
-        long vis = long(edit->SendScintilla(QsciScintillaBase::SCI_LINESONSCREEN)) + 1;
-        for (long ln = first; ln < first + vis; ++ln) paint(int(ln), dim);
-        int line = int(edit->SendScintilla(QsciScintillaBase::SCI_LINEFROMPOSITION,
-                                           long(edit->SendScintilla(
-                                               QsciScintillaBase::SCI_GETCURRENTPOS))));
-        paint(line, caret_bgr); // BGR quint32 of the skin's bright number color
-    });
+    install_caret_row_numbers(edit, skin_for(theme_).selection_fg);
     // Cmd+click goto-def + Cmd-hover underline: my filter on the viewport
     // runs before Qsci's own (install order = reverse run order), so the
     // press is interceptable. Mouse tracking keeps Move events flowing while
@@ -553,6 +587,10 @@ void Editor::load_named(const QString& rel) {
     edit->indicatorDefine(QsciScintilla::PlainIndicator, 9);
     edit->setIndicatorForegroundColor(theme::safelight_rgb(), 9);
     edit->setIndicatorDrawUnder(true, 9);
+    return edit;
+}
+
+void Editor::wire_doc_signals(QsciScintilla* edit, const QString& path) {
     // Hover docs: dwell 500 ms over an identifier -> textDocument/hover.
     // Over a diagnostic squiggle the dwell shows the DIAGNOSTIC message
     // instead of a slangd hover card (the local answer wins: it is always
@@ -596,38 +634,58 @@ void Editor::load_named(const QString& rel) {
     completion_timer->setSingleShot(true);
     completion_timer->setInterval(130);
     connect(completion_timer, &QTimer::timeout, edit, [this, edit, path] {
-        if (!open_docs_.empty() && doc_for_widget(edit) == nullptr) return;
+        if (!doc_for_widget(edit)) return; // tab closed while the timer ran
         int line = 0, col = 0;
         edit->getCursorPosition(&line, &col);
         QString l = edit->text(line);
         if (col <= 0 || col > l.size()) return;
         QChar c = l[col - 1];
         if (!(c.isLetterOrNumber() || c == '_' || c == '.')) return;
-        perf_log("completion-send", -1.0); // temp instrumentation
-        QString uri = "file://" + QFileInfo(path).absoluteFilePath();
-        lsp_completion(uri, line, col);
+        lsp_completion(uri_for(path), line, col);
     });
     connect(edit, &QsciScintilla::textChanged, edit,
             [completion_timer] { completion_timer->start(); });
+}
 
+void Editor::load_named(const QString& rel) {
+    if (Open_Doc* existing = find_doc(rel)) {
+        setCurrentIndex(indexOf(existing->widget));
+        return;
+    }
+    QString path = file_path_for_rel(rel);
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        status_ = "could not read " + path;
+        emit status_changed(status_);
+        return;
+    }
+    QString text = QString::fromUtf8(f.readAll());
+
+    QsciScintilla* edit = create_edit(text);
+    wire_doc_signals(edit, path);
+
+    // Registered BEFORE addTab: addTab fires currentChanged for the first
+    // tab and on_tab_changed resolves the doc by widget.
+    Open_Doc doc;
+    doc.rel = rel;
+    doc.path = path;
+    doc.loaded = true;
     doc.widget = edit;
     open_docs_.push_back(doc);
-    addTab(edit, rel.section('/', -1));
-    // Long names elide in the tab; the FULL path lives in the tooltip
-    // (Plan 03 §2: no information loss when the label truncates).
-    tabBar()->setTabToolTip(count() - 1, rel);
-    setCurrentIndex(int(open_docs_.size()) - 1);
+    const int index = addTab(edit, rel.section('/', -1));
+    // The tab shows the bare file name; the FULL path lives in the tooltip
+    // (Plan 03 §2: no information loss).
+    tabBar()->setTabToolTip(index, rel);
+    setCurrentIndex(index);
     sync_tab_colors();
     update_empty_state();
     // did-open for the LSP.
-    QString uri = "file://" + QFileInfo(path).absoluteFilePath();
-    lsp_did_open(uri, text);
+    lsp_did_open(uri_for(path), text);
 }
 
 QString Editor::doc_uri(const QsciScintilla* edit) const {
     for (const Open_Doc& doc : open_docs_)
-        if (doc.widget == edit)
-            return "file://" + QFileInfo(doc.path).absoluteFilePath();
+        if (doc.widget == edit) return uri_for(doc.path);
     return QString();
 }
 
@@ -646,6 +704,49 @@ void Editor::reposition_split_button() {
     split_btn_->raise();
 }
 
+// Shift + wheel = horizontal scroll (standard editor convention):
+// pixels (trackpad) or one character column per 1/8 notch (wheel).
+void Editor::scroll_horizontal(QsciScintilla* edit, const QWheelEvent* wheel) {
+    double dx = !wheel->pixelDelta().isNull()
+                    ? double(-wheel->pixelDelta().x())
+                    : -wheel->angleDelta().y() / (8.0 * 120.0) * 20.0;
+    if (wheel->pixelDelta().isNull() && wheel->angleDelta().x() != 0)
+        dx = -wheel->angleDelta().x() / (8.0 * 120.0) * 20.0;
+    h_scroll_acc_ += dx;
+    double whole = 0;
+    h_scroll_acc_ = std::modf(h_scroll_acc_, &whole);
+    if (whole == 0) return;
+    long x = long(edit->SendScintilla(QsciScintillaBase::SCI_GETXOFFSET));
+    long max = long(edit->SendScintilla(QsciScintillaBase::SCI_GETSCROLLWIDTH));
+    long target = std::clamp(x + long(whole), 0L, std::max(0L, max - 1));
+    edit->SendScintilla(QsciScintillaBase::SCI_SETXOFFSET, target);
+}
+
+// Smooth scroll: QScintilla's wheel path jumps whole lines. Convert
+// the wheel delta into first-visible-line steps through a fractional
+// accumulator (angleDelta: ~7 lines per notch; trackpad pixelDelta
+// drives 1:1 for true pixel smoothness). The sub-line remainder
+// persists between events so slow wheels still move eventually.
+void Editor::scroll_vertical(QsciScintilla* edit, const QWheelEvent* wheel) {
+    double line_h = edit->textHeight(0);
+    if (line_h <= 0) line_h = 1;
+    double steps = 0;
+    if (!wheel->pixelDelta().isNull()) {
+        steps = -wheel->pixelDelta().y() / line_h;
+    } else {
+        steps = -wheel->angleDelta().y() / (8.0 * 120.0) * 7.0;
+    }
+    scroll_acc_ += steps;
+    double whole = 0;
+    scroll_acc_ = std::modf(scroll_acc_, &whole);
+    if (whole == 0) return;
+    long first = long(edit->SendScintilla(QsciScintillaBase::SCI_GETFIRSTVISIBLELINE));
+    long total = long(edit->SendScintilla(QsciScintillaBase::SCI_GETLINECOUNT));
+    long vis = long(edit->SendScintilla(QsciScintillaBase::SCI_LINESONSCREEN));
+    long target = std::clamp(first + long(whole), 0L, std::max(0L, total - vis));
+    edit->SendScintilla(QsciScintillaBase::SCI_SETFIRSTVISIBLELINE, target);
+}
+
 bool Editor::eventFilter(QObject* watched, QEvent* event) {
     // Editor events: Cmd+click -> definition; Cmd held over a word ->
     // underline it (the clickable affordance). Two watched objects per doc:
@@ -659,48 +760,8 @@ bool Editor::eventFilter(QObject* watched, QEvent* event) {
     switch (event->type()) {
     case QEvent::Wheel: {
         auto* wheel = static_cast<QWheelEvent*>(event);
-        // Shift + wheel = horizontal scroll (standard editor convention):
-        // pixels (trackpad) or one character column per 1/8 notch (wheel).
-        if (wheel->modifiers() & Qt::ShiftModifier) {
-            double dx = !wheel->pixelDelta().isNull()
-                            ? double(-wheel->pixelDelta().x())
-                            : -wheel->angleDelta().y() / (8.0 * 120.0) * 20.0;
-            if (wheel->pixelDelta().isNull() && wheel->angleDelta().x() != 0)
-                dx = -wheel->angleDelta().x() / (8.0 * 120.0) * 20.0;
-            h_scroll_acc_ += dx;
-            double whole = 0;
-            h_scroll_acc_ = std::modf(h_scroll_acc_, &whole);
-            if (whole != 0) {
-                long x = long(edit->SendScintilla(QsciScintillaBase::SCI_GETXOFFSET));
-                long max = long(edit->SendScintilla(QsciScintillaBase::SCI_GETSCROLLWIDTH));
-                long target = std::clamp(x + long(whole), 0L, std::max(0L, max - 1));
-                edit->SendScintilla(QsciScintillaBase::SCI_SETXOFFSET, target);
-            }
-            return true;
-        }
-        // Smooth scroll: QScintilla's wheel path jumps whole lines. Convert
-        // the wheel delta into first-visible-line steps through a fractional
-        // accumulator (angleDelta: ~7 lines per notch; trackpad pixelDelta
-        // drives 1:1 for true pixel smoothness). The sub-line remainder
-        // persists between events so slow wheels still move eventually.
-        double line_h = edit->textHeight(0);
-        if (line_h <= 0) line_h = 1;
-        double steps = 0;
-        if (!wheel->pixelDelta().isNull()) {
-            steps = -wheel->pixelDelta().y() / line_h;
-        } else {
-            steps = -wheel->angleDelta().y() / (8.0 * 120.0) * 7.0;
-        }
-        scroll_acc_ += steps;
-        double whole = 0;
-        scroll_acc_ = std::modf(scroll_acc_, &whole);
-        if (whole != 0) {
-            long first = long(edit->SendScintilla(QsciScintillaBase::SCI_GETFIRSTVISIBLELINE));
-            long total = long(edit->SendScintilla(QsciScintillaBase::SCI_GETLINECOUNT));
-            long vis = long(edit->SendScintilla(QsciScintillaBase::SCI_LINESONSCREEN));
-            long target = std::clamp(first + long(whole), 0L, std::max(0L, total - vis));
-            edit->SendScintilla(QsciScintillaBase::SCI_SETFIRSTVISIBLELINE, target);
-        }
+        if (wheel->modifiers() & Qt::ShiftModifier) scroll_horizontal(edit, wheel);
+        else scroll_vertical(edit, wheel);
         return true; // the default wheel handler would double-step
     }
     case QEvent::MouseButtonPress: {
@@ -760,28 +821,25 @@ void Editor::update_link_underline(QsciScintilla* edit, const QPoint& vp, bool c
     // Underline the identifier under the cursor while Cmd is held; clear on
     // release/leave. One custom indicator (kLink), Plain = straight line.
     static const int kLink = 9; // 8 = diagnostics squiggle
+    if (!cmd && !link_underline_on_) return; // nothing painted: skip the whole-doc clear
     edit->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, kLink);
     edit->SendScintilla(QsciScintillaBase::SCI_INDICATORCLEARRANGE, 0,
                         long(edit->SendScintilla(QsciScintillaBase::SCI_GETLENGTH)));
+    link_underline_on_ = false;
     if (!cmd) {
         edit->viewport()->unsetCursor();
         return;
     }
     int line = 0, col = 0;
     if (!line_col_at(edit, vp, line, col)) return;
-    QString text = edit->text(line);
-    int s = std::min(col, (int)text.size());
-    while (s > 0 && (text[s - 1].isLetterOrNumber() || text[s - 1] == '_')) --s;
-    int e = std::min(col, (int)text.size());
-    while (e < (int)text.size() &&
-           (text[e].isLetterOrNumber() || text[e] == '_'))
-        ++e;
+    const auto [s, e] = word_bounds(edit->text(line), col);
     if (e <= s) { // not over a word
         edit->viewport()->unsetCursor();
         return;
     }
     edit->fillIndicatorRange(line, s, line, e, kLink);
     edit->viewport()->setCursor(Qt::PointingHandCursor);
+    link_underline_on_ = true;
 }
 
 void Editor::set_theme(Editor_Theme theme) {
@@ -809,7 +867,7 @@ void Editor::apply_font() {
         // Proportional gutter: recompute the width from the real line
         // count (plan7; the fixed "000" slot clipped 5-digit files).
         doc.widget->setMarginWidth(1, gutter_digits(doc.widget));
-        doc.widget->setMarginWidth(0, 8); // spacer lane (see load_named)
+        doc.widget->setMarginWidth(0, 8); // spacer lane
     }
 }
 
@@ -843,14 +901,11 @@ void Editor::load_unit(const QString& scene_title, const QString& root_dir) {
     QString prefix = root_dir == "gis_scenes"
                          ? QString("gis_scenes/%1/").arg(scene_title)
                          : QString("scenes/%1/").arg(scene_title);
-    unit_prefix_ = prefix;
-    for (long i = long(open_docs_.size()) - 1; i >= 0; --i) {
-        if (open_docs_[size_t(i)].dirty) continue;
-        if (open_docs_[size_t(i)].rel.startsWith(prefix)) continue;
-        QWidget* w = open_docs_[size_t(i)].widget;
-        removeTab(i);
-        if (w) w->deleteLater();
-        open_docs_.erase(open_docs_.begin() + i);
+    // Close the other units' clean tabs (dirty ones survive).
+    for (int i = count() - 1; i >= 0; --i) {
+        const Open_Doc* doc = doc_at(i);
+        if (!doc || doc->dirty || doc->rel.startsWith(prefix)) continue;
+        close_tab(i);
     }
     update_empty_state();
     // Open the unit's own files.
@@ -863,8 +918,7 @@ void Editor::load_unit(const QString& scene_title, const QString& root_dir) {
     // deterministically (scene load after gfx_create is fine). 3 s lands
     // well after GPU init; didOpen still fires on tab activation.
     if (qEnvironmentVariableIsSet("GIS_NO_LSP")) return;
-    QTimer::singleShot(3000, this, [this] { lsp_start("."); });
-    return;
+    QTimer::singleShot(3000, this, [this] { lsp_start(); });
 }
 
 int Editor::dirty_count() const {
@@ -873,16 +927,38 @@ int Editor::dirty_count() const {
     return n;
 }
 
-void Editor::close_current_tab() {
-    int index = currentIndex();
-    if (index < 0 || index >= (int)open_docs_.size()) return;
-    if (open_docs_[size_t(index)].dirty) return; // unsaved work is never destroyed
-    QWidget* w = open_docs_[size_t(index)].widget;
+// The one close path (tab X, Cmd+W, unit switch). Unsaved work is never
+// destroyed. The doc leaves open_docs_ BEFORE removeTab: removeTab fires
+// currentChanged, and on_tab_changed must not see the closing doc.
+bool Editor::close_tab(int index) {
+    Open_Doc* doc = doc_at(index);
+    if (!doc) return false;
+    if (doc->dirty) {
+        notify::notify(notify::Kind::WARN,
+                       "unsaved changes: save before closing " + doc->rel.section('/', -1));
+        return false;
+    }
+    QWidget* w = doc->widget;
+    const QString uri = uri_for(doc->path);
+    if (opened_on_server_.remove(uri)) {
+        send_lsp_notify("textDocument/didClose",
+                        QJsonDocument(QJsonObject{{"textDocument", QJsonObject{{"uri", uri}}}})
+                            .toJson(QJsonDocument::Compact));
+    }
+    lsp_versions_.remove(uri);
+    live_diags_.erase(uri);
+    if (QTimer* t = lsp_timers_.take(doc->rel)) {
+        t->stop();
+        t->deleteLater();
+    }
+    open_docs_.erase(open_docs_.begin() + (doc - open_docs_.data()));
     removeTab(index);
-    open_docs_.erase(open_docs_.begin() + index);
-    if (w) w->deleteLater();
+    w->deleteLater();
     update_empty_state();
+    return true;
 }
+
+void Editor::close_current_tab() { close_tab(currentIndex()); }
 
 int Editor::save_all() {
     int saved = 0;
@@ -894,8 +970,7 @@ int Editor::save_all() {
             emit status_changed(status_);
             continue;
         }
-        doc.text = doc.widget->text();
-        const QByteArray bytes = doc.text.toUtf8();
+        const QByteArray bytes = doc.widget->text().toUtf8();
         const qint64 written = f.write(bytes);
         f.close();
         if (written != bytes.size() || f.error() != QFileDevice::NoError) {
@@ -904,11 +979,13 @@ int Editor::save_all() {
             continue; // keep dirty: a partial write must not lose the doc
         }
         doc.dirty = false;
+        // Without this the widget stays "modified": modificationChanged never fires
+        // again, so every later edit was invisible to dirty tracking and Cmd+S a no-op.
+        doc.widget->setModified(false);
         ++saved;
-        const int idx = int(&doc - open_docs_.data());
-        setTabText(idx, doc.rel.section('/', -1)); // drop the "•" glyph
+        setTabText(indexOf(doc.widget), doc.rel.section('/', -1)); // drop the "•" glyph
         // did-save for the LSP.
-        lsp_did_save("file://" + QFileInfo(doc.path).absoluteFilePath());
+        lsp_did_save(uri_for(doc.path));
     }
     sync_tab_colors(); // saved tabs return to their normal text color
     status_ = saved > 0 ? QString("saved %1 file(s)").arg(saved) : status_;
@@ -917,49 +994,66 @@ int Editor::save_all() {
 }
 
 void Editor::on_tab_changed(int index) {
-    if (index < 0 || index >= (int)open_docs_.size()) return;
+    Open_Doc* doc = doc_at(index);
+    if (!doc) return;
+    const QString rel = doc->rel;
+    const QString uri = uri_for(doc->path);
+    QsciScintilla* edit = doc->widget;
     sync_tab_colors(); // active/inactive text colors follow the switch
-    emit tab_activated(open_docs_[size_t(index)].rel);
-    lsp_did_open("file://" + QFileInfo(open_docs_[size_t(index)].path).absoluteFilePath(),
-                 open_docs_[size_t(index)].widget->text());
+    emit tab_activated(rel);
+    if (!opened_on_server_.contains(uri)) lsp_did_open(uri, edit->text());
 }
 
 void Editor::on_modified(int index) {
-    if (index < 0 || index >= (int)open_docs_.size()) return;
-    Open_Doc& doc = open_docs_[size_t(index)];
-    doc.dirty = doc.widget->isModified();
-    QString label = doc.rel.section('/', -1) + (doc.dirty ? " •" : "");
+    Open_Doc* doc = doc_at(index);
+    if (!doc) return;
+    doc->dirty = doc->widget->isModified();
+    QString label = doc->rel.section('/', -1) + (doc->dirty ? " •" : "");
     setTabText(index, label);
     // Dirty state pairs color + glyph (never color-only). Amber only while
     // dirty; the active tab keeps its full-text color otherwise.
     sync_tab_colors();
     // Debounced did-change for the LSP (slangd re-parses on content change;
     // the 18-frame debounce lands as a 280 ms timer at 60 fps).
-    QMap<QString, QTimer*>& timers = lsp_timers_; // rel -> debounce timer
-    if (!timers.contains(doc.rel)) {
-        auto* timer = new QTimer(this);
+    const QString rel = doc->rel;
+    QTimer*& timer = lsp_timers_[rel];
+    if (!timer) {
+        timer = new QTimer(this);
         timer->setSingleShot(true);
         timer->setInterval(280);
-        connect(timer, &QTimer::timeout, this, [this, rel = doc.rel] {
+        connect(timer, &QTimer::timeout, this, [this, rel] {
             Open_Doc* d = find_doc(rel);
-            if (d)
-                lsp_did_change("file://" + QFileInfo(d->path).absoluteFilePath(),
-                               d->widget->text());
+            if (d) lsp_did_change(uri_for(d->path), d->widget->text());
         });
-        timers.insert(doc.rel, timer);
     }
-    timers[doc.rel]->start();
+    timer->start();
 }
 
 // ---- LSP (stage 6): slangd stdio JSON-RPC ----
 
-void Editor::lsp_start(const QString& workspace_root) {
+// Capabilities mirror src/lsp.odin: slangd gates hover/definition on the
+// client declaring them (an empty {} yields null results).
+static QString initialize_params() {
+    return QJsonDocument(QJsonObject{
+        {"processId", QJsonValue()},
+        {"rootUri", "file://" + QDir::currentPath()},
+        {"capabilities",
+         QJsonObject{{"textDocument",
+                      QJsonObject{
+                          {"completion",
+                           QJsonObject{{"completionItem",
+                                        QJsonObject{{"snippetSupport", false}}}}},
+                          {"hover", QJsonObject{{"contentFormat",
+                                                 QJsonArray{"markdown", "plaintext"}}}},
+                          {"definition", QJsonObject{{"linkSupport", false}}},
+                          {"publishDiagnostics",
+                           QJsonObject{{"relatedInformation", true},
+                                       {"versionSupport", true}}}}}}}})
+        .toJson(QJsonDocument::Compact);
+}
+
+void Editor::lsp_start() {
     if (lsp_) return;
-    lsp_root_ = workspace_root;
-    lsp_ = new QProcess(this);
-    connect(lsp_, &QProcess::readyRead, this, &Editor::on_lsp_ready_read);
-    connect(lsp_, &QProcess::finished, this, &Editor::on_lsp_finished);
-    QStringList args{"--stdio"}; // the Odin app uses --stdio; --lsp answers null
     // Submodule dist first (one source of truth); system-install fallback.
     // Relative paths: only resolve when cwd is the repo root (make run cds there).
     const QString slangd =
@@ -968,81 +1062,106 @@ void Editor::lsp_start(const QString& workspace_root) {
             : QFileInfo("vendor/slang/bin/slangd").absoluteFilePath();
     if (!QFileInfo::exists(slangd)) {
         notify::notify(notify::Kind::ERROR_, "slangd not found, LSP disabled: " + slangd);
-        lsp_->deleteLater();
-        lsp_ = nullptr;
         return;
     }
+    lsp_ = new QProcess(this);
+    connect(lsp_, &QProcess::readyRead, this, &Editor::on_lsp_ready_read);
+    connect(lsp_, &QProcess::finished, this, &Editor::on_lsp_finished);
+    // finished is NOT emitted when the spawn itself fails; without this lsp_
+    // would stay non-null and block every later lsp_start.
+    connect(lsp_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError err) {
+        if (err != QProcess::FailedToStart) return;
+        notify::notify(notify::Kind::ERROR_, "slangd failed to start, LSP disabled");
+        drop_lsp();
+    });
+    // Unread stderr would buffer without bound; nothing consumes it.
+    connect(lsp_, &QProcess::readyReadStandardError, this, [this] {
+        if (lsp_) lsp_->readAllStandardError();
+    });
     // LSP handshake: initialize MUST precede didOpen/didChange, or slangd
     // exits on the protocol violation. QProcess::start is async (state =
-    // Starting here, so a direct send would be dropped by send_lsp's
+    // Starting here, so a direct send would be dropped by write_lsp's
     // Running check): send initialize on the started signal instead.
     connect(lsp_, &QProcess::started, this, [this] {
         // Fresh server session: everything must be re-opened (tabs opened
         // before the spawn were dropped by the send gate).
         opened_on_server_.clear();
+        lsp_versions_.clear();
         lsp_initialized_ = false;
-        // Capabilities mirror src/lsp.odin: slangd gates hover/definition on
-        // the client declaring them (an empty {} yields null results).
-        QString root_json = QJsonDocument(QJsonObject{
-            {"processId", QJsonValue()},
-            {"rootUri", "file://" + QDir::currentPath()},
-            {"capabilities",
-             QJsonObject{{"textDocument",
-                          QJsonObject{
-                              {"completion",
-                               QJsonObject{{"completionItem",
-                                            QJsonObject{{"snippetSupport", false}}}}},
-                              {"hover", QJsonObject{{"contentFormat",
-                                                     QJsonArray{"markdown", "plaintext"}}}},
-                              {"definition", QJsonObject{{"linkSupport", false}}},
-                              {"publishDiagnostics",
-                               QJsonObject{{"relatedInformation", true},
-                                           {"versionSupport", true}}}}}}}})
-                               .toJson(QJsonDocument::Compact);
-        lsp_pending_[lsp_next_id_] = "initialize";
-        send_lsp(lsp_next_id_++, "initialize", root_json);
+        lsp_request("initialize", initialize_params());
     });
-    lsp_->start(slangd, args);
+    lsp_->start(slangd, QStringList{"--stdio"}); // the Odin app uses --stdio; --lsp answers null
 }
 
-void Editor::lsp_stop() {
-    if (!lsp_) return;
-    lsp_->kill();
-    lsp_ = nullptr;
+// Process gone (exit, crash or failed spawn): free it and reset the session so
+// a dead server's partial frame or pending ids never leak into the next one.
+void Editor::drop_lsp() {
+    if (lsp_) {
+        lsp_->disconnect(this);
+        lsp_->deleteLater();
+        lsp_ = nullptr;
+    }
+    lsp_buffer_.clear();
+    lsp_pending_.clear();
+    lsp_versions_.clear();
+    opened_on_server_.clear();
+    lsp_initialized_ = false;
+    has_pending_def_ = false;
 }
 
-void Editor::send_lsp(int id, const QString& method, const QString& params_json) {
-    if (!lsp_ || lsp_->state() != QProcess::Running) return;
+void Editor::on_lsp_finished(int, int) { drop_lsp(); }
+
+// Frames and writes one JSON-RPC body; false when slangd is not running.
+bool Editor::write_lsp(const QString& body) {
+    if (!lsp_ || lsp_->state() != QProcess::Running) return false;
+    const QByteArray utf8 = body.toUtf8();
+    lsp_->write("Content-Length: " + QByteArray::number(utf8.size()) + "\r\n\r\n" + utf8);
+    return true;
+}
+
+bool Editor::send_lsp(int id, const QString& method, const QString& params_json) {
     // Until the handshake completes, only the initialize request itself may
     // go out: slangd exits on protocol violations.
-    if (!lsp_initialized_ && method != "initialize") return;
-    QString body = QString("{\"jsonrpc\":\"2.0\",\"id\":%1,\"method\":\"%2\",\"params\":%3}")
-                       .arg(id)
-                       .arg(method)
-                       .arg(params_json);
-    QByteArray msg = ("Content-Length: " + QByteArray::number(body.toUtf8().size()) +
-                      "\r\n\r\n" + body.toUtf8());
-    lsp_->write(msg);
+    if (!lsp_initialized_ && method != "initialize") return false;
+    return write_lsp(QString("{\"jsonrpc\":\"2.0\",\"id\":%1,\"method\":\"%2\",\"params\":%3}")
+                         .arg(id)
+                         .arg(method)
+                         .arg(params_json));
+}
+
+// The id is only consumed/registered when the request really went out: a
+// dropped request (no slangd, handshake pending) must not leave a pending entry.
+void Editor::lsp_request(const QString& method, const QString& params_json) {
+    const int id = lsp_next_id_;
+    if (!send_lsp(id, method, params_json)) return;
+    ++lsp_next_id_;
+    lsp_pending_[id] = method;
 }
 
 void Editor::send_lsp_notify(const QString& method, const QString& params_json) {
     // Notifications carry NO id (a framed id makes slangd treat the
     // `initialized` notification as a request and stall the session).
-    if (!lsp_ || lsp_->state() != QProcess::Running || !lsp_initialized_) return;
-    QString body = QString("{\"jsonrpc\":\"2.0\",\"method\":\"%1\",\"params\":%2}")
-                       .arg(method)
-                       .arg(params_json);
-    QByteArray msg = ("Content-Length: " + QByteArray::number(body.toUtf8().size()) +
-                      "\r\n\r\n" + body.toUtf8());
-    lsp_->write(msg);
+    if (!lsp_initialized_) return;
+    write_lsp(QString("{\"jsonrpc\":\"2.0\",\"method\":\"%1\",\"params\":%2}")
+                  .arg(method)
+                  .arg(params_json));
+}
+
+static QString position_params(const QString& uri, int line, int col) {
+    return QJsonDocument(QJsonObject{
+        {"textDocument", QJsonObject{{"uri", uri}}},
+        {"position", QJsonObject{{"line", line}, {"character", col}}}})
+        .toJson(QJsonDocument::Compact);
 }
 
 void Editor::lsp_did_open(const QString& uri, const QString& text) {
     // Per-SERVER-lifecycle, not per-process: tabs opened before slangd
-    // spawned were dropped (send_lsp gate); the post-initialize flush calls
-    // lsp_did_open again, and a static guard would block the re-open.
-    if (opened_on_server_.contains(uri)) return;
+    // spawned (or mid-handshake) are dropped by the send gate; the
+    // post-initialize flush calls lsp_did_open again, so only a live,
+    // initialized session may mark a uri as opened.
+    if (!lsp_initialized_ || opened_on_server_.contains(uri)) return;
     opened_on_server_.insert(uri);
+    lsp_versions_[uri] = 1;
     // Odin parity: didOpen carries EMPTY text (slangd 1.8 chokes on a full
     // document here), the real content arrives via didChange right after.
     // The didChange is deferred one event-loop turn: slangd 1.8 drops the
@@ -1058,25 +1177,15 @@ void Editor::lsp_did_open(const QString& uri, const QString& text) {
 }
 
 void Editor::lsp_did_change(const QString& uri, const QString& text) {
-    const qint64 t0 = perf_clock()->nsecsElapsed(); // TEMP-PROF
-    int v = lsp_versions_[uri] + 1;
-    if (v > 2) { // after the first sync, reset the server's compilation
-        QString close_json = QJsonDocument(QJsonObject{
-            {"textDocument", QJsonObject{{"uri", uri}}}})
-                               .toJson(QJsonDocument::Compact);
-        send_lsp_notify("textDocument/didClose", close_json);
-        QString open_json = QJsonDocument(QJsonObject{{"textDocument",
-            QJsonObject{{"uri", uri}, {"languageId", "slang"},
-                        {"version", 1}, {"text", QString()}}}})
-                                .toJson(QJsonDocument::Compact);
-        send_lsp_notify("textDocument/didOpen", open_json);
-    }
+    // Not open on this server session (tab closed, server restarted): a
+    // didChange would be a protocol violation and would restart the version.
+    if (!opened_on_server_.contains(uri)) return;
+    const int v = ++lsp_versions_[uri]; // monotonic per uri, as LSP requires
     QString json = QJsonDocument(QJsonObject{
         {"textDocument", QJsonObject{{"uri", uri}, {"version", v}}},
         {"contentChanges", QJsonArray{QJsonObject{{"text", text}}}}})
                        .toJson(QJsonDocument::Compact);
     send_lsp_notify("textDocument/didChange", json);
-    perf_log("didchange-json-ms", double(perf_clock()->nsecsElapsed() - t0) / 1e6);
 }
 
 void Editor::lsp_did_save(const QString& uri) {
@@ -1086,40 +1195,21 @@ void Editor::lsp_did_save(const QString& uri) {
 }
 
 void Editor::lsp_completion(const QString& uri, int line, int col) {
-    const qint64 t0w = perf_clock()->nsecsElapsed(); // TEMP-PROF
-    QString json = QJsonDocument(QJsonObject{
-        {"textDocument", QJsonObject{{"uri", uri}}},
-        {"position", QJsonObject{{"line", line}, {"character", col}}}})
-                       .toJson(QJsonDocument::Compact);
-    lsp_pending_[lsp_next_id_] = "completion";
-    send_lsp(lsp_next_id_++, "textDocument/completion", json);
-    perf_log("lsp-write-ms", double(perf_clock()->nsecsElapsed() - t0w) / 1e6);
+    lsp_request("textDocument/completion", position_params(uri, line, col));
 }
 
 void Editor::lsp_hover(const QString& uri, int line, int col) {
-    QString json = QJsonDocument(QJsonObject{
-        {"textDocument", QJsonObject{{"uri", uri}}},
-        {"position", QJsonObject{{"line", line}, {"character", col}}}})
-                       .toJson(QJsonDocument::Compact);
-    lsp_pending_[lsp_next_id_] = "hover";
-    send_lsp(lsp_next_id_++, "textDocument/hover", json);
+    lsp_request("textDocument/hover", position_params(uri, line, col));
 }
 
 void Editor::lsp_goto_def(const QString& uri, int line, int col) {
     // Remember the queried word: when slangd answers null (declaration lines,
     // cross-module symbols), the response handler falls back to a local
     // top-level-declaration search with it.
-    last_def_uri_ = uri;
     last_def_word_.clear();
-    QsciScintilla* ed = current_editor();
-    if (ed) {
-        QString text = ed->text(line);
-        int s = std::min(col, (int)text.size());
-        while (s > 0 && (text[s - 1].isLetterOrNumber() || text[s - 1] == '_')) --s;
-        int e = std::min(col, (int)text.size());
-        while (e < (int)text.size() &&
-               (text[e].isLetterOrNumber() || text[e] == '_'))
-            ++e;
+    if (QsciScintilla* ed = current_editor()) {
+        const QString text = ed->text(line);
+        const auto [s, e] = word_bounds(text, col);
         last_def_word_ = text.mid(s, e - s);
     }
     // Clicks can land before the initialize handshake finishes (slangd spawn
@@ -1130,219 +1220,204 @@ void Editor::lsp_goto_def(const QString& uri, int line, int col) {
         has_pending_def_ = true;
         return;
     }
-    QString json = QJsonDocument(QJsonObject{
-        {"textDocument", QJsonObject{{"uri", uri}}},
-        {"position", QJsonObject{{"line", line}, {"character", col}}}})
-                       .toJson(QJsonDocument::Compact);
-    lsp_pending_[lsp_next_id_] = "definition";
-    send_lsp(lsp_next_id_++, "textDocument/definition", json);
+    lsp_request("textDocument/definition", position_params(uri, line, col));
 }
-
-void Editor::lsp_rename(const QString& uri, int line, int col, const QString& new_name) {
-    QString json = QJsonDocument(QJsonObject{
-        {"textDocument", QJsonObject{{"uri", uri}}},
-        {"position", QJsonObject{{"line", line}, {"character", col}}},
-        {"newName", new_name}})
-                       .toJson(QJsonDocument::Compact);
-    lsp_pending_[lsp_next_id_] = "rename";
-    send_lsp(lsp_next_id_++, "textDocument/rename", json);
-}
-
-void Editor::on_lsp_finished(int, int) { lsp_ = nullptr; }
 
 void Editor::handle_lsp_message(const QByteArray& payload) {
-    QJsonDocument doc = QJsonDocument::fromJson(payload);
-    QJsonObject obj = doc.object();
-
-    // Diagnostics notification.
-    if (obj.contains("method") && obj["method"].toString() == "textDocument/publishDiagnostics") {
-        std::vector<Diagnostic> diags;
-        QJsonObject params = obj["params"].toObject();
-        QString uri = params["uri"].toString();
-        for (const QJsonValue& v : params["diagnostics"].toArray()) {
-            QJsonObject d = v.toObject();
-            Diagnostic diag;
-            diag.uri = uri;
-            diag.line = d["range"].toObject()["start"].toObject()["line"].toInt();
-            diag.col = d["range"].toObject()["start"].toObject()["character"].toInt();
-            diag.len = d["range"].toObject()["end"].toObject()["character"].toInt() - diag.col;
-            diag.message = d["message"].toString();
-            diag.error = d["severity"].toInt() == 1;
-            diags.push_back(diag);
-        }
-        apply_diagnostics(diags);
+    QJsonParseError err;
+    const QJsonDocument doc = QJsonDocument::fromJson(payload, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+        qWarning("lsp: dropped malformed message: %s", qPrintable(err.errorString()));
         return;
     }
-
-    // SERVER-initiated requests carry their own id and NO method in pending_:
-    // reply to the ones that gate the session, ignore the rest.
-    if (obj.contains("method") && obj.contains("id")) {
-        QString smethod = obj["method"].toString();
-        QJsonValue sid = obj["id"];
-        if (smethod == "workspace/configuration") {
-            QJsonArray items;
-            for (const QJsonValue& item : obj["params"].toObject()["items"].toArray())
-                items.append(QJsonObject{});
-            QString body = QString("{\"jsonrpc\":\"2.0\",\"id\":%1,\"result\":%2}")
-                               .arg(sid.toInt())
-                               .arg(QJsonDocument(QJsonArray{QJsonArray{}})
-                                        .toJson(QJsonDocument::Compact));
-            QByteArray msg = ("Content-Length: " +
-                              QByteArray::number(body.toUtf8().size()) + "\r\n\r\n" +
-                              body.toUtf8());
-            if (lsp_) lsp_->write(msg);
-        } else {
-            QString body = QString("{\"jsonrpc\":\"2.0\",\"id\":%1,\"result\":null}")
-                               .arg(sid.toInt());
-            QByteArray msg = ("Content-Length: " +
-                              QByteArray::number(body.toUtf8().size()) + "\r\n\r\n" +
-                              body.toUtf8());
-            if (lsp_) lsp_->write(msg);
-        }
-        return;
+    const QJsonObject obj = doc.object();
+    const QString method = obj.value("method").toString();
+    if (method == "textDocument/publishDiagnostics") {
+        apply_publish_diagnostics(obj.value("params").toObject());
+    } else if (!method.isEmpty() && obj.contains("id")) {
+        answer_server_request(obj); // SERVER-initiated request
+    } else if (obj.contains("id")) {
+        handle_lsp_response(obj);   // response to one of ours
     }
+    // Remaining notifications (logMessage, progress, ...) are ignored.
+}
 
-    // Response to a request (id present). Notifications handled above.
-    if (!obj.contains("id")) return;
-    int id = obj["id"].toInt();
-    QString method = lsp_pending_.take(id);
-    if (method == "initialize") {
-        lsp_initialized_ = true;
-        send_lsp_notify("initialized", "{}");
-        // Flush didOpen for every open tab (queued while uninitialized);
-        // each open defers its didChange, avoiding same-batch drops. The
-        // deferred didChanges land AFTER this loop — replay any queued
-        // goto-def on a timer, once the content is on the server.
-        for (const Open_Doc& open : open_docs_)
-            if (open.widget) lsp_did_open(doc_uri(open.widget), open.widget->text());
-        if (has_pending_def_) {
-            has_pending_def_ = false;
-            const QString& def_uri = std::get<0>(pending_def_);
-            int def_line = std::get<1>(pending_def_);
-            int def_col = std::get<2>(pending_def_);
-            QTimer::singleShot(1200, this, [this, def_uri, def_line, def_col] {
-                lsp_goto_def(def_uri, def_line, def_col);
-            });
-        }
-        return;
+// SERVER-initiated requests carry their own id and a method: reply to the
+// ones that gate the session, answer null to the rest.
+void Editor::answer_server_request(const QJsonObject& obj) {
+    QJsonValue result; // null
+    if (obj.value("method").toString() == "workspace/configuration") {
+        // One (empty) settings object per requested item.
+        QJsonArray settings;
+        const int n = obj.value("params").toObject().value("items").toArray().size();
+        for (int i = 0; i < n; ++i) settings.append(QJsonObject{});
+        result = settings;
     }
-    if (method == "hover") {
-        QJsonValue r = obj["result"];
-        // contents: MarkupContent{value} | string | array of strings. slangd
-        // 1.8 answers null for most positions — show a quiet fallback card
-        // instead of silence so hover always gives feedback.
-        QString contents;
-        if (r.isObject())
-            contents = r.toObject()["contents"].toObject()["value"].toString();
-        else if (r.isArray())
-            contents = QJsonDocument(r.toArray()).toJson(QJsonDocument::Compact);
-        else
-            contents = r.toString();
-        // slangd payloads are markdown: ```sig``` fence + doc paragraphs.
-        // QToolTip renders rich text: strip the fence, style the signature.
-        if (contents.contains("```")) {
-            QString sig, body;
-            int fence0 = contents.indexOf("```");
-            int fence1 = contents.indexOf("```", fence0 + 3);
-            sig = contents.mid(fence0 + 3, fence1 - fence0 - 3).trimmed();
-            body = contents.mid(fence1 + 3).trimmed();
-            contents = "<b>" + sig.toHtmlEscaped() + "</b>";
-            if (!body.isEmpty())
-                contents += "<br>" + body.toHtmlEscaped().replace("\n", "<br>");
-        } else {
-            contents = contents.toHtmlEscaped().replace("\n", "<br>");
-        }
-        if (contents.isEmpty())
-            contents = i18n::tr("no docs for this symbol");
-        if (current_editor()) QToolTip::showText(QCursor::pos(), contents, current_editor());
-    } else if (method == "definition") {
-        // Result: Location | Location[] | null. First location wins.
-        QJsonValue r = obj["result"];
-        QJsonObject loc = r.isObject() ? r.toObject()
-                                       : (r.isArray() && !r.toArray().isEmpty()
-                                              ? r.toArray()[0].toObject()
-                                              : QJsonObject());
-        if (!loc.isEmpty()) {
-            QString def_uri = loc["uri"].toString();
-            int def_line = loc["range"].toObject()["start"].toObject()["line"].toInt();
-            // URI -> editor rel ("src/shaders/common"): strip file://<cwd>/.
-            QString rel = def_uri;
-            rel.remove("file://" + QDir::currentPath() + "/");
-            if (rel.endsWith(".slang")) rel.chop(6);
-            load_named(rel);
-            if (current_editor()) {
-                current_editor()->setCursorPosition(def_line, 0);
-                current_editor()->ensureLineVisible(def_line);
-            }
-        } else {
-            // slangd answers null for declaration lines, keywords, attribute
-            // names and cross-module symbols (verified with slangd 2026.18.2
-            // probes). Fall back to the legacy local search: a top-level line
-            // declaring the word ("struct <word>" / "<ret> <word>("), same
-            // heuristic as ied_find_definition in the Odin app. Silent when
-            // nothing matches (keyword/attribute click).
-            if (last_def_word_.isEmpty()) return;
-            QsciScintilla* ed = current_editor();
-            if (!ed) return;
-            QString word = last_def_word_;
-            QString struct_needle = "struct " + word;
-            QString call_needle = word + "(";
-            int lines = int(ed->SendScintilla(QsciScintillaBase::SCI_GETLINECOUNT));
-            for (int ln = 0; ln < lines; ++ln) {
-                QString text = ed->text(ln);
-                if (text.trimmed().startsWith("//")) continue;
-                if (text.trimmed().isEmpty() || text[0] == ' ' || text[0] == '\t') continue;
-                if (text.contains(struct_needle)) {
-                    ed->setCursorPosition(ln, 0);
-                    ed->ensureLineVisible(ln);
-                    return;
-                }
-                int paren = text.indexOf(call_needle);
-                if (paren > 0 && !text.left(paren).contains('=')) {
-                    ed->setCursorPosition(ln, 0);
-                    ed->ensureLineVisible(ln);
-                    return;
-                }
-            }
-        }
-    } else if (method == "completion") {
-        const qint64 t0c = perf_clock()->nsecsElapsed(); // TEMP-PROF
-        // Result: CompletionItem[] or CompletionList{items}. Filter by the word
-        // typed before the caret, since Scintilla's user list does not.
-        QJsonValue r = obj["result"];
-        QJsonArray items = r.isArray() ? r.toArray() : r.toObject()["items"].toArray();
+    write_lsp(QString::fromUtf8(
+        QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", obj.value("id")}, {"result", result}})
+            .toJson(QJsonDocument::Compact)));
+}
+
+void Editor::apply_publish_diagnostics(const QJsonObject& params) {
+    std::vector<Diagnostic> diags;
+    const QString uri = params.value("uri").toString();
+    for (const QJsonValue& v : params.value("diagnostics").toArray()) {
+        const QJsonObject d = v.toObject();
+        const QJsonObject range = d.value("range").toObject();
+        Diagnostic diag;
+        diag.uri = uri;
+        diag.line = range.value("start").toObject().value("line").toInt();
+        diag.col = range.value("start").toObject().value("character").toInt();
+        diag.len = range.value("end").toObject().value("character").toInt() - diag.col;
+        diag.message = d.value("message").toString();
+        diag.error = d.value("severity").toInt() == 1;
+        diags.push_back(diag);
+    }
+    apply_diagnostics_for_uri(uri, diags);
+}
+
+void Editor::handle_lsp_response(const QJsonObject& obj) {
+    const QString method = lsp_pending_.take(obj.value("id").toInt());
+    const QJsonValue result = obj.value("result");
+    if (method == "initialize") on_lsp_initialized();
+    else if (method == "textDocument/hover") show_hover(result);
+    else if (method == "textDocument/definition") open_definition(result);
+    else if (method == "textDocument/completion") show_completions(result);
+}
+
+void Editor::on_lsp_initialized() {
+    lsp_initialized_ = true;
+    send_lsp_notify("initialized", "{}");
+    // Flush didOpen for every open tab (queued while uninitialized);
+    // each open defers its didChange, avoiding same-batch drops. The
+    // deferred didChanges land AFTER this loop — replay any queued
+    // goto-def on a timer, once the content is on the server.
+    for (const Open_Doc& open : open_docs_)
+        if (open.widget) lsp_did_open(doc_uri(open.widget), open.widget->text());
+    if (has_pending_def_) {
+        has_pending_def_ = false;
+        const QString def_uri = std::get<0>(pending_def_);
+        int def_line = std::get<1>(pending_def_);
+        int def_col = std::get<2>(pending_def_);
+        QTimer::singleShot(1200, this, [this, def_uri, def_line, def_col] {
+            lsp_goto_def(def_uri, def_line, def_col);
+        });
+    }
+}
+
+void Editor::show_hover(const QJsonValue& r) {
+    // contents: MarkupContent{value} | string | array of strings. slangd
+    // 1.8 answers null for most positions — show a quiet fallback card
+    // instead of silence so hover always gives feedback.
+    QString contents;
+    if (r.isObject())
+        contents = r.toObject().value("contents").toObject().value("value").toString();
+    else if (r.isArray())
+        contents = QJsonDocument(r.toArray()).toJson(QJsonDocument::Compact);
+    else
+        contents = r.toString();
+    // slangd payloads are markdown: ```sig``` fence + doc paragraphs.
+    // QToolTip renders rich text: strip the fence, style the signature.
+    if (contents.contains("```")) {
+        int fence0 = contents.indexOf("```");
+        int fence1 = contents.indexOf("```", fence0 + 3);
+        QString sig = contents.mid(fence0 + 3, fence1 - fence0 - 3).trimmed();
+        QString body = contents.mid(fence1 + 3).trimmed();
+        contents = "<b>" + sig.toHtmlEscaped() + "</b>";
+        if (!body.isEmpty())
+            contents += "<br>" + body.toHtmlEscaped().replace("\n", "<br>");
+    } else {
+        contents = contents.toHtmlEscaped().replace("\n", "<br>");
+    }
+    if (contents.isEmpty())
+        contents = i18n::tr("no docs for this symbol");
+    if (current_editor()) QToolTip::showText(QCursor::pos(), contents, current_editor());
+}
+
+// slangd answers null for declaration lines, keywords, attribute names and
+// cross-module symbols (verified with slangd 2026.18.2 probes). Legacy local
+// search: a top-level line declaring the word ("struct <word>" / "<ret>
+// <word>("), same heuristic as ied_find_definition in the Odin app. -1 when
+// nothing matches (keyword/attribute click).
+static int find_local_definition(QsciScintilla* ed, const QString& word) {
+    const QString struct_needle = "struct " + word;
+    const QString call_needle = word + "(";
+    const int lines = int(ed->SendScintilla(QsciScintillaBase::SCI_GETLINECOUNT));
+    for (int ln = 0; ln < lines; ++ln) {
+        const QString text = ed->text(ln);
+        if (text.trimmed().startsWith("//")) continue;
+        if (text.trimmed().isEmpty() || text[0] == ' ' || text[0] == '\t') continue;
+        if (text.contains(struct_needle)) return ln;
+        const int paren = text.indexOf(call_needle);
+        if (paren > 0 && !text.left(paren).contains('=')) return ln;
+    }
+    return -1;
+}
+
+void Editor::open_definition(const QJsonValue& r) {
+    // Result: Location | Location[] | null. First location wins.
+    const QJsonObject loc = r.isObject() ? r.toObject()
+                                         : (r.isArray() && !r.toArray().isEmpty()
+                                                ? r.toArray().at(0).toObject()
+                                                : QJsonObject());
+    if (loc.isEmpty()) {
+        if (last_def_word_.isEmpty()) return;
         QsciScintilla* ed = current_editor();
         if (!ed) return;
-        int line = 0, col = 0;
-        ed->getCursorPosition(&line, &col);
-        QString before = ed->text(line).left(col);
-        int s = before.size();
-        while (s > 0 && (before[s - 1].isLetterOrNumber() || before[s - 1] == '_')) --s;
-        QString prefix = before.mid(s);
-        QStringList shown;
-        // Cap the scan AND the list: slangd returns the module's entire
-        // symbol table; filtering 10k labels per reply on the main thread
-        // was the other half of the typing delay. 60 rows is plenty for a
-        // popup (Scintilla's list scrolls).
-        constexpr int kMaxCompletions = 60;
-        for (const QJsonValue& v : items) {
-            QString label = v.toObject()["label"].toString();
-            if (label.startsWith(prefix) && label != prefix) shown << label;
-            if (shown.size() >= kMaxCompletions) break;
-        }
-        if (shown.size() < kMaxCompletions) {
-            shown.removeDuplicates();
-            shown.sort();
-        }
-        if (!shown.isEmpty()) ed->showUserList(1, shown);
-        perf_log("popup-shown", -1.0); // temp instrumentation
-        perf_log("completion-handle-ms", double(perf_clock()->nsecsElapsed() - t0c) / 1e6);
+        const int ln = find_local_definition(ed, last_def_word_);
+        if (ln >= 0) goto_line(ed, ln);
+        return;
     }
+    const int def_line = loc.value("range").toObject().value("start").toObject().value("line").toInt();
+    // URI -> editor rel: the same key load_unit/rescan use ("scenes/<x>/<y>",
+    // no src/shaders/ prefix), so an already-open tab is reused, not duplicated.
+    const QString abs = QUrl(loc.value("uri").toString()).toLocalFile();
+    const QString root = QDir::currentPath() + "/";
+    if (!abs.startsWith(root) || !abs.endsWith(".slang")) {
+        status_ = "definition outside the workspace: " + abs; // e.g. the slang stdlib
+        emit status_changed(status_);
+        return;
+    }
+    QString rel = abs.mid(root.size());
+    rel.chop(6);
+    const QString shader_prefix = QString(kShaderDir) + "/";
+    if (rel.startsWith(shader_prefix)) rel.remove(0, shader_prefix.size());
+    load_named(rel);
+    if (QsciScintilla* ed = current_editor()) goto_line(ed, def_line);
+}
+
+void Editor::show_completions(const QJsonValue& r) {
+    // Result: CompletionItem[] or CompletionList{items}. Filter by the word
+    // typed before the caret, since Scintilla's user list does not.
+    const QJsonArray items = r.isArray() ? r.toArray() : r.toObject().value("items").toArray();
+    QsciScintilla* ed = current_editor();
+    if (!ed) return;
+    int line = 0, col = 0;
+    ed->getCursorPosition(&line, &col);
+    QString before = ed->text(line).left(col);
+    int s = before.size();
+    while (s > 0 && (before[s - 1].isLetterOrNumber() || before[s - 1] == '_')) --s;
+    QString prefix = before.mid(s);
+    QStringList shown;
+    // Cap the scan AND the list: slangd returns the module's entire
+    // symbol table; filtering 10k labels per reply on the main thread
+    // was the other half of the typing delay. 60 rows is plenty for a
+    // popup (Scintilla's list scrolls).
+    constexpr int kMaxCompletions = 60;
+    for (const QJsonValue& v : items) {
+        QString label = v.toObject().value("label").toString();
+        if (label.startsWith(prefix) && label != prefix) shown << label;
+        if (shown.size() >= kMaxCompletions) break;
+    }
+    if (shown.size() < kMaxCompletions) {
+        shown.removeDuplicates();
+        shown.sort();
+    }
+    if (!shown.isEmpty()) ed->showUserList(1, shown);
 }
 
 void Editor::on_lsp_ready_read() {
-    const qint64 t0r = perf_clock()->nsecsElapsed(); // TEMP-PROF
-    const qint64 bytes_in = lsp_->bytesAvailable(); // TEMP-PROF
+    if (!lsp_) return;
     lsp_buffer_ += lsp_->readAll();
     while (true) {
         int header_end = lsp_buffer_.indexOf("\r\n\r\n");
@@ -1354,56 +1429,50 @@ void Editor::on_lsp_ready_read() {
             if (trimmed.startsWith("Content-Length:"))
                 content_length = trimmed.mid(15).trimmed().toInt();
         }
-        if (content_length <= 0 ||
-            lsp_buffer_.size() < header_end + 4 + content_length)
-            break;
+        if (content_length <= 0) { // malformed header: drop it, or the channel wedges
+            lsp_buffer_.remove(0, header_end + 4);
+            continue;
+        }
+        if (lsp_buffer_.size() < header_end + 4 + content_length) break;
         QByteArray payload = lsp_buffer_.mid(header_end + 4, content_length);
         lsp_buffer_.remove(0, header_end + 4 + content_length);
         handle_lsp_message(payload);
     }
-    perf_log("lsp-read-ms", double(perf_clock()->nsecsElapsed() - t0r) / 1e6);
-    perf_log("lsp-read-kb", double(bytes_in) / 1024.0);
 }
 
-void Editor::apply_diagnostics(const std::vector<Diagnostic>& diags) {
+// publishDiagnostics carries ONE uri: only that doc's squiggles are replaced.
+void Editor::apply_diagnostics_for_uri(const QString& uri, const std::vector<Diagnostic>& diags) {
     static const int kUnderline = 8; // custom indicator index
-    live_diags_.clear();
-    for (Open_Doc& doc : open_docs_) {
-        if (!doc.widget) continue;
-        QString uri = "file://" + QFileInfo(doc.path).absoluteFilePath();
-        doc.widget->SendScintilla(QsciScintillaBase::SCI_INDICATORCLEARRANGE, 0,
-                                  long(doc.widget->SendScintilla(
-                                      QsciScintillaBase::SCI_GETLENGTH)));
-        // Error affordance: a straight red UNDERLINE along the reported
-        // token range (whole line when slangd gives no length). No margin
-        // dots, no tab badges — the underline IS the signal.
-        doc.widget->indicatorDefine(QsciScintilla::PlainIndicator, kUnderline);
-        doc.widget->setIndicatorForegroundColor(theme::error_rgb(), kUnderline);
-        doc.widget->setIndicatorDrawUnder(true, kUnderline);
-        // fillIndicatorRange paints the CURRENT indicator: the Cmd-hover
-        // handler leaves it at 9 (amber link) on some docs, which swallowed
-        // the red underline. Pin it to the diagnostics index first.
-        doc.widget->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT,
-                                  kUnderline);
-        for (const Diagnostic& d : diags) {
-            if (d.uri != uri) continue;
-            live_diags_[uri].push_back(d);
-            int line_len = doc.widget->lineLength(d.line);
-            int len = d.len > 0 ? d.len : std::max(1, line_len - d.col - 1);
-            doc.widget->fillIndicatorRange(d.line, d.col, d.line, d.col + len,
-                                           kUnderline);
-        }
+    live_diags_.erase(uri);
+    Open_Doc* doc = doc_for_uri(uri);
+    if (!doc || !doc->widget) return;
+    QsciScintilla* edit = doc->widget;
+    edit->SendScintilla(QsciScintillaBase::SCI_INDICATORCLEARRANGE, 0,
+                        long(edit->SendScintilla(QsciScintillaBase::SCI_GETLENGTH)));
+    // Error affordance: a straight red UNDERLINE along the reported
+    // token range (whole line when slangd gives no length). No margin
+    // dots, no tab badges — the underline IS the signal.
+    edit->indicatorDefine(QsciScintilla::PlainIndicator, kUnderline);
+    edit->setIndicatorForegroundColor(theme::error_rgb(), kUnderline);
+    edit->setIndicatorDrawUnder(true, kUnderline);
+    // fillIndicatorRange paints the CURRENT indicator: the Cmd-hover
+    // handler leaves it at 9 (amber link) on some docs, which swallowed
+    // the red underline. Pin it to the diagnostics index first.
+    edit->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, kUnderline);
+    for (const Diagnostic& d : diags) {
+        live_diags_[uri].push_back(d);
+        int line_len = edit->lineLength(d.line);
+        int len = d.len > 0 ? d.len : std::max(1, line_len - d.col - 1);
+        edit->fillIndicatorRange(d.line, d.col, d.line, d.col + len, kUnderline);
     }
 }
 
 // Message of the diagnostic covering a position (hover); "" when none.
 // Line match first, then the col..col+len range (0-length = whole line).
-QString Editor::diag_message_at(const QString& uri, long pos) const {
+QString Editor::diag_message_at(const QString& uri, long pos) {
     auto it = live_diags_.find(uri);
     if (it == live_diags_.end()) return {};
-    const Open_Doc* doc = nullptr;
-    for (const Open_Doc& d : open_docs_)
-        if ("file://" + QFileInfo(d.path).absoluteFilePath() == uri) doc = &d;
+    const Open_Doc* doc = doc_for_uri(uri);
     if (!doc || !doc->widget) return {};
     int line = int(doc->widget->SendScintilla(
         QsciScintillaBase::SCI_LINEFROMPOSITION, pos));
@@ -1422,7 +1491,6 @@ QString Editor::diag_message_at(const QString& uri, long pos) const {
 void Editor::open_find() {
     QsciScintilla* ed = current_editor();
     if (!ed) return;
-    if (!find_bar_->parent()) find_bar_->setParent(currentWidget());
     if (ed->selectedText().isEmpty()) {
         find_edit_->clear();
     } else { // seed with the selection, like every native find bar
@@ -1454,14 +1522,6 @@ void Editor::hide_find() {
         ed->cancelFind();
         ed->setFocus();
     }
-}
-
-
-QWidget* Editor::editor_dock_host() {
-    // The split pane docks beside the tab widget: parent is the editor's
-    // enclosing dock (editor_dock_), which is the QTabWidget's parent.
-    QWidget* w = parentWidget();
-    return w ? w : this;
 }
 
 void Editor::split_current() {
