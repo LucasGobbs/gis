@@ -1,7 +1,11 @@
 #include "theme.hpp"
 
+#include <QFile>
 #include <QFontDatabase>
-#include <QPalette>
+#include <QIcon>
+#include <QImage>
+#include <QPainter>
+#include <QPixmap>
 
 // Qlementine owns the widget look; the theme switch goes through its
 // setThemeJsonPath (repolishes + repaints every widget).
@@ -28,15 +32,14 @@ QFont code_font(int point_size) {
     return QFont("Menlo", point_size);
 }
 
-// Pixel face for the code editor option: Sergamon at PIXEL size (a bitmap-
-// grid font scaled by points blurs; multiples of the native 8px grid stay
-// crisp). point_size maps 1:1 so the editor's zoom persists meaningfully.
+// Pixel face for the code editor option: Sergamon. Sized in POINTS: QScintilla
+// reads QFont::pointSizeF(), which is -1 for a pixel-sized font (the text
+// collapsed to ~5 px). point_size maps 1:1 so the editor's zoom persists.
 QFont pixel_code_font(int point_size) {
     if (sergamon_id >= 0) {
         const QStringList fam = QFontDatabase::applicationFontFamilies(sergamon_id);
         if (!fam.isEmpty()) {
-            QFont f(fam.first());
-            f.setPixelSize(point_size);
+            QFont f(fam.first(), point_size);
             f.setBold(false);
             return f;
         }
@@ -45,18 +48,6 @@ QFont pixel_code_font(int point_size) {
 }
 
 QFont ui_font(int point_size) { return code_font(point_size); }
-
-QFont display_font(int pixel_size) {
-    if (sergamon_id >= 0) {
-        const QStringList fam = QFontDatabase::applicationFontFamilies(sergamon_id);
-        if (!fam.isEmpty()) {
-            QFont f(fam.first());
-            f.setPixelSize(pixel_size);
-            return f;
-        }
-    }
-    return code_font(12);
-}
 
 namespace {
 
@@ -67,38 +58,39 @@ struct Chrome {
     const char* tray, *bench, *panel, *workspace, *text, *muted, *border, *control, *accent;
     const char* error;   // failure / bake failure
     const char* success; // bake-ok flash, valid states
-    const char* warning; // deprecated path; same family as accent
     const char* info;    // toasts, learn links (signature blue)
     // Node-graph resource hues (GRAPH mode boundaries + data-defined links).
-    const char* res_params;  // amber family
+    const char* res_settings; // amber family
     const char* res_compute; // violet
     const char* res_graphics;// blue
     const char* res_output;  // green
-    const char* res_neutral; // texture/mesh/widget
+    const char* res_neutral; // widget
+    const char* res_texture; // rose
+    const char* res_mesh;    // teal
 };
 constexpr Chrome kChrome[] = {
     // Dark = Darkroom (the gis identity).
     {"#191A1F", "#1A1B20", "#1E2026", "#131418", "#DEE0E6", "#828894", "#FFFFFF17",
      "#4A4D55", "#E8A857",
-     "#F26B5C", "#2BB5A0", "#E8A857", "#9EC2F2",
-     "#E8A857", "#C99EF2", "#9EC2F2", "#A9D49E", "#8C9099"},
+     "#F26B5C", "#2BB5A0", "#9EC2F2",
+    "#E8A857", "#C99EF2", "#9EC2F2", "#A9D49E", "#8C9099", "#F2A0B4", "#7FD1C7"},
     // Light. muted derived to AA on panel (plan13 contrast rule: hue kept,
     // lightness stepped until >= 4.5:1).
     {"#F2F3F5", "#FFFFFF", "#E8EAEF", "#E4E6EB", "#1F2024", "#5F646E", "#00000017",
      "#B9BEC9", "#9A5B0A",
-     "#B3382B", "#1E7A63", "#9A5B0A", "#2B5FA3",
-     "#9A5B0A", "#7A4BA3", "#2B5FA3", "#3D7A36", "#6F747E"},
+     "#B3382B", "#1E7A63", "#2B5FA3",
+    "#9A5B0A", "#7A4BA3", "#2B5FA3", "#3D7A36", "#6F747E", "#B03A62", "#1B7A70"},
     // Monokai. muted/error lightened for AA on the olive panel (the raw
     // Monokai pink #F92672 is 3.48:1 — unusable as error text).
     {"#1F201B", "#272822", "#2F312A", "#1F201B", "#F8F8F2", "#9D9986", "#FFFFFF17",
      "#49483E", "#F92672",
-     "#FF5EAA", "#A6E22E", "#E6DB74", "#66D9EF",
-     "#F92672", "#AE81FF", "#66D9EF", "#A6E22E", "#75715E"},
+     "#FF5EAA", "#A6E22E", "#66D9EF",
+    "#F92672", "#AE81FF", "#66D9EF", "#A6E22E", "#75715E", "#E6DB74", "#FD971F"},
     // Solarized dark. Same rule: base03-panel demands brighter muted/error.
     {"#00212B", "#002B36", "#073642", "#00212B", "#93A1A1", "#889EA5", "#FFFFFF17",
      "#0D4250", "#B58900",
-     "#FF6A67", "#859900", "#B58900", "#268BD2",
-     "#B58900", "#6C71C4", "#268BD2", "#859900", "#586E75"},
+     "#FF6A67", "#859900", "#268BD2",
+    "#B58900", "#6C71C4", "#268BD2", "#859900", "#586E75", "#D33682", "#2AA198"},
 };
 
 const Chrome& chrome() { return kChrome[int(g_theme)]; }
@@ -116,22 +108,22 @@ QString theme_json_path(App_Theme t) {
 
 // ---- semantic tokens (public, per active skin) ----
 QString error() { return chrome().error; }
-QString success() { return chrome().success; }
 QString info() { return chrome().info; }
 QColor error_rgb() { return QColor(chrome().error); }
 QColor success_rgb() { return QColor(chrome().success); }
 QColor info_rgb() { return QColor(chrome().info); }
 QColor resource_rgb(Resource_Kind kind) {
     switch (kind) {
-    case Resource_Kind::Params: return QColor(chrome().res_params);
+    case Resource_Kind::Settings: return QColor(chrome().res_settings);
     case Resource_Kind::Compute: return QColor(chrome().res_compute);
     case Resource_Kind::Graphics: return QColor(chrome().res_graphics);
     case Resource_Kind::Output: return QColor(chrome().res_output);
+    case Resource_Kind::Texture: return QColor(chrome().res_texture);
+    case Resource_Kind::Mesh: return QColor(chrome().res_mesh);
     case Resource_Kind::Neutral: break;
     }
     return QColor(chrome().res_neutral);
 }
-QString resource_hex(Resource_Kind kind) { return resource_rgb(kind).name(); }
 
 // ---- shared dims/states (skin-independent) ----
 QString overlay_scrim(int alpha) { // caption/hint plates over the viewport
@@ -196,4 +188,27 @@ static QString text_wash(int alpha_hex) {
 }
 QString hover_overlay() { return text_wash(14); }   // 0.14
 QString pressed_overlay() { return text_wash(26); } // 0.26
+
+QIcon tinted_icon(const char* resource, const QColor& color, int size) {
+    QString path = resource;
+    if (!QFile::exists(path)) path.replace("/24/", "/16/");
+    // Render at 2x and TAG the pixmap with devicePixelRatio 2: without the
+    // tag Qt sees a 48 LOGICAL px glyph inside the 24 px button and paints
+    // it from the top-left corner (the "icon in the corner" bug). With the
+    // tag the 48 device px map to 24 logical px, centered by the style.
+    QPixmap src = QIcon(path).pixmap(size * 2, size * 2);
+    src.setDevicePixelRatio(2.0);
+    QImage tint(src.size(), QImage::Format_ARGB32_Premultiplied);
+    tint.setDevicePixelRatio(2.0);
+    tint.fill(Qt::transparent);
+    QPainter p(&tint);
+    p.setCompositionMode(QPainter::CompositionMode_Source);
+    p.drawPixmap(0, 0, src);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(tint.rect(), color); // recolor keeping the SVG alpha
+    p.end();
+    QPixmap out = QPixmap::fromImage(tint);
+    out.setDevicePixelRatio(2.0);
+    return QIcon(out);
+}
 } // namespace theme

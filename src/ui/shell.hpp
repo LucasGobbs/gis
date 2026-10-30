@@ -12,7 +12,8 @@
 #include "gfx/scene_runtime.hpp"
 
 #include <QMenu>
-#include <QPropertyAnimation>
+#include <QPointer>
+#include <QVariantAnimation>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QListWidget>
@@ -25,7 +26,8 @@
 
 
 
-class QsciScintilla; // TEMP-PROF shim return type
+class QHBoxLayout;
+
 namespace shell {
 
 
@@ -43,6 +45,7 @@ constexpr int kStripButton = 34;
 constexpr int kStripStep = 42;
 constexpr int kStripTop = 10;
 constexpr int kStripW = 52;      // strip column width
+constexpr int kGraphFullscreenReserve = 0; // central_ is hidden in GRAPH fullscreen: any leftover width would be spread over strip+panel (fixed widths), shifting the strip
 constexpr int kStripIcon = 24;   // icon square inside a strip button
 // Top-bar toolbar sizing (Plan 07): the header is 28px tall; buttons fit
 // INSIDE it (the old 34px buttons clipped 6px top/bottom). Icons 16px in
@@ -50,16 +53,14 @@ constexpr int kStripIcon = 24;   // icon square inside a strip button
 constexpr int kToolbarBtn = 24;
 constexpr int kToolbarIcon = 16;
 enum class Sidebar_Mode { CONTROLS, FILES, LEARN, GRAPH, EXPORT, EFFECTS, SHORTCUTS };
+constexpr int kModeCount = 7; // number of Sidebar_Mode values
 enum class Interaction_Mode { AUTOROTATE, MOUSE_ROTATE };
 enum class Preview_Mode { FLOAT, SPLIT, FULL };
 using editor::Editor_Theme; // the settings menu + editor skins share it
-enum class Fx_Intensity { OFF, SUBTLE, FULL };
 
 struct Ui_State {
     bool paused = false;
     bool color = false;
-    bool view3d = false;
-    bool grid = false;
     Interaction_Mode interaction = Interaction_Mode::AUTOROTATE;
 
     // Layout preset (P3-N4): Normal, Zen, Theater and Mobile are MUTUALLY
@@ -72,7 +73,6 @@ struct Ui_State {
     enum class Layout_Preset { Normal, Zen, Theater, Mobile, Presentation,
                                Pipeline };
     Layout_Preset layout = Layout_Preset::Normal;
-    bool sidebar_open = true;   // zen hides it (derived from layout in toggles)
     Sidebar_Mode mode = Sidebar_Mode::CONTROLS;
     bool panel_open = true;
     float font_size = 14;
@@ -83,6 +83,7 @@ struct Ui_State {
     int snap_hover = -1;        // while dragging: 0=left 1=right -1=none (host writes, shell paints)
     bool editor_split = true;  // code | shader preview side-by-side (legacy prefs key)
     bool fullscreen_view = false; // F2: viewport page (preview hidden)
+    bool graph_fullscreen = false; // transient, never persisted (prefs_save writes explicit keys)
     bool preview_hinted = false; // first-run drag hint shown once
     QPoint preview_nudge;        // keyboard arrow nudges for the FLOAT frame (host consumes)
     Editor_Theme theme = Editor_Theme::DARK;
@@ -90,7 +91,7 @@ struct Ui_State {
     // Per-mode dragged widths (plan5): dragging FILES no longer rewrites
     // CONTROLS' width. Index = Sidebar_Mode; 0 = no user width for that mode
     // (falls back to panel_width_for's per-mode default).
-    float user_w_mode[7] = {0, 0, 0, 0, 0, 0, 0};
+    float user_w_mode[kModeCount] = {0, 0, 0, 0, 0, 0, 0};
 
     float gif_start = 0;
     float gif_end = 5;
@@ -98,7 +99,7 @@ struct Ui_State {
     // Restore slots: the Normal-state values a preset hid. One set (the old
     // duplicate theater/mobile slots are gone — presets are exclusive).
     float saved_ui_font = 14, saved_ed_font = 14;
-    bool saved_open = true, saved_ed_open = false;
+    bool saved_open = true;
     // plan9: preview geometry + sidebar mode are part of the restore.
     Preview_Mode saved_preview = Preview_Mode::SPLIT;
     float saved_split_left = 0.42f;
@@ -164,16 +165,8 @@ public:
     void toggle_mobile() { set_layout(Ui_State::Layout_Preset::Mobile); }
     // plan9 workspace presets (F6 cycles Development → Presentation →
     // Pipeline → back; also in the settings gear menu).
-    void toggle_presentation() {
-        set_layout(Ui_State::Layout_Preset::Presentation);
-    }
-    void toggle_pipeline_preset() {
-        set_layout(Ui_State::Layout_Preset::Pipeline);
-    }
     void cycle_workspace();
     // Saves all dirty editor tabs; host wires save_all_requested to a build.
-    void editor_open_first_tab_for_test(); // TEMP-PROF shim, Plan 01 only
-    QsciScintilla* editor_current_for_test(); // TEMP-PROF shim, Plan 01 only
     int save_all() { return editor_ ? editor_->save_all() : 0; }
     int dirty_count() const { return editor_ ? editor_->dirty_count() : 0; }
     // Global theme switch: re-skins the persistent chrome (topbar, strip,
@@ -186,7 +179,6 @@ public:
     void set_preview_mode(Preview_Mode mode); // single entry: topbar/F3/drop
     QWidget* preview_overlay(); // snap-zone overlay (lazy; child of Shell)
     QWidget* preview_frame_overlay(); // themed border frame over the SDL window
-    Preview_Mode preview_mode() const { return ui.preview; }
     void set_preview_frame_rect(const QRect& global_rect);
     void set_snap_hover(int zone); // 0=split 1=full -1=none; paints the zones
     void set_split_gutter(float left_fraction); // drag path: instant follow
@@ -201,7 +193,6 @@ public:
 signals:
     void scene_selected(int index);
     void scene_open_requested(const QString& title);
-    void pause_toggled();
     void save_all_requested();
     // EXPORT panel: PNG of the current frame (host owns the GPU readback).
     void png_export_requested();
@@ -238,7 +229,6 @@ private:
     // ui.user_w (persisted in prefs), so the width survives restarts.
     bool panel_resize_hit(const QPoint& global_pos) const;
     bool panel_dragging_ = false;
-    float panel_drag_width_ = 0; // live width during a sidebar drag (px readout)
     // Preview-mode segmented buttons in the topbar (FLOAT/SPLIT/FULL).
     QPushButton* preview_btns_[3] = {nullptr, nullptr, nullptr};
     void update_preview_buttons();
@@ -248,8 +238,6 @@ private:
     bool gutter_hot_ = false; // cursor near the gutter: band lit amber
     QLabel* preview_hint_ = nullptr; // one-shot drag hint under the frame
     QColor live_tint_;               // frame-average color from the host
-    QTimer* live_tint_throttle_ = nullptr; // chrome restyle at most 1x/s
-    qint64 live_tint_last_ = 0;      // ms tick of the last applied tint
     QVariantAnimation* bake_pulse_ = nullptr;  // amber border wave while baking
     QVariantAnimation* bake_flash_ = nullptr;  // green success flash
     void update_live_tint_border();  // restore frame to live tint/theme
@@ -262,19 +250,48 @@ private:
     bool gutter_hit(const QPoint& global_pos) const;
     void update_split_layout(); // clamp editor width to the split fraction
     void update_panel_edge();
+    void update_graph_cover(); // fullscreen GRAPH panel covers the central editor stack
     QWidget* topbar();
     QWidget* strip();
     QScrollArea* panel();
     QWidget* controls_panel();
     QWidget* files_panel();
     QWidget* editor_dock();
-    QWidget* graph_view();
     QWidget* learn_panel();
     learn::Trail_View* trail_view_ = nullptr; // persists; pages swap in place
     QWidget* export_panel();
     QWidget* effects_panel();
     QWidget* shortcuts_panel();
     void apply_mode(Sidebar_Mode mode);
+    QWidget* page_for(Sidebar_Mode mode);
+    void sync_strip_buttons(Sidebar_Mode mode);
+    // Ctor pieces.
+    void setup_autosave();
+    void bind_shortcuts();
+    void restore_workspace();
+    // Topbar pieces.
+    void build_traffic_lights(QHBoxLayout* layout);
+    void build_preview_segment(QHBoxLayout* layout);
+    void build_save_pause(QHBoxLayout* layout);
+    // Layout preset helpers.
+    void save_normal_state();
+    void restore_normal_state();
+    void enter_preset(Ui_State::Layout_Preset preset);
+    void persist_prefs(); // prefs_save with Normal-state values while a preset is active
+    // Settings menu pieces.
+    void add_language_menu(QMenu& settings);
+    void add_theme_menu(QMenu& settings);
+    void add_workspace_menu(QMenu& settings);
+    void add_font_actions(QMenu& settings);
+    // Files tree pieces.
+    void route_tree_click(QTreeWidgetItem* item);
+    void show_tree_context_menu(const QPoint& pos);
+    void rename_shader_file(QTreeWidgetItem* item);
+    // set_baking pieces.
+    void restyle_save_button(bool on);
+    void stop_bake_animations();
+    void start_bake_pulse();
+    void start_bake_flash();
     void rebuild_selector_menu();
     // Docked scene list under the top bar (the selector's dropdown): an
     // in-layout panel because native QMenu/Qt::Popup windows lose the
@@ -295,7 +312,10 @@ private:
     QPushButton* pause_btn_ = nullptr;
     QScrollArea* panel_ = nullptr;
     QStackedWidget* panel_stack_ = nullptr;  // one persistent page per mode
-    int panel_page_index_[7] = {-1, -1, -1, -1, -1, -1, -1}; // Sidebar_Mode -> stack idx
+    QWidget* panel_pages_[kModeCount] = {}; // Sidebar_Mode -> page; held by widget, never by stack index
+    QPointer<QVariantAnimation> panel_anim_; // at most one live open/close tween
+    QPointer<QVariantAnimation> split_anim_; // at most one live split settle
+    QPushButton* new_btn_ = nullptr;         // "+ new"; re-tinted on theme switch
     QTreeWidget* files_tree_ = nullptr;          // persistent explorer tree
     QWidget* files_panel_page_ = nullptr;        // FILES page widget
     QPushButton* panel_edge_ = nullptr;

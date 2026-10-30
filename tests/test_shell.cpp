@@ -225,6 +225,73 @@ TEST_CASE("shell builds panels and switches modes", "[shell]") {
         graph->debug_step_flashes(700);
         QApplication::processEvents();
     }
-
+    SECTION("graph: no duplicate nodes, settings ports, zoom clamp, fullscreen") {
+        shell.show_mode(shell::Sidebar_Mode::GRAPH);
+        QApplication::processEvents();
+        auto* graph = shell.findChild<graph_editor::Node_View*>();
+        REQUIRE(graph != nullptr);
+        const int count = graph->debug_node_count();
+        REQUIRE(count > 0);
+        for (int i = 0; i < 3; ++i) {
+            shell.show_mode(shell::Sidebar_Mode::CONTROLS);
+            shell.show_mode(shell::Sidebar_Mode::GRAPH);
+            QApplication::processEvents();
+            REQUIRE(graph->debug_node_count() == count);
+        }
+        REQUIRE(graph->debug_ports("settings", true).isEmpty());
+        // One output per uniform block the passes read; SceneUniforms always first.
+        const QStringList outs = graph->debug_ports("settings", false);
+        REQUIRE(outs.value(0) == "SceneUniforms (uniform)");
+        auto* view = dynamic_cast<graph_editor::Graph_View*>(graph->findChild<QtNodes::GraphicsView*>());
+        REQUIRE(view != nullptr);
+        for (int i = 0; i < 60; ++i) {
+            QWheelEvent ev(QPointF(10, 10), QPointF(10, 10), QPoint(0, 0), QPoint(0, 120),
+                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(view, &ev);
+        }
+        REQUIRE(graph->debug_zoom() <= graph_editor::Graph_View::kMaxZoom + 1e-6);
+        for (int i = 0; i < 200; ++i) {
+            QWheelEvent ev(QPointF(10, 10), QPointF(10, 10), QPoint(0, 0), QPoint(0, -120),
+                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(view, &ev);
+        }
+        REQUIRE(graph->debug_zoom() >= graph_editor::Graph_View::kMinZoom - 1e-6);
+        shell::Ui_State ui;
+        ui.graph_fullscreen = true;
+        REQUIRE(shell::panel_width_for(ui, shell::Sidebar_Mode::GRAPH, 1280).toInt()
+                == 1280 - shell::kStripW - shell::kGraphFullscreenReserve);
+        ui.graph_fullscreen = false;
+        REQUIRE(shell::panel_width_for(ui, shell::Sidebar_Mode::GRAPH, 1280).toInt() == 666);
+        auto* fs = graph->findChild<QToolButton*>("graphFullscreen");
+        REQUIRE(fs != nullptr);
+        bool seen = false, seen_on = false;
+        QObject::connect(graph, &graph_editor::Node_View::fullscreen_toggled, graph,
+                         [&](bool on) { seen = true; seen_on = on; });
+        fs->click();
+        REQUIRE(seen);
+        REQUIRE(seen_on);
+    }
+    SECTION("graph: trackpad pans, preview toggle keeps zoom") {
+        shell.show_mode(shell::Sidebar_Mode::GRAPH);
+        QApplication::processEvents();
+        auto* graph = shell.findChild<graph_editor::Node_View*>();
+        REQUIRE(graph != nullptr);
+        auto* view = dynamic_cast<graph_editor::Graph_View*>(graph->findChild<QtNodes::GraphicsView*>());
+        REQUIRE(view != nullptr);
+        QWheelEvent wheel(QPointF(10, 10), QPointF(10, 10), QPoint(0, 0), QPoint(0, 120),
+                          Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(view, &wheel);
+        const double zoomed = graph->debug_zoom();
+        REQUIRE(zoomed > graph_editor::Graph_View::kMinZoom);
+        QWheelEvent pan(QPointF(10, 10), QPointF(10, 10), QPoint(0, 40), QPoint(0, 0),
+                        Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
+        QApplication::sendEvent(view, &pan);
+        REQUIRE(std::abs(graph->debug_zoom() - zoomed) < 1e-9);
+        auto* preview = graph->findChild<QToolButton*>("graphPreviewToggle");
+        REQUIRE(preview != nullptr);
+        preview->click();
+        QApplication::processEvents();
+        REQUIRE(std::abs(graph->debug_zoom() - zoomed) < 1e-9);
+    }
     SDL_DestroyGPUDevice(gpu);
 }
