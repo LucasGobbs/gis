@@ -794,6 +794,8 @@ auto vph = [&] { return shell.viewport()->height(); };
             resources.model_index_count = picked->index_count;
             resources.model_base_color_texture = picked->base_color_tex;
             resources.model_base_color_sampler = picked->texture_sampler;
+            std::fprintf(stderr, "scene: picked model '%s', texture=%p sampler=%p\n",
+                         picked->name.c_str(), picked->base_color_tex, picked->texture_sampler);
         }
     };
     // Skybox: GIS_SKYBOX=<name> picks from assets/skybox by basename
