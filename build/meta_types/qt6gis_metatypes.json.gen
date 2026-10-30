@@ -1,0 +1,368 @@
+[
+    {
+        "classes": [
+            {
+                "className": "Editor",
+                "lineNumber": 47,
+                "object": true,
+                "qualifiedClassName": "editor::Editor",
+                "signals": [
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "status",
+                                "type": "QString"
+                            }
+                        ],
+                        "index": 0,
+                        "lineNumber": 100,
+                        "name": "status_changed",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "diags",
+                                "type": "std::vector<editor::Diagnostic>"
+                            }
+                        ],
+                        "index": 1,
+                        "lineNumber": 101,
+                        "name": "diagnostics_ready",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "pt",
+                                "type": "int"
+                            }
+                        ],
+                        "index": 2,
+                        "lineNumber": 102,
+                        "name": "font_changed",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "on",
+                                "type": "bool"
+                            }
+                        ],
+                        "index": 3,
+                        "lineNumber": 103,
+                        "name": "split_toggled",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "rel",
+                                "type": "QString"
+                            }
+                        ],
+                        "index": 4,
+                        "lineNumber": 105,
+                        "name": "tab_activated",
+                        "returnType": "void"
+                    }
+                ],
+                "slots": [
+                    {
+                        "access": "private",
+                        "arguments": [
+                            {
+                                "name": "index",
+                                "type": "int"
+                            }
+                        ],
+                        "index": 5,
+                        "lineNumber": 108,
+                        "name": "on_tab_changed",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "private",
+                        "arguments": [
+                            {
+                                "name": "index",
+                                "type": "int"
+                            }
+                        ],
+                        "index": 6,
+                        "lineNumber": 109,
+                        "name": "on_modified",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "private",
+                        "index": 7,
+                        "lineNumber": 110,
+                        "name": "on_lsp_ready_read",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "private",
+                        "arguments": [
+                            {
+                                "name": "exit_code",
+                                "type": "int"
+                            },
+                            {
+                                "name": "status",
+                                "type": "int"
+                            }
+                        ],
+                        "index": 8,
+                        "lineNumber": 111,
+                        "name": "on_lsp_finished",
+                        "returnType": "void"
+                    }
+                ],
+                "superClasses": [
+                    {
+                        "access": "public",
+                        "name": "QTabWidget"
+                    }
+                ]
+            }
+        ],
+        "inputFile": "editor.hpp",
+        "outputRevision": 69
+    },
+    {
+        "classes": [
+            {
+                "className": "Node_View",
+                "lineNumber": 98,
+                "object": true,
+                "qualifiedClassName": "graph_editor::Node_View",
+                "signals": [
+                    {
+                        "access": "public",
+                        "index": 0,
+                        "lineNumber": 170,
+                        "name": "pipeline_changed",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "key",
+                                "type": "QString"
+                            },
+                            {
+                                "name": "kind",
+                                "type": "QString"
+                            }
+                        ],
+                        "index": 1,
+                        "lineNumber": 173,
+                        "name": "node_selected",
+                        "returnType": "void"
+                    }
+                ],
+                "superClasses": [
+                    {
+                        "access": "public",
+                        "name": "QWidget"
+                    }
+                ]
+            },
+            {
+                "className": "Confirm_Dialog",
+                "lineNumber": 204,
+                "object": true,
+                "qualifiedClassName": "graph_editor::Confirm_Dialog",
+                "superClasses": [
+                    {
+                        "access": "public",
+                        "name": "QDialog"
+                    }
+                ]
+            }
+        ],
+        "inputFile": "graph_editor.hpp",
+        "outputRevision": 69
+    },
+    {
+        "classes": [
+            {
+                "className": "Trail_View",
+                "lineNumber": 20,
+                "object": true,
+                "qualifiedClassName": "learn::Trail_View",
+                "signals": [
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "scene_title",
+                                "type": "QString"
+                            }
+                        ],
+                        "index": 0,
+                        "lineNumber": 34,
+                        "name": "scene_requested",
+                        "returnType": "void"
+                    }
+                ],
+                "superClasses": [
+                    {
+                        "access": "public",
+                        "name": "QWidget"
+                    }
+                ]
+            }
+        ],
+        "inputFile": "learn.hpp",
+        "outputRevision": 69
+    },
+    {
+        "classes": [
+            {
+                "className": "Shell",
+                "lineNumber": 120,
+                "object": true,
+                "qualifiedClassName": "shell::Shell",
+                "signals": [
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "index",
+                                "type": "int"
+                            }
+                        ],
+                        "index": 0,
+                        "lineNumber": 202,
+                        "name": "scene_selected",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "title",
+                                "type": "QString"
+                            }
+                        ],
+                        "index": 1,
+                        "lineNumber": 203,
+                        "name": "scene_open_requested",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "index": 2,
+                        "lineNumber": 204,
+                        "name": "pause_toggled",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "index": 3,
+                        "lineNumber": 205,
+                        "name": "save_all_requested",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "index": 4,
+                        "lineNumber": 207,
+                        "name": "png_export_requested",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "start_s",
+                                "type": "float"
+                            },
+                            {
+                                "name": "end_s",
+                                "type": "float"
+                            }
+                        ],
+                        "index": 5,
+                        "lineNumber": 209,
+                        "name": "gif_export_requested",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "index": 6,
+                        "lineNumber": 212,
+                        "name": "camera_reset_requested",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "mode",
+                                "type": "shell::Sidebar_Mode"
+                            }
+                        ],
+                        "index": 7,
+                        "lineNumber": 213,
+                        "name": "mode_changed",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "index": 8,
+                        "lineNumber": 216,
+                        "name": "preferences_requested",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "index": 9,
+                        "lineNumber": 217,
+                        "name": "close_requested",
+                        "returnType": "void"
+                    },
+                    {
+                        "access": "public",
+                        "arguments": [
+                            {
+                                "name": "on",
+                                "type": "bool"
+                            }
+                        ],
+                        "index": 10,
+                        "lineNumber": 222,
+                        "name": "popup_mouse_shield",
+                        "returnType": "void"
+                    }
+                ],
+                "slots": [
+                    {
+                        "access": "public",
+                        "index": 11,
+                        "lineNumber": 225,
+                        "name": "refresh_scenes",
+                        "returnType": "void"
+                    }
+                ],
+                "superClasses": [
+                    {
+                        "access": "public",
+                        "name": "QWidget"
+                    }
+                ]
+            }
+        ],
+        "inputFile": "shell.hpp",
+        "outputRevision": 69
+    }
+]

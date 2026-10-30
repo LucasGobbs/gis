@@ -1,7 +1,8 @@
 // Toast state + widget. The store is plain data (mutex-guarded); the widget
 // draws floating cards top-right under the title bar, mirrors notify.odin
-// lifetimes (7 s, fade 0.6 s, dedupe 2 s, max 5).
 #include "notify.hpp"
+#include "shell.hpp" // kTopbarH (toast layer clears the top bar)
+#include "theme.hpp"
 
 #include <QLabel>
 #include <QMouseEvent>
@@ -44,13 +45,14 @@ void notify(Kind kind, const QString& text) {
 }
 
 QString kind_color(const Notice& n) {
-    // Darkroom palette: info = signature blue, warn = amber, error = red.
+    // Semantic palette from the active skin: info = signature blue,
+    // warn = safelight amber, error = bake-failure red.
     switch (n.kind) {
-    case Kind::INFO: return "#9ec2f2";
-    case Kind::WARN: return "#e8a857";
-    case Kind::ERROR_: return "#f26b5c";
+    case Kind::WARN: return theme::safelight();
+    case Kind::ERROR_: return theme::error();
+    case Kind::INFO: return theme::info();
     }
-    return "#dfe0e6";
+    return theme::text_primary();
 }
 
 // Floating overlay widget parenting one QLabel per toast.
@@ -66,7 +68,7 @@ public:
         // UNDER it; a Qt::ToolTip window floats above and never takes focus.
         setWindowFlags(Qt::ToolTip | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
         auto* layout = new QVBoxLayout(this);
-        layout->setContentsMargins(0, 44, 12, 0);
+        layout->setContentsMargins(0, shell::kTopbarH + 16, 12, 0);
         layout->setSpacing(6);
         layout->setAlignment(Qt::AlignTop | Qt::AlignRight);
         auto* refresh = new QTimer(this);
@@ -85,8 +87,9 @@ public:
         while ((int)cards.size() < (int)g_notices.size()) {
             auto* label = new QLabel(this);
             label->setStyleSheet(
-                "QLabel { background: rgba(24,25,30,235); border-radius: 6px;"
-                " padding: 8px 12px; color: #dfe0e6; font-size: 9pt; }");
+                QString("QLabel { background: %1; border-radius: 6px;"
+                        " padding: 8px 12px; color: %2; font-size: 9pt; }")
+                    .arg(theme::overlay_scrim(235), theme::text_primary()));
             label->setMaximumWidth(340);
             label->setWordWrap(true);
             label->show();
@@ -105,9 +108,9 @@ public:
             cards[i]->setText(text);
             QString color = kind_color(n);
             cards[i]->setStyleSheet(QString(
-                "QLabel { background: rgba(24,25,30,%1); border-radius: 6px;"
+                "QLabel { background: %1; border-radius: 6px;"
                 " padding: 8px 12px; color: %2; font-size: 9pt; }")
-                                        .arg(int(235 * alpha))
+                                        .arg(theme::overlay_scrim(int(235 * alpha)))
                                         .arg(color));
         }
     }

@@ -1,0 +1,20 @@
+[
+    {
+        "classes": [
+            {
+                "className": "QlementineStylePlugin",
+                "lineNumber": 10,
+                "object": true,
+                "qualifiedClassName": "oclero::qlementine::QlementineStylePlugin",
+                "superClasses": [
+                    {
+                        "access": "public",
+                        "name": "QStylePlugin"
+                    }
+                ]
+            }
+        ],
+        "inputFile": "QlementineStylePlugin.hpp",
+        "outputRevision": 69
+    }
+]

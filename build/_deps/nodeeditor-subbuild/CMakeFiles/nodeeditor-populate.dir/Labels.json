@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/CMakeFiles/nodeeditor-populate"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/CMakeFiles/nodeeditor-populate.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/CMakeFiles/nodeeditor-populate-complete.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/nodeeditor-populate-prefix/src/nodeeditor-populate-stamp/nodeeditor-populate-build.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/nodeeditor-populate-prefix/src/nodeeditor-populate-stamp/nodeeditor-populate-configure.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/nodeeditor-populate-prefix/src/nodeeditor-populate-stamp/nodeeditor-populate-download.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/nodeeditor-populate-prefix/src/nodeeditor-populate-stamp/nodeeditor-populate-install.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/nodeeditor-populate-prefix/src/nodeeditor-populate-stamp/nodeeditor-populate-mkdir.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/nodeeditor-populate-prefix/src/nodeeditor-populate-stamp/nodeeditor-populate-patch.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/nodeeditor-populate-prefix/src/nodeeditor-populate-stamp/nodeeditor-populate-test.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/nodeeditor-populate-prefix/src/nodeeditor-populate-stamp/nodeeditor-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"nodeeditor-populate"
+		],
+		"name" : "nodeeditor-populate"
+	}
+}

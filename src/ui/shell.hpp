@@ -25,7 +25,10 @@
 
 
 
+class QsciScintilla; // TEMP-PROF shim return type
 namespace shell {
+
+
 
 // Honours the OS "reduce motion" preference (macOS Accessibility). Qt 6 has
 // no cross-platform equivalent, so gate non-essential animation on this.
@@ -41,12 +44,16 @@ constexpr int kStripStep = 42;
 constexpr int kStripTop = 10;
 constexpr int kStripW = 52;      // strip column width
 constexpr int kStripIcon = 24;   // icon square inside a strip button
+// Top-bar toolbar sizing (Plan 07): the header is 28px tall; buttons fit
+// INSIDE it (the old 34px buttons clipped 6px top/bottom). Icons 16px in
+// 24px buttons; divider groups keep 12px gaps.
+constexpr int kToolbarBtn = 24;
+constexpr int kToolbarIcon = 16;
 enum class Sidebar_Mode { CONTROLS, FILES, LEARN, GRAPH, EXPORT, EFFECTS, SHORTCUTS };
 enum class Interaction_Mode { AUTOROTATE, MOUSE_ROTATE };
+enum class Preview_Mode { FLOAT, SPLIT, FULL };
 using editor::Editor_Theme; // the settings menu + editor skins share it
-enum class Scene_Template_Kind { COMPUTE, GRAPHICS_2D, GRAPHICS_3D };
 enum class Fx_Intensity { OFF, SUBTLE, FULL };
-enum class Fx_Kind { DEVELOP, SPRINGS, GRAIN };
 
 struct Ui_State {
     bool paused = false;
@@ -59,7 +66,11 @@ struct Ui_State {
     // EXCLUSIVE. One enum replaces the 2^n matrix of independent flags that
     // produced the "code editor vanished" bug. Toggling one preset leaves
     // the others (the restore slots below hold the Normal-state values).
-    enum class Layout_Preset { Normal, Zen, Theater, Mobile };
+    // plan9: Normal=Development (all tools), Presentation (code+preview
+    // emphasized, pipeline compact via GRAPH strip access), Pipeline
+    // (graph emphasized). Zen/Theater/Mobile stay as before.
+    enum class Layout_Preset { Normal, Zen, Theater, Mobile, Presentation,
+                               Pipeline };
     Layout_Preset layout = Layout_Preset::Normal;
     bool sidebar_open = true;   // zen hides it (derived from layout in toggles)
     Sidebar_Mode mode = Sidebar_Mode::CONTROLS;
@@ -67,10 +78,19 @@ struct Ui_State {
     float font_size = 14;
     float editor_font = 14;
     bool editor_pixel_font = false; // Sergamon pixel face for the code editor
-    bool editor_split = true;  // code | shader preview side-by-side (default)
-    bool fullscreen_view = false; // F2: viewport page (PiP hidden)
+    Preview_Mode preview = Preview_Mode::SPLIT; // default: code | preview
+    float split_left = 0.42f;   // SPLIT: editor's fraction (plan5: ~42% editor | 58% preview)
+    int snap_hover = -1;        // while dragging: 0=left 1=right -1=none (host writes, shell paints)
+    bool editor_split = true;  // code | shader preview side-by-side (legacy prefs key)
+    bool fullscreen_view = false; // F2: viewport page (preview hidden)
+    bool preview_hinted = false; // first-run drag hint shown once
+    QPoint preview_nudge;        // keyboard arrow nudges for the FLOAT frame (host consumes)
     Editor_Theme theme = Editor_Theme::DARK;
     float user_w = 0;           // dragged panel width; 0 = per-mode default
+    // Per-mode dragged widths (plan5): dragging FILES no longer rewrites
+    // CONTROLS' width. Index = Sidebar_Mode; 0 = no user width for that mode
+    // (falls back to panel_width_for's per-mode default).
+    float user_w_mode[7] = {0, 0, 0, 0, 0, 0, 0};
 
     float gif_start = 0;
     float gif_end = 5;
@@ -79,6 +99,10 @@ struct Ui_State {
     // duplicate theater/mobile slots are gone — presets are exclusive).
     float saved_ui_font = 14, saved_ed_font = 14;
     bool saved_open = true, saved_ed_open = false;
+    // plan9: preview geometry + sidebar mode are part of the restore.
+    Preview_Mode saved_preview = Preview_Mode::SPLIT;
+    float saved_split_left = 0.42f;
+    Sidebar_Mode saved_mode = Sidebar_Mode::CONTROLS;
 };
 
 // Prefs: assets/ui.prefs, same keys as the Odin app.
@@ -87,6 +111,9 @@ void prefs_save(const Ui_State& ui);
 
 QString panel_width_for(const Ui_State& ui, Sidebar_Mode mode, int display_w);
 
+// Frameless-window edge hit test (Plan 02 §4): the resize edges within a
+// 5px band of the window border, or an empty Qt::Edges set.
+Qt::Edges window_edge_at(const QPoint& window_pos);
 
 // The whole chrome widget: owns strip + panel. Sits above the SDL child
 // view via raising; the render surface fills the window behind.
@@ -135,9 +162,19 @@ public:
     void toggle_editor();
     void toggle_theater() { set_layout(Ui_State::Layout_Preset::Theater); }
     void toggle_mobile() { set_layout(Ui_State::Layout_Preset::Mobile); }
+    // plan9 workspace presets (F6 cycles Development → Presentation →
+    // Pipeline → back; also in the settings gear menu).
+    void toggle_presentation() {
+        set_layout(Ui_State::Layout_Preset::Presentation);
+    }
+    void toggle_pipeline_preset() {
+        set_layout(Ui_State::Layout_Preset::Pipeline);
+    }
+    void cycle_workspace();
     // Saves all dirty editor tabs; host wires save_all_requested to a build.
+    void editor_open_first_tab_for_test(); // TEMP-PROF shim, Plan 01 only
+    QsciScintilla* editor_current_for_test(); // TEMP-PROF shim, Plan 01 only
     int save_all() { return editor_ ? editor_->save_all() : 0; }
-    // Unsaved editor tabs (for the quit confirm).
     int dirty_count() const { return editor_ ? editor_->dirty_count() : 0; }
     // Global theme switch: re-skins the persistent chrome (topbar, strip,
     // scene list, panel frame, icons) from theme::'s active palette. The
@@ -146,10 +183,21 @@ public:
     // Bake feedback: amber border on the save button while a scene build
     // runs (host tick feeds it from Build_State).
     void set_baking(bool on);
+    void set_preview_mode(Preview_Mode mode); // single entry: topbar/F3/drop
+    QWidget* preview_overlay(); // snap-zone overlay (lazy; child of Shell)
+    QWidget* preview_frame_overlay(); // themed border frame over the SDL window
+    Preview_Mode preview_mode() const { return ui.preview; }
+    void set_preview_frame_rect(const QRect& global_rect);
+    void set_snap_hover(int zone); // 0=split 1=full -1=none; paints the zones
+    void set_split_gutter(float left_fraction); // drag path: instant follow
+    void settle_split_gutter(float left_fraction); // drop path: spring settle
+    void cycle_preview_mode(); // F3: float -> split -> full
+    // Live safelight (overdrive): the host feeds the rendered frame's
+    // average color; the chrome accents breathe with the shader.
+    void set_live_tint(const QColor& c);
     // O2: PiP context label — scene name + target size, parked on the
     // preview's top edge. Hidden when the PiP is gone (fullscreen page).
     void set_pip_overlay(const QString& text, const QRect& global_rect);
-
 signals:
     void scene_selected(int index);
     void scene_open_requested(const QString& title);
@@ -159,6 +207,9 @@ signals:
     void png_export_requested();
     // GIF: capture frames in [start,end] seconds, assemble at 17 fps.
     void gif_export_requested(float start_s, float end_s);
+    // CONTROLS: reset the camera to the autorotate default (host owns the
+    // camera state; the shell only requests).
+    void camera_reset_requested();
     void mode_changed(shell::Sidebar_Mode mode);
     // Menubar: Preferences (Cmd+,) opens the settings menu; Close (Cmd+W)
     // closes the active editor tab or hides the side panel.
@@ -187,8 +238,29 @@ private:
     // ui.user_w (persisted in prefs), so the width survives restarts.
     bool panel_resize_hit(const QPoint& global_pos) const;
     bool panel_dragging_ = false;
-
-    QPushButton* panel_edge_ = nullptr;
+    float panel_drag_width_ = 0; // live width during a sidebar drag (px readout)
+    // Preview-mode segmented buttons in the topbar (FLOAT/SPLIT/FULL).
+    QPushButton* preview_btns_[3] = {nullptr, nullptr, nullptr};
+    void update_preview_buttons();
+    // Snap-zone overlay + preview frame border (children of Shell).
+    QWidget* preview_overlay_ = nullptr;
+    bool gutter_dragging_ = false;
+    bool gutter_hot_ = false; // cursor near the gutter: band lit amber
+    QLabel* preview_hint_ = nullptr; // one-shot drag hint under the frame
+    QColor live_tint_;               // frame-average color from the host
+    QTimer* live_tint_throttle_ = nullptr; // chrome restyle at most 1x/s
+    qint64 live_tint_last_ = 0;      // ms tick of the last applied tint
+    QVariantAnimation* bake_pulse_ = nullptr;  // amber border wave while baking
+    QVariantAnimation* bake_flash_ = nullptr;  // green success flash
+    void update_live_tint_border();  // restore frame to live tint/theme
+    QLabel* snap_left_ = nullptr;
+    QLabel* snap_right_ = nullptr;
+    QLabel* preview_border_ = nullptr;   // themed 1px frame over the SDL window
+    QLabel* preview_gutter_ = nullptr;   // SPLIT drag handle (editor|preview)
+    // Preview frame affordances: 1px themed border + snap zones + gutter.
+    void update_preview_overlays();
+    bool gutter_hit(const QPoint& global_pos) const;
+    void update_split_layout(); // clamp editor width to the split fraction
     void update_panel_edge();
     QWidget* topbar();
     QWidget* strip();
@@ -226,6 +298,7 @@ private:
     int panel_page_index_[7] = {-1, -1, -1, -1, -1, -1, -1}; // Sidebar_Mode -> stack idx
     QTreeWidget* files_tree_ = nullptr;          // persistent explorer tree
     QWidget* files_panel_page_ = nullptr;        // FILES page widget
+    QPushButton* panel_edge_ = nullptr;
     QLabel* pipeline_error_bar_ = nullptr;       // last bake failure, on-editor
     QLabel* pip_overlay_ = nullptr;              // PiP context label (O2)
     void update_pipeline_error_bar();
@@ -240,9 +313,14 @@ private:
     std::vector<QPushButton*> strip_buttons_;
     editor::Editor* editor_ = nullptr;
     QWidget* editor_dock_ = nullptr; // editor + status bar
+    QString pip_style_color_;        // last state color applied to pip_overlay_
+    int pip_style_font_ = 0;         // last editor font size applied to it
+    QString pip_text_;               // last caption text (adjustSize skip)
+    int editor_w_drag_ = 0;          // editor width frozen while gutter drags
     QWidget* sdl_host_ = nullptr;
     QStackedWidget* central_ = nullptr;
     void show_editor(bool on);
+    bool panel_cursor_ = false;      // SplitHCursor active on panel divider
 };
 
 } // namespace shell

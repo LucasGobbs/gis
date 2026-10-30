@@ -8,6 +8,7 @@
 #include "learn.hpp"
 #include "i18n.hpp"
 #include "editor.hpp"
+#include "theme.hpp"
 
 #include <QApplication>
 #include <QClipboard>
@@ -35,7 +36,8 @@ static const char* kTrailDir = "assets/trails";
 // ---- Editor-theme code colors (md_learn md_code_colors parity) ----
 
 struct Code_Colors {
-    QColor text, keyword, declaration, number, known_identifier, comment, chip_bg, code_bg;
+    QColor text, keyword, declaration, number, known_identifier, comment,
+           chip_bg, code_bg, string;
 };
 
 static Code_Colors code_colors(editor::Editor_Theme theme) {
@@ -44,22 +46,26 @@ static Code_Colors code_colors(editor::Editor_Theme theme) {
         return {QColor(0xf8, 0xf8, 0xf2), QColor(0xf9, 0x26, 0x72),
                 QColor(0xa6, 0xe2, 0x2e), QColor(0xae, 0x81, 0xff),
                 QColor(0x66, 0xd9, 0xef), QColor(0x75, 0x71, 0x5e),
-                QColor(0x1e, 0x1f, 0x1a), QColor(0x27, 0x28, 0x22)};
+                QColor(0x1e, 0x1f, 0x1a), QColor(0x27, 0x28, 0x22),
+                QColor(0xe6, 0xdb, 0x74)};
     case editor::Editor_Theme::SOLARIZED:
         return {QColor(0x93, 0xa1, 0xa1), QColor(0x85, 0x99, 0x00),
                 QColor(0x26, 0x8b, 0xd2), QColor(0xd3, 0x36, 0x82),
                 QColor(0x2a, 0xa1, 0x98), QColor(0x58, 0x6e, 0x75),
-                QColor(0x07, 0x36, 0x42), QColor(0x00, 0x2b, 0x36)};
+                QColor(0x07, 0x36, 0x42), QColor(0x00, 0x2b, 0x36),
+                QColor(0x2a, 0xa1, 0x98)};
     case editor::Editor_Theme::LIGHT:
         return {QColor(0x1f, 0x20, 0x24), QColor(0x1c, 0x46, 0x9c),
                 QColor(0x78, 0x35, 0x96), QColor(0x9c, 0x42, 0x2e),
                 QColor(0x1d, 0x6b, 0x33), QColor(0x6f, 0x74, 0x7e),
-                QColor(0xf2, 0xf3, 0xf5), QColor(0xe8, 0xea, 0xef)};
-    default: // DARK = Darkroom (editor.cpp apply_skin tokens).
+                QColor(0xf2, 0xf3, 0xf5), QColor(0xe8, 0xea, 0xef),
+                QColor(0x1d, 0x6b, 0x33)};
+    default: // DARK = Darkroom (editor.cpp kEditorSkins tokens).
         return {QColor(0xd7, 0xda, 0xe2), QColor(0xe8, 0xa8, 0x57),
                 QColor(0x9e, 0xc2, 0xf2), QColor(0xf2, 0x8c, 0x7a),
-                QColor(0xc9, 0x9e, 0xf2), QColor(0x78, 0x7d, 0x88),
-                QColor(0x10, 0x11, 0x16), QColor(0x10, 0x11, 0x16)};
+                QColor(0xc9, 0x9e, 0xf2), QColor(0x7e, 0x83, 0x8e),
+                QColor(0x10, 0x11, 0x16), QColor(0x10, 0x11, 0x16),
+                QColor(0xa9, 0xd4, 0x9e)};
     }
 }
 
@@ -224,7 +230,8 @@ void Render_Ctx::flush_paragraph() {
     auto* p = new QLabel(prose.join(' '));
     p->setWordWrap(true);
     p->setTextFormat(Qt::RichText);
-    p->setStyleSheet("color: #d7dae2; font-size: 10pt; line-height: 150%;");
+    p->setStyleSheet(QString("color: %1; font-size: 10pt; line-height: 150%;")
+                         .arg(theme::text_primary()));
     p->setOpenExternalLinks(false);
     layout->addWidget(p);
     prose.clear();
@@ -238,10 +245,11 @@ void Render_Ctx::add_link(const QString& label, const QString& target) {
         chip->setCursor(Qt::PointingHandCursor);
         chip->setFlat(true);
         chip->setStyleSheet(
-            "QPushButton { text-align: left; color: #e8a857;"
-            " background: rgba(232,168,87,0.10); border: 1px solid"
-            " rgba(232,168,87,0.35); border-radius: 5px; padding: 4px 10px; }"
-            "QPushButton:hover { background: rgba(232,168,87,0.22); }");
+            QString("QPushButton { text-align: left; color: %1;"
+                    " background: rgba(232,168,87,0.10); border: 1px solid"
+                    " rgba(232,168,87,0.35); border-radius: 5px; padding: 4px 10px; }"
+                    "QPushButton:hover { background: rgba(232,168,87,0.22); }")
+                .arg(theme::safelight()));
         QObject::connect(chip, &QPushButton::clicked, view, [view = view, target] {
             view->follow_link_public(target);
         });
@@ -252,9 +260,10 @@ void Render_Ctx::add_link(const QString& label, const QString& target) {
     link->setCursor(Qt::PointingHandCursor);
     link->setFlat(true);
     link->setStyleSheet(
-        "QPushButton { text-align: left; color: #9ec2f2; background:"
-        " transparent; border: none; padding: 0; font-weight: 600; }"
-        "QPushButton:hover { color: #c9e0f9; }");
+        QString("QPushButton { text-align: left; color: %1; background:"
+                " transparent; border: none; padding: 0; font-weight: 600; }"
+                "QPushButton:hover { color: %2; }")
+            .arg(theme::info(), theme::info_rgb().lighter(130).name()));
     QObject::connect(link, &QPushButton::clicked, view, [view = view, target] {
         view->follow_link_public(target);
     });
@@ -315,11 +324,13 @@ static int cb_leave_block(MD_BLOCKTYPE type, void* detail, void* ud) {
         h->setWordWrap(true);
         h->setTextFormat(Qt::RichText);
         if (level == 1)
-            h->setStyleSheet("color: #f2f3f7; font-family: 'Sergamon'; font-size: 17pt;"
-                             " font-weight: 600; padding: 4px 0;");
+            h->setStyleSheet(QString("color: %1; font-family: 'Sergamon'; font-size: 17pt;"
+                                     " font-weight: 600; padding: 4px 0;")
+                                 .arg(theme::text_primary()));
         else
-            h->setStyleSheet("color: #d7dae2; font-size: 11pt; font-weight: 600;"
-                             " padding: 8px 0 2px 0;");
+            h->setStyleSheet(QString("color: %1; font-size: 11pt; font-weight: 600;"
+                                     " padding: 8px 0 2px 0;")
+                                 .arg(theme::text_primary()));
         ctx->layout->addWidget(h);
         break;
     }
@@ -330,7 +341,8 @@ static int cb_leave_block(MD_BLOCKTYPE type, void* detail, void* ud) {
         auto* item = new QLabel(rich);
         item->setWordWrap(true);
         item->setTextFormat(Qt::RichText);
-        item->setStyleSheet("color: #d7dae2; font-size: 10pt;");
+        item->setStyleSheet(QString("color: %1; font-size: 10pt;")
+                                .arg(theme::text_primary()));
         item->setContentsMargins(10, 0, 0, 0);
         ctx->layout->addWidget(item);
         break;
@@ -386,7 +398,7 @@ static int cb_leave_span(MD_SPANTYPE type, void* detail, void* ud) {
                                " border-radius:3px; padding:1px 4px;"
                                " color:%2;\">%3</code>")
                            .arg(ctx->colors.chip_bg.name(),
-                                QColor(0xa9, 0xd4, 0x9e).name(),
+                                ctx->colors.string.name(),
                                 code.toHtmlEscaped());
         if (ctx->in_list_item) ctx->item_text += chip;
         else ctx->prose << chip;

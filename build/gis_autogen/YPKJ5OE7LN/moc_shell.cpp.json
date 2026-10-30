@@ -1,0 +1,140 @@
+{
+    "classes": [
+        {
+            "className": "Shell",
+            "lineNumber": 120,
+            "object": true,
+            "qualifiedClassName": "shell::Shell",
+            "signals": [
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "name": "index",
+                            "type": "int"
+                        }
+                    ],
+                    "index": 0,
+                    "lineNumber": 202,
+                    "name": "scene_selected",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "name": "title",
+                            "type": "QString"
+                        }
+                    ],
+                    "index": 1,
+                    "lineNumber": 203,
+                    "name": "scene_open_requested",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "index": 2,
+                    "lineNumber": 204,
+                    "name": "pause_toggled",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "index": 3,
+                    "lineNumber": 205,
+                    "name": "save_all_requested",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "index": 4,
+                    "lineNumber": 207,
+                    "name": "png_export_requested",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "name": "start_s",
+                            "type": "float"
+                        },
+                        {
+                            "name": "end_s",
+                            "type": "float"
+                        }
+                    ],
+                    "index": 5,
+                    "lineNumber": 209,
+                    "name": "gif_export_requested",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "index": 6,
+                    "lineNumber": 212,
+                    "name": "camera_reset_requested",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "name": "mode",
+                            "type": "shell::Sidebar_Mode"
+                        }
+                    ],
+                    "index": 7,
+                    "lineNumber": 213,
+                    "name": "mode_changed",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "index": 8,
+                    "lineNumber": 216,
+                    "name": "preferences_requested",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "index": 9,
+                    "lineNumber": 217,
+                    "name": "close_requested",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "name": "on",
+                            "type": "bool"
+                        }
+                    ],
+                    "index": 10,
+                    "lineNumber": 222,
+                    "name": "popup_mouse_shield",
+                    "returnType": "void"
+                }
+            ],
+            "slots": [
+                {
+                    "access": "public",
+                    "index": 11,
+                    "lineNumber": 225,
+                    "name": "refresh_scenes",
+                    "returnType": "void"
+                }
+            ],
+            "superClasses": [
+                {
+                    "access": "public",
+                    "name": "QWidget"
+                }
+            ]
+        }
+    ],
+    "inputFile": "shell.hpp",
+    "outputRevision": 69
+}

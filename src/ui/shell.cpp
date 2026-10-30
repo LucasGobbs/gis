@@ -1,3 +1,4 @@
+#include "perf_probe.hpp" // TEMP-PROF: diagnosis instrumentation, remove after Plan 01
 // Shell implementation: title bar, strip, panels, prefs, modes.
 #include "shell.hpp"
 #include "i18n.hpp"
@@ -25,8 +26,10 @@
 #include <QMouseEvent>
 #include <QMessageBox>
 #include <QScrollArea>
+#include <QSlider>
 #include <QSpinBox>
 #include <QTimer>
+#include <QToolTip>
 #include <QWindow>
 #include "input_map.hpp"
 #include <QShortcut>
@@ -54,6 +57,22 @@
 namespace shell {
 
 static const char* kPrefsFile = "assets/ui.prefs";
+
+// TEMP-PROF shim: loads the current scene's entry file into the editor for
+// the synthetic typing probe. Plan 01 only; remove with instrumentation.
+void Shell::editor_open_first_tab_for_test() {
+    if (!editor_ || mgr_.scenes.empty()) return;
+    editor_->rescan(); // files_ must be filled or load_unit opens nothing
+    const auto& sc = mgr_.scenes[size_t(mgr_.current)];
+    const QString title = QString::fromStdString(sc.title);
+    const QString root = "src/shaders/scenes/" + title;
+    editor_->load_unit(title, root);
+}
+
+QsciScintilla* Shell::editor_current_for_test() {
+    return editor_ ? editor_->current_editor() : nullptr;
+}
+
 
 bool reduced_motion() {
 #ifdef __APPLE__
@@ -89,9 +108,26 @@ void prefs_load(Ui_State& ui) {
             ui.editor_pixel_font = value == "1";
         } else if (key == "editor_split") {
             ui.editor_split = value == "1";
+        } else if (key == "preview") {
+            int v = std::atoi(value.c_str());
+            if (v >= 0 && v <= int(Preview_Mode::FULL)) ui.preview = Preview_Mode(v);
+        } else if (key == "preview_hinted") {
+            ui.preview_hinted = value == "1";
+        } else if (key == "split_left") {
+            double v = std::atof(value.c_str());
+            if (v >= 0.2 && v <= 0.8) ui.split_left = float(v);
         } else if (key == "ui_font") {
             ui.font_size = std::clamp(std::atof(value.c_str()), 12.0, 22.0);
-        } else if (key == "panel_width") {
+        } else if (key.rfind("panel_width_", 0) == 0) { // panel_width_<mode>
+            int idx = std::atoi(key.c_str() + 12);
+            double v = std::atof(value.c_str());
+            if (idx >= 0 && idx < 7 && v >= 220)
+                ui.user_w_mode[idx] = float(v);
+        } else if (key == "layout") { // plan9: workspace preset persists
+            int v = std::atoi(value.c_str());
+            if (v >= 0 && v <= int(Ui_State::Layout_Preset::Pipeline))
+                ui.layout = Ui_State::Layout_Preset(v);
+        } else if (key == "panel_width") { // legacy global width (pre-plan5)
             double v = std::atof(value.c_str());
             if (v >= 220) ui.user_w = float(v);
         }
@@ -110,8 +146,20 @@ void prefs_save(const Ui_State& ui) {
       << "editor_font=" << int(ui.editor_font) << "\n"
       << "editor_pixel_font=" << (ui.editor_pixel_font ? 1 : 0) << "\n"
       << "editor_split=" << (ui.editor_split ? 1 : 0) << "\n"
-      << "ui_font=" << int(ui.font_size) << "\n"
-      << "panel_width=" << (ui.user_w > 0 ? buf : "") << "\n";
+      << "preview=" << int(ui.preview) << "\n"
+      << "preview_hinted=" << (ui.preview_hinted ? 1 : 0) << "\n"
+      << "split_left=" << ui.split_left << "\n"
+      << "layout=" << int(ui.layout) << "\n"
+      << "ui_font=" << int(ui.font_size) << "\n";
+    for (int i = 0; i < 7; ++i) {
+        if (ui.user_w_mode[i] > 0) {
+            char w[64];
+            std::snprintf(w, sizeof w, "%.0f", ui.user_w_mode[i]);
+            f << "panel_width_" << i << "=" << w << "\n";
+        }
+    }
+    // Legacy global width: kept as fallback for older builds reading prefs.
+    f << "panel_width=" << (ui.user_w > 0 ? buf : "") << "\n";
     // ofstream flushes on destruction; good() here catches mid-stream failure.
     if (!f.good())
         notify::notify(notify::Kind::ERROR_, "prefs: write failed mid-stream");
@@ -156,11 +204,23 @@ static QIcon tinted_icon(const char* resource, const QColor& color, int size = k
     return QIcon(out);
 }
 
-static const char* kIconColor = "#dfe0e6";
+// Icon tint follows the active skin's primary text; re-applied per theme.
+static QColor icon_tint() { return theme::text_primary(); }
 
 QString panel_width_for(const Ui_State& ui, Sidebar_Mode mode, int display_w) {
-    if (ui.user_w > 0)
-        return QString::number(std::clamp(ui.user_w, 220.0f, display_w * 0.85f), 'f', 0);
+    const int idx = int(mode);
+    if (idx >= 0 && idx < 7) {
+        if (ui.user_w_mode[idx] > 0)
+            return QString::number(std::clamp(ui.user_w_mode[idx],
+                                              float(theme::kPanelMinW),
+                                              display_w * 0.85f), 'f', 0);
+        // Legacy single dragged width (pre-plan5 prefs): still honored so
+        // the old value keeps meaning "the width I chose".
+        if (ui.user_w > 0)
+            return QString::number(std::clamp(ui.user_w,
+                                              float(theme::kPanelMinW),
+                                              display_w * 0.85f), 'f', 0);
+    }
     switch (mode) {
     case Sidebar_Mode::CONTROLS: return "300";
     case Sidebar_Mode::FILES: return "280";
@@ -228,19 +288,29 @@ static QString scene_list_items_qss() {
         .arg(theme::text_primary(), theme::safelight());
 }
 static QString topbar_qss() {
+    // Plan 07: toolbar states from theme tokens (the old rgba(232,168,87,…)
+    // amber literals broke contrast on light skins). Disabled: muted, no
+    // background; pressed: deeper wash than hover; active: hover wash +
+    // safelight border.
     return QString("QWidget { background: %1; }"
-                   "QPushButton { background: rgba(255,255,255,0.05); border: none;"
-                   " border-radius: 5px; padding: 4px 12px; color: %2;"
+                   "QPushButton { background: transparent; border: none;"
+                   " border-radius: 5px; padding: 2px 8px; color: %2;"
                    " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
-                   "QPushButton:hover { background: rgba(255,255,255,0.12); }"
-                   "QPushButton:focus { border: 1px solid %3; }")
-        .arg(theme::surface_bench(), theme::text_primary(), theme::safelight());
+                   "QPushButton[hovered=\"true\"]:enabled { background: %3; }"
+                   "QPushButton:pressed { background: %4; }"
+                   "QPushButton:disabled { color: %5; }"
+                   "QPushButton[active=\"true\"] { background: %3;"
+                   " border: 1px solid %6; }"
+                   "QPushButton:focus { border: 1px solid %6; }")
+        .arg(theme::surface_bench(), theme::text_primary(),
+             theme::hover_overlay(), theme::pressed_overlay(),
+             theme::text_muted(), theme::safelight());
 }
 static QString strip_qss() {
     return QString("QWidget { background: %1; }"
                    "QPushButton { border: 1px solid transparent;"
                    " background: transparent; border-radius: 8px; }"
-                   "QPushButton:hover { background: rgba(255,255,255,0.07); }"
+                   "QPushButton[hovered=\"true\"] { background: rgba(255,255,255,0.07); }"
                    "QPushButton[active=\"true\"] {"
                    " background: rgba(255,255,255,0.10); }"
                    "QPushButton:focus { border: 1px solid %2; }")
@@ -250,7 +320,7 @@ static QString panel_qss() {
     return QString("QWidget { background: %1; color: %2; font-size: 9pt; }"
                    "QPushButton { background: rgba(255,255,255,0.06); border: none;"
                    " border-radius: 4px; padding: 4px 8px; }"
-                   "QPushButton:hover { background: rgba(255,255,255,0.12); }"
+                   "QPushButton[hovered=\"true\"] { background: rgba(255,255,255,0.12); }"
                    "QLabel[caption=\"true\"] { color: %3; font-weight: 700;"
                    " letter-spacing: 1px; }"
                    "QCheckBox, QRadioButton { color: %2; spacing: 7px; }"
@@ -263,12 +333,12 @@ static QString panel_qss() {
                    " border: none; border-radius: 4px; padding: 3px 6px;"
                    " selection-background-color: %4; selection-color: %5; }")
         .arg(theme::surface_panel(), theme::text_primary(), theme::text_muted(),
-             theme::safelight(), "#131418", theme::control_border());
+             theme::safelight(), theme::surface_workspace(), theme::control_border());
 }
 static QString panel_edge_qss() {
     return QString("QPushButton#panelEdge { background: rgba(232,168,87,0.14);"
                    " border: none; border-radius: 3px; color: %1; font-size: 9pt; }"
-                   "QPushButton#panelEdge:hover { background: rgba(232,168,87,0.38); }")
+                   "QPushButton#panelEdge[hovered=\"true\"] { background: rgba(232,168,87,0.38); }")
         .arg(theme::safelight());
 }
 
@@ -296,9 +366,13 @@ Shell::Shell(QWidget* parent, scene::Scene_Manager& mgr,
     scene_list_layout_->setContentsMargins(10, 8, 10, 10);
     scene_list_layout_->setSpacing(2);
     // OVERLAY: floats above everything (top-right under the top bar) and
-    // pushes NOTHING down. Qt::ToolTip keeps it click-through-free without
-    // stealing focus; parent Shell keeps it inside our frameless window.
-    scene_list_->setWindowFlags(Qt::Widget);
+    // pushes NOTHING down. Plan 07 P2 fix: as a plain child widget it hid
+    // UNDER the native SDL NSWindow (NSWindowAbove) whenever it overlapped
+    // the preview — the right half of the window, exactly where it opens.
+    // Qt::ToolTip + StaysOnTop = a real top-level window above the SDL
+    // child, like the toast layer; no focus steal, no taskbar entry.
+    scene_list_->setWindowFlags(Qt::ToolTip | Qt::FramelessWindowHint |
+                                Qt::WindowStaysOnTopHint);
     scene_list_->setAutoFillBackground(true);
     scene_list_->hide();
     auto* body = new QHBoxLayout();
@@ -360,10 +434,30 @@ Shell::Shell(QWidget* parent, scene::Scene_Manager& mgr,
         for (const QKeySequence& seq : seqs)
             connect(new QShortcut(seq, this), &QShortcut::activated, this, slot);
     };
-    bind_action("toggle_zen", "F1", &Shell::toggle_zen);
-    bind_action("toggle_editor", "F2", &Shell::toggle_editor);
     bind_action("toggle_theater", "F4", &Shell::toggle_theater);
     bind_action("toggle_mobile", "F5", &Shell::toggle_mobile);
+    bind_action("cycle_workspace", "F6", &Shell::cycle_workspace);
+    bind_action("toggle_editor", "F2", &Shell::toggle_editor);
+    bind_action("cycle_preview", "F3", &Shell::cycle_preview_mode);
+    // FLOAT geometry by keyboard (critique P2): arrows nudge the floating
+    // frame; the host consumes ui.preview_nudge in its tick and moves the
+    // real rect (persisted via pip_save_prefs on the next drag/save).
+    const Qt::Key nudge_keys[4] = {Qt::Key_Left, Qt::Key_Right, Qt::Key_Up,
+                                   Qt::Key_Down};
+    const QPoint nudge_dirs[4] = {{-8, 0}, {8, 0}, {0, -8}, {0, 8}};
+    for (int d = 0; d < 4; ++d) {
+        auto* sc = new QShortcut(QKeySequence(int(nudge_keys[d]) | Qt::META),
+                                 this);
+        connect(sc, &QShortcut::activated, this, [this, delta = nudge_dirs[d]] {
+            if (ui.preview != Preview_Mode::FLOAT) return;
+            ui.preview_nudge += delta;
+        });
+    }
+    // SPLIT adaptation: the code editor must NOT keep the whole viewport
+    // width while the preview docks beside it; the max-width clamp re-runs
+    // on every mode/preview change and window resize.
+    connect(this, &Shell::mode_changed, this,
+            [this](shell::Sidebar_Mode) { update_split_layout(); });
     // Cmd+1..5: sidebar modes (files, graph, controls, export, commands),
     // in strip order. Same show_mode path as a strip click.
     const Sidebar_Mode mode_keys[5] = {
@@ -383,7 +477,21 @@ Shell::Shell(QWidget* parent, scene::Scene_Manager& mgr,
     // Outside-click dismissal for the floating scene list: the list is a
     // plain overlay (not a native popup), so a press on ANY other widget
     // must close it. Application-level filter watches every press.
+    // Also drives the side-panel divider's hover cursor: the divider band
+    // sits INSIDE the QScrollArea, whose viewport consumes mouse moves —
+    // Shell::mouseMoveEvent never sees that hover. The app filter does.
     qApp->installEventFilter(this);
+    // Preview segmented control + overlays mirror the persisted mode.
+    update_preview_buttons();
+    update_preview_overlays();
+    // plan9: a persisted non-Normal workspace re-applies on boot (the ctor
+    // built Normal's chrome; set_layout saves the Normal values and shapes
+    // the workspace). Normal needs nothing.
+    if (ui.layout != Ui_State::Layout_Preset::Normal) {
+        const auto persisted = ui.layout;
+        ui.layout = Ui_State::Layout_Preset::Normal; // force the shape pass
+        set_layout(persisted);
+    }
 }
 
 
@@ -395,23 +503,103 @@ void Shell::resizeEvent(QResizeEvent* event) {
     // the user-width clamp needs the refresh; the default per-mode widths
     // are constants. Keep apply_mode out of the resize path.
     update_panel_edge();
+    update_preview_overlays(); // snap zones follow the window
+    update_split_layout(); // editor clamp tracks the new viewport width
 }
 
-// ---- Panel resize (drag the right panel's left edge) ----
+// Frameless resize bands (Plan 02 §4): 5px inside every window edge.
+// Window-local coords; the caller converts from global.
+Qt::Edges window_edge_at(const QPoint& window_pos) {
+    constexpr int kEdge = 5;
+    const QWidget* w = QApplication::activeWindow();
+    if (!w) return {};
+    const QRect r = w->rect();
+    if (!r.contains(window_pos)) return {}; // outside (incl. titlebar band above)
+    Qt::Edges edges;
+    if (window_pos.x() < kEdge) edges |= Qt::LeftEdge;
+    if (window_pos.x() >= r.width() - kEdge) edges |= Qt::RightEdge;
+    if (window_pos.y() < kEdge) edges |= Qt::TopEdge;
+    if (window_pos.y() >= r.height() - kEdge) edges |= Qt::BottomEdge;
+    return edges;
+}
 
-// The drag zone is a 6px band on the panel's left edge (inside the panel
-// AND the window edge beside it, so the grab is forgiving).
+// ---- Side panel ("MenubarDetails": the panel that opens to the right of
+// the icon strip — CONTROLS/FILES/GRAPH/... — when a strip button is
+// clicked; this name maps the Plan 02 task wording onto the code) ----
+
+// The drag zone is an 8px band on the panel's left edge (inside the panel
+// AND the window edge beside it, so the grab is forgiving). 8px unifies the
+// grab difficulty with the preview gutter (critique P2: 6 vs 10 bands).
 bool Shell::panel_resize_hit(const QPoint& global_pos) const {
     if (!panel_ || !panel_->isVisible() || ui.mode == Sidebar_Mode::GRAPH)
         return false;
     const int edge = panel_->mapToGlobal(QPoint(0, 0)).x();
-    return qAbs(global_pos.x() - edge) <= 3;
+    return qAbs(global_pos.x() - edge) <= 4;
+}
+
+// Snap zones in VIEWPORT coords (the space between sidebar and window
+// right): left half = split dock, whole space = fullscreen dock. Global
+// rects so the host can hit-test the drag in the same space.
+static QRect viewport_global_rect(const Shell* shell) {
+    QWidget* vp = shell->viewport();
+    return QRect(vp->mapToGlobal(QPoint(0, 0)), vp->size());
+}
+
+// SPLIT gutter: hit band around the editor|preview boundary line.
+bool Shell::gutter_hit(const QPoint& global_pos) const {
+    if (ui.preview != Preview_Mode::SPLIT || ui.fullscreen_view || !viewport())
+        return false;
+    const QRect vp_g = viewport_global_rect(this);
+    if (!vp_g.contains(global_pos)) return false;
+    const int split_x = vp_g.left() + int(vp_g.width() * ui.split_left);
+    return qAbs(global_pos.x() - split_x) <= 4; // 8px grip: matches kPipEdge
+}
+
+// SPLIT: the editor keeps only its fraction of the viewport (the SDL frame
+// covers the rest). Other modes release the clamp.
+void Shell::update_split_layout() {
+    if (!editor_dock_) return;
+    if (ui.preview != Preview_Mode::SPLIT || ui.fullscreen_view) {
+        editor_dock_->setMaximumWidth(QWIDGETSIZE_MAX);
+        editor_w_drag_ = 0;
+        return;
+    }
+    QWidget* vp = viewport();
+    if (!vp) return;
+    const int editor_w = std::clamp(int(vp->width() * ui.split_left),
+                                    theme::kEditorMinW,
+                                    vp->width() - theme::kEditorMinW);
+    // Gutter drag: freeze the editor's width for the whole gesture (Plan 04
+    // Task A). Rewriting maximumWidth per mouse-move re-lays-out and repaints
+    // QScintilla ~120x/s — the drag stutter. The Preview itself keeps moving:
+    // the host's per-tick setFrame covers the freed space immediately.
+    // Commit happens in settle_split_gutter; a window resize mid-drag still
+    // clamps through the same path (frozen value recomputed from vp width).
+    if (gutter_dragging_) {
+        if (editor_w_drag_ == 0)
+            editor_w_drag_ = std::clamp(editor_dock_->width(),
+                                        theme::kEditorMinW,
+                                        vp->width() - theme::kEditorMinW);
+        editor_dock_->setMaximumWidth(editor_w_drag_);
+        editor_dock_->setMinimumWidth(std::min(editor_w_drag_,
+                                               theme::kEditorMinW));
+        return;
+    }
+    editor_w_drag_ = 0;
+    editor_dock_->setMaximumWidth(editor_w);
+    editor_dock_->setMinimumWidth(std::min(editor_w, theme::kEditorMinW));
 }
 
 void Shell::mousePressEvent(QMouseEvent* event) {
     const QPoint gp = event->globalPosition().toPoint();
     if (event->button() == Qt::LeftButton && panel_resize_hit(gp)) {
         panel_dragging_ = true;
+        panel_drag_width_ = panel_->width();
+        event->accept();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && gutter_hit(gp)) {
+        gutter_dragging_ = true;
         event->accept();
         return;
     }
@@ -424,7 +612,26 @@ void Shell::mousePressEvent(QMouseEvent* event) {
 // bar's styled background ACCEPTS background presses, so Shell::
 // mousePressEvent never saw them; from the filter, startSystemMove works.
 // Buttons inside the bar accept their own presses (no filter interference).
+// Plan 07 P2 fix: QlementineStyle caches the QSS :hover wash — after the
+// first click the background stays lit forever (strip, topbar, traffic
+// lights… every icon button). Driving hover through a PROPERTY instead of
+// the pseudo-class forces a repolish on Enter/Leave, so the wash is painted
+// and cleared deterministically.
+static void set_btn_hovered(QPushButton* btn, bool hovered) {
+    if (btn->property("hovered").toBool() == hovered) return;
+    btn->setProperty("hovered", hovered);
+    btn->style()->unpolish(btn);
+    btn->style()->polish(btn);
+    btn->update();
+}
+
 bool Shell::eventFilter(QObject* watched, QEvent* event) {
+    // Hover tracking for every QPushButton in the shell (app-level filter
+    // sees Enter/Leave for all of them).
+    if (event->type() == QEvent::Enter || event->type() == QEvent::Leave) {
+        if (auto* btn = qobject_cast<QPushButton*>(watched))
+            set_btn_hovered(btn, event->type() == QEvent::Enter);
+    }
     // Outside-click dismissal: any press NOT inside the open scene list
     // (and not on the selector that toggles it) closes the list. The
     // filter is application-level (installed in the ctor).
@@ -439,12 +646,95 @@ bool Shell::eventFilter(QObject* watched, QEvent* event) {
                            (hit && hit->parentWidget() == selector_btn_);
         if (!inside_list && !on_selector) show_scene_list(false);
     }
-    if (watched == topbar_ && event->type() == QEvent::MouseButtonPress) {
-        auto* me = static_cast<QMouseEvent*>(event);
-        if (me->button() == Qt::LeftButton) {
-            QWidget* hit = topbar_->childAt(me->position().toPoint());
-            if (!hit && windowHandle() && windowHandle()->startSystemMove())
+    // Frameless window: no native resize bands left — the filter supplies
+    // them. A press within 5px of a window edge starts the NATIVE system
+    // resize for that edge; hover shows the matching resize cursor. Runs
+    // on EVERY widget (app-level filter) so edges work over the editor,
+    // the SDL child's Qt-side siblings and the chrome alike.
+    if (event->type() == QEvent::MouseButtonPress &&
+        static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+        const QPoint gp = static_cast<QMouseEvent*>(event)
+                              ->globalPosition()
+                              .toPoint();
+        if (Qt::Edges edges = window_edge_at(mapFromGlobal(gp));
+            edges != Qt::Edges()) {
+            if (windowHandle() && windowHandle()->startSystemResize(edges))
+                return true; // native resize owns the gesture
+        }
+    }
+    if (event->type() == QEvent::MouseMove) {
+        const QPoint gp = static_cast<QMouseEvent*>(event)
+                              ->globalPosition()
+                              .toPoint();
+        const Qt::Edges edges = window_edge_at(mapFromGlobal(gp));
+        const bool over_chrome = watched == topbar_;
+        if (edges != Qt::Edges()) {
+            const Qt::CursorShape shape =
+                (edges & (Qt::LeftEdge | Qt::RightEdge)) &&
+                        !(edges & (Qt::TopEdge | Qt::BottomEdge))
+                    ? Qt::SizeHorCursor
+                    : (edges & (Qt::TopEdge | Qt::BottomEdge)) &&
+                              !(edges & (Qt::LeftEdge | Qt::RightEdge))
+                          ? Qt::SizeVerCursor
+                          : Qt::SizeFDiagCursor;
+            setCursor(shape);
+        } else if (over_chrome || watched == this) {
+            unsetCursor();
+        }
+    }
+    // Side-panel divider hover: SplitHCursor over the 8px grab band. Lives
+    // HERE because the panel's scroll viewport eats mouse moves before
+    // Shell::mouseMoveEvent would see them (Plan 02 §2).
+    if (panel_ && (event->type() == QEvent::MouseMove ||
+                   event->type() == QEvent::Leave)) {
+        QWidget* panel_vp = panel_->viewport();
+        if (watched == panel_vp || watched == panel_) {
+            const bool leave = event->type() == QEvent::Leave;
+            const QPoint gp = leave
+                                  ? QPoint(-1, -1)
+                                  : static_cast<QMouseEvent*>(event)
+                                        ->globalPosition()
+                                        .toPoint();
+            const bool on_band = !leave && panel_resize_hit(gp);
+            if (panel_cursor_ != on_band) {
+                panel_cursor_ = on_band;
+                panel_->setCursor(on_band ? Qt::SplitHCursor
+                                          : Qt::ArrowCursor);
+            }
+        }
+    }
+    // Window drag + double-click maximize (Plan 02 §3/§4). The filter runs
+    // on the TOPBAR only: childAt() reports the interactive child under the
+    // cursor; empty regions hit the bar itself. A press on the bar (any
+    // non-interactive area) starts the NATIVE system move — no geometry
+    // math, no coordinates to break per-DPI. Double-click on the same
+    // background toggles maximize/restore through the platform path
+    // (showMaximized/showNormal preserve the pre-maximize geometry).
+    if (watched == topbar_) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto* me = static_cast<QMouseEvent*>(event);
+            if (me->button() == Qt::LeftButton &&
+                !topbar_->childAt(me->position().toPoint()) &&
+                windowHandle() && windowHandle()->startSystemMove())
                 return true; // drag consumed the press
+        }
+        if (event->type() == QEvent::MouseButtonDblClick) {
+            auto* me = static_cast<QMouseEvent*>(event);
+            if (me->button() == Qt::LeftButton &&
+                !topbar_->childAt(me->position().toPoint())) {
+                // Never stack a maximize on top of an already-fullscreen
+                // state; restore returns to the pre-maximize geometry
+                // (tracked by the platform window, no manual bookkeeping).
+                if (isMaximized())
+                    showNormal();
+                else if (windowHandle() &&
+                         windowHandle()->windowStates() &
+                             Qt::WindowFullScreen)
+                    ; // fullscreen (F4/theater): leave it alone
+                else
+                    showMaximized();
+                return true;
+            }
         }
     }
     return QWidget::eventFilter(watched, event);
@@ -456,14 +746,41 @@ void Shell::mouseMoveEvent(QMouseEvent* event) {
         // Right edge grows leftward: width = window right - cursor.
         const int win_right = mapToGlobal(QPoint(width(), 0)).x();
         float w = float(win_right - gp.x());
-        w = std::clamp(w, 220.0f, width() * 0.85f);
-        ui.user_w = w; // persisted by prefs_save on quit/settings
+        w = std::clamp(w, float(theme::kPanelMinW), width() * 0.85f);
+        const int idx = int(ui.mode);
+        if (idx >= 0 && idx < 7) ui.user_w_mode[idx] = w; // per-mode (plan5)
+        ui.user_w = w; // legacy key stays in sync for older builds
         panel_->setFixedWidth(int(w));
+        panel_drag_width_ = w;
+        // Live size readout where the cursor is: the number IS the
+        // affordance (drag feels like an editorial resize tool).
+        QToolTip::showText(gp + QPoint(12, 0),
+                           QString("%1 px").arg(int(w)), panel_);
         event->accept();
         return;
     }
-    // Affordance: stretch cursor on the hit band.
-    setCursor(panel_resize_hit(gp) ? Qt::SplitHCursor : Qt::ArrowCursor);
+    if (gutter_dragging_) {
+        // Re-fraction the split from the cursor position in the viewport.
+        const QRect vp_g = viewport_global_rect(this);
+        float f = float(gp.x() - vp_g.left()) / float(vp_g.width());
+        set_split_gutter(f);
+        QToolTip::showText(gp + QPoint(12, 0),
+                           QString("%1 %").arg(int(f * 100 + 0.5f)), viewport());
+        event->accept();
+        return;
+    }
+    // Gutter hover affordance: the band brightens when the cursor is near,
+    // so the drag affordance is visible BEFORE the first grab (the cursor
+    // alone is a weak signal on a dark theme).
+    bool near_gutter = gutter_hit(gp) || panel_resize_hit(gp);
+    if (gutter_hot_ != near_gutter) {
+        gutter_hot_ = near_gutter;
+        if (preview_gutter_)
+            preview_gutter_->setStyleSheet(
+                QString("QLabel { background: %1; border-radius: 2px; }")
+                    .arg(near_gutter ? theme::safelight() : theme::frame_border()));
+    }
+    setCursor(near_gutter ? Qt::SplitHCursor : Qt::ArrowCursor);
     QWidget::mouseMoveEvent(event);
 }
 
@@ -472,6 +789,14 @@ void Shell::mouseReleaseEvent(QMouseEvent* event) {
     if (panel_dragging_) {
         prefs_save(ui);
         panel_dragging_ = false;
+        QToolTip::hideText();
+        event->accept();
+        return;
+    }
+    if (gutter_dragging_) {
+        gutter_dragging_ = false; // freeze cleared in settle_split_gutter
+        editor_w_drag_ = 0;       // commit the frozen width at drag end
+        settle_split_gutter(ui.split_left); // damped spring + persist once
         event->accept();
         return;
     }
@@ -498,6 +823,7 @@ void Shell::closeEvent(QCloseEvent* event) {
 
 void Shell::leaveEvent(QEvent* event) {
     if (!panel_dragging_) unsetCursor();
+    panel_cursor_ = false; // re-arm the divider hover for the next entry
     QWidget::leaveEvent(event);
 }
 
@@ -568,10 +894,11 @@ void Shell::rebuild_selector_menu() {
             emit scene_selected(int(i));
         });
     }
-    if (selector_btn_)
+    if (selector_btn_) {
         selector_btn_->setText(mgr_.scenes.empty()
                                    ? "?"
                                    : QString::fromStdString(mgr_.scenes[size_t(mgr_.current)].title));
+    }
 }
 
 void Shell::refresh_scenes() {
@@ -620,9 +947,15 @@ void Shell::show_scene_list(bool on) {
     scene_list_layout_->addStretch(1);
     scene_list_->setFixedHeight(std::min(
         420, int(scene_list_->sizeHint().height())));
-    // Overlay geometry: right-aligned under the top bar, above everything.
-    scene_list_->setParent(this);
-    scene_list_->setGeometry(width() - 280, kTopbarH, 280,
+    // Overlay geometry: right-aligned under the selector button, above
+    // everything. Plan 07 P2 fix: scene_list_ is a Qt::ToolTip TOP-LEVEL
+    // window (floats over the native SDL child), so setGeometry takes
+    // GLOBAL screen coords — the old local (width()-280, kTopbarH) put it
+    // behind the macOS menu bar whenever the window wasn't at (0,0),
+    // which read as "the selector does nothing".
+    const QPoint list_global =
+        mapToGlobal(QPoint(width() - 280, kTopbarH));
+    scene_list_->setGeometry(list_global.x(), list_global.y(), 280,
                              scene_list_->height());
     scene_list_->raise();
     scene_list_->show();
@@ -633,16 +966,95 @@ void Shell::show_scene_list(bool on) {
 QWidget* Shell::topbar() {
     if (topbar_) return topbar_;
     topbar_ = new QWidget(this);
-    topbar_->installEventFilter(this); // background press = window drag
+    topbar_->setObjectName("topbar"); // test + a11y discovery anchor
     topbar_->setFixedHeight(kTopbarH);
     topbar_->setStyleSheet(topbar_qss());
     auto* layout = new QHBoxLayout(topbar_);
-    // Left margin clears the NATIVE traffic lights (~70px from the window
-    // edge under the transparent title bar); the window supplies them now.
-    layout->setContentsMargins(80, 0, 12, 0);
+    // OUR traffic lights (frameless window): close/minimize/zoom ride the
+    // left edge — the 80px reserve for the native lights is gone.
+    // Close routes through Shell::closeEvent (dirty-tab confirm); minimize
+    // and zoom go through the native window-state APIs.
+    layout->setContentsMargins(12, 0, 12, 0);
     layout->setSpacing(8);
+    auto* lights = new QWidget(topbar_);
+    lights->setObjectName("trafficLights");
+    auto* lights_layout = new QHBoxLayout(lights);
+    lights_layout->setContentsMargins(0, 0, 0, 0);
+    lights_layout->setSpacing(8);
+    const struct {
+        const char* color;
+        const char* tip;
+        const char* acc;
+    } lights_def[3] = {
+        {"#ff5f57", "close window", "close window"},
+        {"#febc2e", "minimize", "minimize"},
+        {"#28c840", "zoom", "zoom"},
+    };
+    for (int i = 0; i < 3; ++i) {
+        auto* light = new QPushButton(lights);
+        light->setFixedSize(12, 12);
+        light->setCursor(Qt::PointingHandCursor);
+        light->setToolTip(i18n::tr(lights_def[i].tip));
+        light->setAccessibleName(i18n::tr(lights_def[i].acc));
+        light->setFocusPolicy(Qt::NoFocus);
+        light->setStyleSheet(
+            QString("QPushButton { background: %1; border: 1px solid"
+                    " rgba(0,0,0,0.22); border-radius: 6px; }"
+                    "QPushButton[hovered=\"true\"] { border: 1px solid rgba(0,0,0,0.36); }")
+                .arg(lights_def[i].color));
+        switch (i) {
+        case 0:
+            connect(light, &QPushButton::clicked, this, &Shell::close);
+            break;
+        case 1:
+            connect(light, &QPushButton::clicked, this,
+                    [this] { windowHandle() ? windowHandle()->showMinimized()
+                                            : (void)0; });
+            break;
+        case 2:
+            connect(light, &QPushButton::clicked, this, [this] {
+                if (isMaximized())
+                    showNormal();
+                else
+                    showMaximized();
+            });
+            break;
+        }
+        lights_layout->addWidget(light);
+    }
+    layout->addWidget(lights);
+    layout->addSpacing(10);
 
-    selector_btn_ = new QPushButton("…", topbar_);
+    // ---- GROUP: project (scene selector + new scene) ----
+    // Selector: scene list popup; the button IS the current scene's name.
+    // Plan 07 P2 (user direction): no icon — the title in a larger mono
+    // voice with the safelight accent carries it (colorize: the amber marks
+    // the one primary control of the bar).
+    selector_btn_ = new QPushButton(topbar_);
+    selector_btn_->setObjectName("sceneSelector");
+    selector_btn_->setMinimumHeight(kToolbarBtn + 4);
+    selector_btn_->setMaximumHeight(kToolbarBtn + 4);
+    selector_btn_->setCursor(Qt::PointingHandCursor);
+    selector_btn_->setToolTip(i18n::tr("scenes"));
+    selector_btn_->setAccessibleName(i18n::tr("scenes"));
+    // Initial title: the ctor's refresh_scenes ran before this widget
+    // existed; the host's scene_switched → refresh_scenes keeps it current.
+    if (!mgr_.scenes.empty())
+        selector_btn_->setText(
+            QString::fromStdString(mgr_.scenes[size_t(mgr_.current)].title));
+    selector_btn_->setStyleSheet(
+        QString("QPushButton#sceneSelector { background: transparent;"
+                " border: 1px solid %1; border-radius: 6px; padding: 2px 14px;"
+                " color: %2; font-family: 'JetBrains Mono', monospace;"
+                " font-size: 11pt; font-weight: 600; }"
+                "QPushButton#sceneSelector[hovered=\"true\"] {"
+                " background: %3; border-color: %4; }"
+                "QPushButton#sceneSelector:pressed { background: %5;"
+                " border-color: %4; }"
+                "QPushButton#sceneSelector:focus { border-color: %4; }")
+            .arg(theme::control_border(), theme::safelight(),
+                 theme::hover_overlay(), theme::safelight(),
+                 theme::pressed_overlay()));
     connect(selector_btn_, &QPushButton::clicked, this, [this] {
         // Lazy menu: a QMenu alive at shell.show() gets polished by
         // Qlementine, whose polishMenu has a use-after-free when the menu
@@ -660,18 +1072,71 @@ QWidget* Shell::topbar() {
     layout->addWidget(selector_btn_);
 
     auto* new_btn = new QPushButton(i18n::tr("+ new"), topbar_);
+    new_btn->setIcon(tinted_icon(":/qlementine/icons/24/document/new.svg",
+                                 icon_tint(), kToolbarIcon));
+    new_btn->setIconSize(QSize(kToolbarIcon, kToolbarIcon));
+    new_btn->setToolTip(i18n::tr("new scene"));
+    new_btn->setAccessibleName(i18n::tr("new scene"));
+    new_btn->setFocusPolicy(Qt::TabFocus);
     connect(new_btn, &QPushButton::clicked, this, &Shell::create_scene_dialog);
     layout->addWidget(new_btn);
-    layout->addStretch(1);
+
+    // ---- GROUP divider: project | shader workflow ----
+    auto* divider_1 = new QFrame(topbar_);
+    divider_1->setFrameShape(QFrame::VLine);
+    divider_1->setFixedHeight(16);
+    divider_1->setStyleSheet(
+        QString("QFrame { color: %1; }").arg(theme::control_border()));
+    layout->addSpacing(6);
+    layout->addWidget(divider_1);
+    layout->addSpacing(6);
+
+    // ---- GROUP: shader workflow (preview modes, save, run/pause) ----
+    // Preview mode segmented control: FLOAT | SPLIT | FULL. One state,
+    // three doors: topbar buttons, F3 cycle, drag-drop snap all land here.
+    const Preview_Mode p_modes[3] = {Preview_Mode::FLOAT, Preview_Mode::SPLIT,
+                                     Preview_Mode::FULL};
+    // Icon semantics per user spec (Plan 07 P2): Qlementine 16px set (the
+    // 24px set lacks these three; icon size is 16 → crisp):
+    //   FLOAT  → action/ungroup.svg             (free/unattached frame)
+    //   SPLIT  → action/separate-horizontal.svg (two panes side-by-side)
+    //   FULL   → action/fullscreen.svg          (expand to whole canvas)
+    const char* p_icons[3] = {
+        ":/qlementine/icons/16/action/ungroup.svg",
+        ":/qlementine/icons/16/action/separate-horizontal.svg",
+        ":/qlementine/icons/16/action/fullscreen.svg",
+    };
+    // plan10 tooltips: verb + destination, no "preview:" prefix noise —
+    // the segmented control IS the preview control.
+    const char* p_tips[3] = {"float the preview", "dock preview: split",
+                             "dock preview: full"};
+    for (int i = 0; i < 3; ++i) {
+        auto* btn = new QPushButton(topbar_);
+        btn->setIcon(tinted_icon(p_icons[i], icon_tint(), kToolbarIcon));
+        btn->setIconSize(QSize(kToolbarIcon, kToolbarIcon));
+        // Fused segmented look: adjacent, shared hover; fits the 28px bar.
+        btn->setFixedSize(kToolbarBtn + 4, kToolbarBtn);
+        btn->setToolTip(i18n::tr(p_tips[i]));
+        btn->setAccessibleName(i18n::tr(p_tips[i]));
+        btn->setFocusPolicy(Qt::TabFocus);
+        btn->setProperty("active", ui.preview == p_modes[i]);
+        connect(btn, &QPushButton::clicked, this,
+                [this, mode = p_modes[i]] { set_preview_mode(mode); });
+        preview_btns_[i] = btn;
+        layout->addWidget(btn, 0, Qt::AlignVCenter);
+    }
 
     // Save + pause: window-level actions in the chrome (the strip keeps
     // only mode navigation + settings). Cmd+S lives in the native File menu
     // (menubar.cpp) — no in-window QShortcut, or the key would fire twice.
+    // Icon: action/save-all only ships at 16px (upscaled = blur); the 24px
+    // action/save glyph is the crisp same-verb choice.
+    layout->addSpacing(8);
     save_btn_ = new QPushButton(topbar_);
-    save_btn_->setIcon(tinted_icon(":/qlementine/icons/24/action/save-all.svg",
-                                   QColor(kIconColor)));
-    save_btn_->setIconSize(QSize(kStripIcon, kStripIcon));
-    save_btn_->setFixedSize(kStripButton, kStripButton);
+    save_btn_->setIcon(tinted_icon(":/qlementine/icons/24/action/save.svg",
+                                   icon_tint(), kToolbarIcon));
+    save_btn_->setIconSize(QSize(kToolbarIcon, kToolbarIcon));
+    save_btn_->setFixedSize(kToolbarBtn, kToolbarBtn);
     save_btn_->setToolTip(i18n::tr("save all (Cmd+S)"));
     save_btn_->setAccessibleName(i18n::tr("save all (Cmd+S)"));
     save_btn_->setFocusPolicy(Qt::TabFocus);
@@ -683,9 +1148,9 @@ QWidget* Shell::topbar() {
 
     pause_btn_ = new QPushButton(topbar_);
     pause_btn_->setIcon(tinted_icon(":/qlementine/icons/24/media/pause.svg",
-                                    QColor(kIconColor)));
-    pause_btn_->setIconSize(QSize(kStripIcon, kStripIcon));
-    pause_btn_->setFixedSize(kStripButton, kStripButton);
+                                    icon_tint(), kToolbarIcon));
+    pause_btn_->setIconSize(QSize(kToolbarIcon, kToolbarIcon));
+    pause_btn_->setFixedSize(kToolbarBtn, kToolbarBtn);
     pause_btn_->setToolTip(i18n::tr("pause"));
     pause_btn_->setAccessibleName(i18n::tr("pause"));
     pause_btn_->setFocusPolicy(Qt::TabFocus);
@@ -694,13 +1159,15 @@ QWidget* Shell::topbar() {
         pause_btn_->setIcon(tinted_icon(
             ui.paused ? ":/qlementine/icons/24/media/play.svg"
                       : ":/qlementine/icons/24/media/pause.svg",
-            QColor(kIconColor)));
+            icon_tint(), kToolbarIcon));
         pause_btn_->setToolTip(ui.paused ? i18n::tr("play") : i18n::tr("pause"));
         pause_btn_->setAccessibleName(ui.paused ? i18n::tr("play")
                                                  : i18n::tr("pause"));
         emit pause_toggled();
     });
     layout->addWidget(pause_btn_);
+
+    layout->addStretch(1); // window drag area: everything right of the group
     return topbar_;
 }
 
@@ -726,21 +1193,41 @@ QWidget* Shell::strip() {
         Sidebar_Mode::FILES, Sidebar_Mode::GRAPH,     Sidebar_Mode::CONTROLS,
         Sidebar_Mode::EXPORT, Sidebar_Mode::SHORTCUTS,
     };
+    // Plan 07 P2: REST/SELECTED icon pairs. apply_mode swaps to the
+    // selected glyph when the mode is the active one and back otherwise —
+    // the old code only restyled via QSS [active] and never reset icons,
+    // so the folder-open glyph stuck after switching away.
+    //   FILES    → file/folder.svg        ↔ file/folder-open.svg
+    //   GRAPH    → file/vector.svg (16px: the "vector" render-graph glyph)
+    //   CONTROLS → navigation/sliders-horizontal.svg (same)
+    //   EXPORT   → action/download.svg (same)
+    //   SHORTCUTS→ hardware/keyboard.svg (same)
     const char* icons[5] = {
         ":/qlementine/icons/24/file/folder.svg",
-        ":/qlementine/icons/24/misc/items-tree.svg",
+        ":/qlementine/icons/16/file/vector.svg",
+        ":/qlementine/icons/24/navigation/sliders-horizontal.svg",
+        ":/qlementine/icons/24/action/download.svg",
+        ":/qlementine/icons/24/hardware/keyboard.svg",
+    };
+    const char* icons_active[5] = {
+        ":/qlementine/icons/24/file/folder-open.svg",
+        ":/qlementine/icons/16/file/vector.svg",
         ":/qlementine/icons/24/navigation/sliders-horizontal.svg",
         ":/qlementine/icons/24/action/download.svg",
         ":/qlementine/icons/24/hardware/keyboard.svg",
     };
     for (int i = 0; i < 5; ++i) {
         auto* btn = new QPushButton(strip_);
-        btn->setIcon(tinted_icon(icons[i], QColor(kIconColor)));
+        btn->setIcon(tinted_icon(icons[i], icon_tint()));
         btn->setIconSize(QSize(kStripIcon, kStripIcon));
         btn->setFixedSize(kStripButton, kStripButton);
         btn->setToolTip(mode_name(modes[i]));
         btn->setAccessibleName(mode_name(modes[i]));
         btn->setFocusPolicy(Qt::TabFocus);
+        // Icon pair lives on the button properties; apply_mode swaps them.
+        btn->setProperty("icon_rest", icons[i]);
+        btn->setProperty("icon_active", icons_active[i]);
+        btn->setProperty("mode", int(modes[i])); // enum order ≠ strip order
         connect(btn, &QPushButton::clicked, this, [this, mode = modes[i]] {
             // Re-clicking the active button does NOT collapse: collapse is
             // the panel edge chevron's job (recognition over recall — a
@@ -757,7 +1244,7 @@ QWidget* Shell::strip() {
     // grouped after graph/export; bottom keeps it a tool, not a mode).
     gear_btn_ = new QPushButton(strip_);
     gear_btn_->setIcon(tinted_icon(
-        ":/qlementine/icons/24/navigation/settings.svg", QColor(kIconColor)));
+        ":/qlementine/icons/24/navigation/settings.svg", icon_tint()));
     gear_btn_->setIconSize(QSize(kStripIcon, kStripIcon));
     gear_btn_->setFixedSize(kStripButton, kStripButton);
     // Tooltip dinâmica (W4): o gear anuncia o estado ativo — tema, fonte,
@@ -860,13 +1347,16 @@ static QWidget* make_color_row(scene::Runtime_Scene* scene,
     };
     paint_swatch(color);
 
-    auto* hex = new QLabel(color.name().toUpper().mid(1), row); // no '#': the swatch shows the color
-    hex->setStyleSheet("color: #8c9099; font-family: 'JetBrains Mono', monospace;");
-    hex->setCursor(Qt::PointingHandCursor);
+    // plan8: the hex value is EDITABLE (type #RRGGBB, Enter applies) —
+    // the swatch stays the dialog affordance, the field is the precision path.
+    auto* hex = new QLineEdit(color.name().toUpper().mid(1), row); // no '#'
+    hex->setStyleSheet(QString("color: %1; font-family: 'JetBrains Mono', monospace;"
+                               " background: transparent; border: none;")
+                           .arg(theme::text_muted()));
+    hex->setFixedWidth(56);
+    hex->setCursorPosition(0);
 
-    auto open_picker = [scene, label = widget.label, swatch, hex, paint_swatch, color]() {
-        QColor picked = QColorDialog::getColor(color, swatch, QObject::tr("pick color"));
-        if (!picked.isValid()) return;
+    auto write_through = [scene, label = widget.label](const QColor& picked) {
         // Resolve the widget at fire time: the panel can outlive a
         // hot-reload scene swap that rebuilt scene.widgets.
         for (auto& wgt : scene->widgets)
@@ -876,11 +1366,28 @@ static QWidget* make_color_row(scene::Runtime_Scene* scene,
                 wgt.value[2] = picked.blueF();
                 break;
             }
+    };
+    auto open_picker = [label = widget.label, swatch, hex, paint_swatch,
+                        write_through, color]() {
+        QColor picked = QColorDialog::getColor(color, swatch, QObject::tr("pick color"));
+        if (!picked.isValid()) return;
+        write_through(picked);
         paint_swatch(picked);
         hex->setText(picked.name().toUpper().mid(1));
     };
     QObject::connect(swatch, &QPushButton::clicked, swatch, open_picker);
-    QObject::connect(hex, &QLabel::linkActivated, hex, open_picker); // click the hex opens too
+    // Typed hex: accept "#RRGGBB" or "RRGGBB"; invalid keeps the old value.
+    QObject::connect(hex, &QLineEdit::returnPressed, hex, [hex,
+                                                           paint_swatch, write_through]() {
+        QColor parsed(QString("#") + hex->text().remove('#'));
+        if (!parsed.isValid()) {
+            notify::notify(notify::Kind::WARN, "hex: use RRGGBB");
+            return;
+        }
+        write_through(parsed);
+        paint_swatch(parsed);
+        hex->setText(parsed.name().toUpper().mid(1));
+    });
 
     layout->addWidget(swatch);
     layout->addWidget(hex);
@@ -914,22 +1421,49 @@ QWidget* Shell::controls_panel() {
             QString label = QString::fromStdString(widget.label);
             switch (widget.kind) {
             case scene::Uniform_Widget::Kind::SLIDER: {
-                auto* slider = new QDoubleSpinBox(w);
-                slider->setRange(widget.min, widget.max);
-                slider->setSingleStep(widget.step);
-                slider->setValue(widget.value[0]);
-                slider->setDecimals(2);
-                connect(slider, &QDoubleSpinBox::valueChanged, this,
-                        [scene, label](double v) {
-                            // Resolve the widget at fire time: the panel can
-                            // outlive a hot-reload scene swap that rebuilt
-                            // scene.widgets (captured refs would dangle).
-                            for (auto& wgt : scene->widgets)
-                                if (wgt.label == label.toStdString()) { wgt.value[0] = float(v); break; }
+                // plan8: slider (continuous feel) + field (exact value),
+                // sharing one model — "fields, sliders, or combinations
+                // based on their actual interaction requirements".
+                auto* slider = new QSlider(Qt::Horizontal, w);
+                const float span = qMax(widget.max - widget.min, 0.001f);
+                const int steps = qMax(1, int(span / qMax(widget.step, span / 100.0f)));
+                slider->setRange(0, steps);
+                slider->setValue(int((widget.value[0] - widget.min) / span *
+                                     steps + 0.5f));
+                auto* spin = new QDoubleSpinBox(w);
+                spin->setRange(widget.min, widget.max);
+                spin->setSingleStep(widget.step);
+                spin->setDecimals(2);
+                spin->setValue(widget.value[0]);
+                spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+                spin->setFixedWidth(64);
+                auto apply_value = [scene, label](double v) {
+                    // Resolve the widget at fire time: the panel can
+                    // outlive a hot-reload scene swap that rebuilt
+                    // scene.widgets (captured refs would dangle).
+                    for (auto& wgt : scene->widgets)
+                        if (wgt.label == label.toStdString()) { wgt.value[0] = float(v); break; }
+                };
+                connect(spin, &QDoubleSpinBox::valueChanged, this, apply_value);
+                connect(spin, &QDoubleSpinBox::valueChanged, slider,
+                        [slider, widget, span, steps](double v) {
+                            slider->blockSignals(true); // field -> slider only
+                            slider->setValue(int((v - widget.min) / span *
+                                                 steps + 0.5f));
+                            slider->blockSignals(false);
+                        });
+                connect(slider, &QSlider::valueChanged, this,
+                        [label, spin, widget, span, steps, apply_value](int pos) {
+                            const double v = widget.min + span * double(pos) / steps;
+                            spin->blockSignals(true); // slider -> field only
+                            spin->setValue(v);
+                            spin->blockSignals(false);
+                            apply_value(v);
                         });
                 auto* row = new QHBoxLayout();
-                row->addWidget(new QLabel(label));
+                row->addWidget(new QLabel(label), 0);
                 row->addWidget(slider, 1);
+                row->addWidget(spin, 0);
                 layout->addLayout(row);
                 break;
             }
@@ -964,6 +1498,13 @@ QWidget* Shell::controls_panel() {
                 [this, m](bool on) { if (on) ui.interaction = Interaction_Mode(m); });
         layout->addWidget(radio, 0);
     }
+    // Camera reset + hint: the host owns camera state; this only requests.
+    auto* cam_reset = new QPushButton(i18n::tr("reset camera"), w);
+    connect(cam_reset, &QPushButton::clicked, this,
+            [this] { emit camera_reset_requested(); });
+    layout->addWidget(cam_reset, 0);
+    layout->addWidget(
+        caption(i18n::tr("drag orbit · wheel zoom · tab flycam · R reset")), 0);
     layout->addStretch(1);
     return w;
 }
@@ -980,8 +1521,9 @@ QWidget* Shell::editor_dock() {
     pipeline_error_bar_ = new QLabel(editor_dock_);
     pipeline_error_bar_->setObjectName("pipelineErrorBar");
     pipeline_error_bar_->setStyleSheet(
-        "QLabel#pipelineErrorBar { background: rgba(242,107,92,0.16);"
-        " color: #F26B5C; padding: 4px 12px; font-size: 9pt; }");
+        QString("QLabel#pipelineErrorBar { background: rgba(242,107,92,0.16);"
+                " color: %1; padding: 4px 12px; font-size: 9pt; }")
+            .arg(theme::error()));
     pipeline_error_bar_->setWordWrap(true);
     pipeline_error_bar_->hide();
     layout->addWidget(pipeline_error_bar_);
@@ -993,17 +1535,23 @@ QWidget* Shell::editor_dock() {
         ui.editor_font = pt; // Cmd+= / Cmd+- update the persisted size
         prefs_save(ui);
     });
-    // Split (code | preview): the host reads shell.ui.editor_split each
-    // tick and shapes the SDL preview window accordingly.
+    // Split (code | preview): the floating editor button flips SPLIT <->
+    // FLOAT in the shell's single preview state; the host reshapes the SDL
+    // preview window each tick from ui.preview.
     connect(editor_, &editor::Editor::split_toggled, this, [this](bool on) {
-        ui.editor_split = on;
+        ui.editor_split = on; // kept for prefs symmetry
+        set_preview_mode(on ? Preview_Mode::SPLIT : Preview_Mode::FLOAT);
     });
-    editor_->rescan();
     if (!mgr_.scenes.empty()) {
         const auto& scene = mgr_.scenes[size_t(mgr_.current)];
         editor_->load_unit(QString::fromStdString(scene.title),
                            scene::scene_root_dir(roots_, scene.title).c_str());
     }
+    // Mirror the persisted preview mode into the editor's split button
+    // (its floating toggle reads split_on_ to pick its corner). split_
+    // current() toggles; only call when the persisted state says SPLIT.
+    if (ui.preview == Preview_Mode::SPLIT && !editor_->split_on())
+        editor_->split_current(); // emits split_toggled -> maps back to SPLIT (no-op)
     // Cmd+= / Cmd+-: font zoom in the code editor (works with any tab up).
     auto* zoom_in_sc = new QShortcut(QKeySequence::ZoomIn, editor_dock_);
     zoom_in_sc->setContext(Qt::WidgetWithChildrenShortcut);
@@ -1159,12 +1707,13 @@ QWidget* Shell::files_panel() {
     tree->setIndentation(14);
     tree->setContextMenuPolicy(Qt::CustomContextMenu);
     tree->setStyleSheet(
-        "QTreeWidget { background: transparent; border: none;"
-        " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
-        "QTreeWidget::item { height: 22px; }"
-        "QTreeWidget::item:selected { background: rgba(232,168,87,0.22); color: #DEE0E6; }"
-        "QTreeWidget::item:hover { background: rgba(255,255,255,0.06); }"
-        "QTreeWidget::branch { background: transparent; }");
+        QString("QTreeWidget { background: transparent; border: none;"
+                " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
+                "QTreeWidget::item { height: 22px; }"
+                "QTreeWidget::item:selected { background: rgba(232,168,87,0.22); color: %1; }"
+                "QTreeWidget::item:hover { background: rgba(255,255,255,0.06); }"
+                "QTreeWidget::branch { background: transparent; }")
+            .arg(theme::text_primary()));
 
     // Click routing: shader leaves open in the editor; graph.json flips to
     // the GRAPH mode; assets are context-only (no dead-end affordance).
@@ -1192,6 +1741,27 @@ QWidget* Shell::files_panel() {
             ui.panel_open = true;
             apply_mode(ui.mode);
         }
+    });
+
+    // plan6 graph sync: clicking a pass node opens its shader tab; the
+    // active tab highlights (and reveals) its node in the GRAPH panel.
+    connect(graph_view_typed(), &graph_editor::Node_View::node_selected, this,
+            [this](const QString& key, const QString&) {
+        // Node key: "gfx:<scene>/<file>" or "comp:<scene>/<file>:<entry>";
+        // the editor rel drops the scheme AND the compute entry suffix.
+        QString rel = key.startsWith("comp:") ? key.mid(5).section(':', 0, 0)
+                                              : key.mid(4);
+        editor_dock(); // lazy-create
+        editor_->load_named(rel);
+        show_editor(true);
+    });
+    connect(editor_, &editor::Editor::tab_activated, this,
+            [this](const QString& rel) {
+        if (!graph_view_ || !graph_panel_visible()) return;
+        // The graph node carries a scheme prefix (comp adds ":<entry>"):
+        // select_node_for_key matches comp keys by "<rel>:" prefix.
+        graph_view_->select_node_for_key("gfx:" + rel);
+        graph_view_->select_node_for_key("comp:" + rel + ":");
     });
 
     // ---- Rename (context menu on shader leaves of user-owned scenes) ----
@@ -1371,7 +1941,8 @@ QWidget* Shell::shortcuts_panel() {
     auto row = [&](const QString& key, const QString& desc) {
         auto* line = new QHBoxLayout();
         auto* chip = new QLabel(key);
-        chip->setStyleSheet("color: #d7dae2; font-weight: 600;");
+        chip->setStyleSheet(QString("color: %1; font-weight: 600;")
+                                .arg(theme::text_primary()));
         auto* desc_label = new QLabel(desc);
         desc_label->setWordWrap(true);
         line->addWidget(chip);
@@ -1381,9 +1952,10 @@ QWidget* Shell::shortcuts_panel() {
     layout->addWidget(caption(i18n::tr("window")), 0);
     row("F1", i18n::tr("zen mode: toggle sidebar + editor"));
     row("F2", i18n::tr("toggle shader editor"));
-    row("F3", i18n::tr("toggle floating preview"));
+    row("F3", i18n::tr("cycle preview: float, split, full"));
     row("F4", i18n::tr("theater mode"));
     row("F5", i18n::tr("mobile theater (9:16)"));
+    row("F6", i18n::tr("cycle workspace: development, presentation, pipeline"));
     row("Cmd+B", i18n::tr("toggle sidebar"));
     row("Esc", i18n::tr("close tooltip / quit"));
     layout->addWidget(caption(i18n::tr("editor")), 0);
@@ -1419,12 +1991,17 @@ void Shell::set_layout(Ui_State::Layout_Preset preset) {
         set_layout(Ui_State::Layout_Preset::Normal); // toggle off -> Normal
         return;
     }
-    // Leaving any active preset: restore the Normal-state values.
+    // Leaving any active preset: restore the Normal-state values (plan9:
+    // preview mode/split + sidebar mode too — the whole workspace).
     if (ui.layout != Ui_State::Layout_Preset::Normal) {
         ui.font_size = ui.saved_ui_font;
         ui.editor_font = ui.saved_ed_font;
         if (editor_) editor_->set_editor_font(int(ui.saved_ed_font));
         ui.panel_open = ui.saved_open;
+        ui.preview = ui.saved_preview;
+        ui.split_left = ui.saved_split_left;
+        ui.mode = ui.saved_mode;
+        update_preview_buttons();
     }
     ui.layout = preset;
     if (preset == Ui_State::Layout_Preset::Normal) {
@@ -1436,6 +2013,9 @@ void Shell::set_layout(Ui_State::Layout_Preset preset) {
         ui.saved_ui_font = ui.font_size;
         ui.saved_ed_font = ui.editor_font;
         ui.saved_open = ui.panel_open;
+        ui.saved_preview = ui.preview;
+        ui.saved_split_left = ui.split_left;
+        ui.saved_mode = ui.mode;
         ui.sidebar_open = false;
         if (strip_) strip_->setVisible(false);
         ui.panel_open = false;
@@ -1448,13 +2028,62 @@ void Shell::set_layout(Ui_State::Layout_Preset preset) {
         ui.saved_ui_font = ui.font_size;
         ui.saved_ed_font = ui.editor_font;
         ui.saved_open = ui.panel_open;
+        ui.saved_preview = ui.preview;
+        ui.saved_split_left = ui.split_left;
+        ui.saved_mode = ui.mode;
         ui.font_size = 18;
         ui.editor_font = 21;
         if (editor_) editor_->set_editor_font(21);
         ui.panel_open = false;
         show_editor(true);
+    } else if (preset == Ui_State::Layout_Preset::Presentation) {
+        // plan9 Presentation: code + preview emphasized, chrome minimal.
+        // SPLIT preview (predictable 42/58), panel closed (recoverable via
+        // strip/chevron), editor font up one notch for recordings. The
+        // user's preview-mode/split choice is RESTORED on leaving.
+        ui.saved_ui_font = ui.font_size;
+        ui.saved_ed_font = ui.editor_font;
+        ui.saved_open = ui.panel_open;
+        ui.saved_split_left = ui.split_left;
+        ui.saved_mode = ui.mode;
+        ui.font_size = 16;
+        ui.editor_font = 16;
+        if (editor_) editor_->set_editor_font(16);
+        ui.panel_open = false;
+        ui.preview = Preview_Mode::SPLIT;
+        ui.split_left = 0.42f;
+        update_preview_buttons();
+        show_editor(true);
+    } else if (preset == Ui_State::Layout_Preset::Pipeline) {
+        // plan9 Pipeline: the graph IS the workspace (GRAPH mode open,
+        // wide), editor + preview retained via the SPLIT dock on return.
+        ui.saved_ui_font = ui.font_size;
+        ui.saved_ed_font = ui.editor_font;
+        ui.saved_open = ui.panel_open;
+        ui.saved_preview = ui.preview;
+        ui.saved_split_left = ui.split_left;
+        ui.saved_mode = ui.mode;
+        ui.preview = Preview_Mode::FLOAT;
+        ui.panel_open = true;
+        ui.mode = Sidebar_Mode::GRAPH;
+        ui.user_w_mode[int(Sidebar_Mode::GRAPH)] = 0; // per-mode default 0.52·w
+        update_preview_buttons();
+        show_editor(true);
     }
+    prefs_save(ui); // plan9: workspace choice persists across restarts
     apply_mode(ui.mode);
+}
+
+// plan9: F6 cycles the three recording workspaces (Development →
+// Presentation → Pipeline → Development). Zen/Theater/Mobile stay on
+// their own keys — the cycle covers the trio the SHORTCUTS panel lists.
+void Shell::cycle_workspace() {
+    using LP = Ui_State::Layout_Preset;
+    switch (ui.layout) {
+    case LP::Presentation: set_layout(LP::Pipeline); break;
+    case LP::Pipeline: set_layout(LP::Normal); break;
+    default: set_layout(LP::Presentation); break; // Normal/Zen/... enter
+    }
 }
 
 void Shell::toggle_editor() {
@@ -1462,6 +2091,256 @@ void Shell::toggle_editor() {
     // fullscreen viewport page.
     bool editor_up = central_ && central_->currentIndex() == 0;
     show_editor(!editor_up);
+}
+
+// ---- Preview modes (FLOAT | SPLIT | FULL) ----
+
+// The single entry point: topbar buttons, F3 and drag-drop snaps all land
+// here. The host reads ui.preview each tick and reshapes the SDL window;
+// prefs persist the choice.
+void Shell::set_preview_mode(Preview_Mode mode) {
+    if (ui.preview == mode) return;
+    ui.preview = mode;
+    update_preview_buttons();
+    update_preview_overlays();
+    update_split_layout(); // editor clamps/unclamps with the mode
+    prefs_save(ui);
+}
+
+void Shell::cycle_preview_mode() {
+    int next = (int(ui.preview) + 1) % 3;
+    set_preview_mode(Preview_Mode(next));
+}
+
+void Shell::update_preview_buttons() {
+    const Preview_Mode modes[3] = {Preview_Mode::FLOAT, Preview_Mode::SPLIT,
+                                   Preview_Mode::FULL};
+    for (int i = 0; i < 3; ++i) {
+        QPushButton* btn = preview_btns_[i];
+        if (!btn) continue;
+        bool active = ui.preview == modes[i];
+        if (btn->property("active").toBool() != active) {
+            btn->setProperty("active", active);
+            btn->style()->unpolish(btn);
+            btn->style()->polish(btn);
+            btn->update();
+        }
+    }
+}
+
+QWidget* Shell::preview_overlay() {
+    if (preview_overlay_) return preview_overlay_;
+    preview_overlay_ = new QWidget(this);
+    preview_overlay_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    preview_overlay_->hide();
+    const QString zone_qss =
+        QString("QLabel { border: 2px dashed %1; border-radius: 8px;"
+                " background: %2; color: %1;"
+                " font-family: 'JetBrains Mono', monospace; font-size: 9pt;"
+                " letter-spacing: 1px; }")
+            .arg(theme::safelight(), theme::frame_border());
+    auto make_zone = [this, &zone_qss](const char* name) {
+        auto* z = new QLabel(preview_overlay_);
+        z->setObjectName(name);
+        z->setStyleSheet(zone_qss);
+        z->setAlignment(Qt::AlignCenter);
+        z->hide();
+        return z;
+    };
+    snap_left_ = make_zone("snapLeft");
+    snap_left_->setText(i18n::tr("drop: dock split"));
+    snap_right_ = make_zone("snapRight");
+    snap_right_->setText(i18n::tr("drop: dock split"));
+    return preview_overlay_;
+}
+
+QWidget* Shell::preview_frame_overlay() {
+    if (preview_border_) return preview_border_;
+    preview_border_ = new QLabel(this);
+    preview_border_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    preview_border_->setStyleSheet(
+        QString("QLabel { border: 1px solid %1; border-radius: 6px;"
+                " background: transparent; }")
+            .arg(theme::control_border()));
+    preview_border_->hide();
+    return preview_border_;
+}
+
+void Shell::set_snap_hover(int zone) {
+    ui.snap_hover = zone;
+    update_preview_overlays();
+}
+
+// Drag path: instant follow (the cursor IS the physics), no persistence.
+void Shell::set_split_gutter(float left_fraction) {
+    perf_log("gutter-drag", -1.0); // temp instrumentation
+    const qint64 t0 = perf_clock()->nsecsElapsed();
+    ui.split_left = std::clamp(left_fraction, 0.2f, 0.8f);
+    update_preview_overlays();
+    update_split_layout(); // drag: editor frozen; non-drag: follows boundary
+    perf_log("gutter-drag-ms", double(perf_clock()->nsecsElapsed() - t0) / 1e6);
+    // No prefs_save here: the spring-settle on release persists once.
+}
+
+// Drop path (snap zones / topbar): settle with one damped spring so the
+// dock lands like a mass on a soft spring, then persists the final value.
+void Shell::settle_split_gutter(float left_fraction) {
+    gutter_dragging_ = false; // editor width freeze ends with the gesture
+    editor_w_drag_ = 0;
+    ui.split_left = std::clamp(left_fraction, 0.2f, 0.8f);
+    if (reduced_motion()) {
+        update_preview_overlays();
+        update_split_layout();
+        prefs_save(ui);
+        return;
+    }
+    const float target = ui.split_left;
+    const float delta = target - 0.5f;
+    auto* anim = new QVariantAnimation(this);
+    anim->setDuration(240);
+    anim->setStartValue(target + delta * 0.05f);          // overshoot in
+    anim->setKeyValueAt(0.55, target - delta * 0.035f);   // crosses once
+    anim->setEndValue(target);
+    anim->setEasingCurve(QEasingCurve::OutCubic);
+    connect(anim, &QVariantAnimation::valueChanged, this,
+            [this](const QVariant& v) {
+                ui.split_left = v.toFloat();
+                update_preview_overlays();
+                update_split_layout();
+            });
+    connect(anim, &QVariantAnimation::finished, this, [this, target] {
+        ui.split_left = target;
+        update_preview_overlays();
+        update_split_layout();
+        prefs_save(ui);
+    });
+    anim->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
+// Live safelight (overdrive): the host feeds the average color of the
+// rendered frame once a second; the preview frame border and the gutter
+// breathe with the shader. Blend with the theme accent (60/40) so the
+// result stays legible on every skin; disabled by reduced-motion respect
+// is unnecessary (color, not motion) but the restyle is throttled 1x/s.
+void Shell::set_live_tint(const QColor& c) {
+    if (!c.isValid()) return;
+    QColor mixed = QColor::fromRgb(
+        (theme::safelight_rgb().red() * 3 + c.red()) / 4,
+        (theme::safelight_rgb().green() * 3 + c.green()) / 4,
+        (theme::safelight_rgb().blue() * 3 + c.blue()) / 4);
+    if (mixed == live_tint_) return;
+    live_tint_ = mixed;
+    update_live_tint_border(); // border follows the mixed tint
+    if (preview_gutter_)
+        preview_gutter_->setStyleSheet(
+            QString("QLabel { background: %1; border-radius: 2px; }")
+                .arg(live_tint_.name()));
+}
+
+void Shell::update_preview_overlays() {
+    QWidget* vp = viewport();
+    if (!vp || ui.fullscreen_view) {
+        if (preview_border_) preview_border_->hide();
+        if (preview_overlay_) preview_overlay_->hide();
+        return;
+    }
+    // Frame border: FLOAT always; SPLIT gets it too while the gutter is
+    // visible, so the preview reads as a panel of this app, not a guest
+    // window. FULL needs no frame (it IS the space).
+    if (ui.preview == Preview_Mode::FLOAT ||
+        ui.preview == Preview_Mode::SPLIT) {
+        preview_frame_overlay()->show();
+    } else if (preview_border_) {
+        preview_border_->hide();
+    }
+    // Snap zones only while a drag is aiming (host reports via snap_hover).
+    if (ui.snap_hover >= 0 && ui.preview == Preview_Mode::FLOAT) {
+        preview_overlay();
+        const QRect vp_g = viewport_global_rect(this);
+        preview_overlay_->setGeometry(QRect(mapFromGlobal(vp_g.topLeft()),
+                                            vp_g.size()));
+        const int half = vp_g.width() / 2;
+        const QRect left(mapFromGlobal(vp_g.topLeft()), QSize(half, vp_g.height()));
+        const QRect right(mapFromGlobal(QPoint(vp_g.left() + half, vp_g.top())),
+                          QSize(vp_g.width() - half, vp_g.height()));
+        snap_left_->setGeometry(left);
+        snap_right_->setGeometry(right);
+        (ui.snap_hover == 0 ? snap_left_ : snap_right_)->show();
+        (ui.snap_hover == 0 ? snap_right_ : snap_left_)->hide();
+        preview_overlay_->raise();
+        preview_overlay_->show();
+    } else if (preview_overlay_) {
+        preview_overlay_->hide();
+    }
+    // Frame border + gutter geometry land in a second pass: the host calls
+    // set_preview_frame_rect() each tick with the live SDL rect, and
+    // resizeEvent() keeps overlays glued while the window resizes.
+}
+
+// Host tick: the live SDL rect (Qt global coords) drives the themed frame
+// and, in SPLIT, the gutter band on the editor|preview boundary.
+void Shell::set_preview_frame_rect(const QRect& global_rect) {
+    QWidget* vp = viewport();
+    const qint64 t0 = perf_clock()->nsecsElapsed(); // TEMP-PROF
+    if (!vp || ui.fullscreen_view || global_rect.isEmpty()) {
+        if (preview_border_) preview_border_->hide();
+        if (preview_gutter_) preview_gutter_->hide();
+        return;
+    }
+    if (ui.preview == Preview_Mode::FLOAT ||
+        ui.preview == Preview_Mode::SPLIT) {
+        preview_frame_overlay()->setGeometry(
+            QRect(mapFromGlobal(global_rect.topLeft()), global_rect.size()));
+        preview_frame_overlay()->raise();
+        preview_frame_overlay()->show();
+    } else if (preview_border_) {
+        preview_border_->hide();
+    }
+    // First-run discovery hint (P1): FLOAT says nothing about being
+    // draggable; show one amber caption under the frame for 2.5s, once,
+    // the first time a FLOAT session reaches a live frame.
+    if (ui.preview == Preview_Mode::FLOAT && !ui.preview_hinted) {
+        ui.preview_hinted = true; // one shot: even an early quit keeps it
+        prefs_save(ui);
+        if (!preview_hint_) {
+            preview_hint_ = new QLabel(this);
+            preview_hint_->setAttribute(Qt::WA_TransparentForMouseEvents);
+            preview_hint_->setStyleSheet(
+                QString("QLabel { background: %1;"
+                        " color: %2; padding: 3px 10px; border-radius: 3px;"
+                        " font-family: 'JetBrains Mono', monospace;"
+                        " font-size: 8pt; }")
+                    .arg(theme::overlay_scrim(220), theme::safelight()));
+            preview_hint_->setText(i18n::tr("drag me: dock left or right"));
+            preview_hint_->adjustSize();
+            QTimer::singleShot(theme::hint_duration_ms(), preview_hint_, &QWidget::hide);
+        }
+        preview_hint_->move(mapFromGlobal(global_rect.topLeft()) +
+                            QPoint(6, global_rect.height() + 4));
+        preview_hint_->raise();
+        preview_hint_->show();
+    } else if (preview_hint_ && ui.preview != Preview_Mode::FLOAT) {
+        preview_hint_->hide();
+    }
+    // Gutter: a 10px grab band centered on the split boundary. Draggable:
+    // press+move re-fractions the split (set_split_gutter).
+    if (ui.preview == Preview_Mode::SPLIT) {
+        if (!preview_gutter_) {
+            preview_gutter_ = new QLabel(this);
+            preview_gutter_->setAttribute(Qt::WA_TransparentForMouseEvents);
+            preview_gutter_->setStyleSheet(
+                QString("QLabel { background: %1; border-radius: 2px; }")
+                    .arg(theme::frame_border()));
+        }
+        const int gx = mapFromGlobal(QPoint(global_rect.left(), 0)).x();
+        preview_gutter_->setGeometry(gx - 5, mapFromGlobal(global_rect.topLeft()).y(),
+                                     10, global_rect.height());
+        preview_gutter_->raise();
+        preview_gutter_->show();
+    } else if (preview_gutter_) {
+        preview_gutter_->hide();
+    }
+    perf_log("frame-rect-ms", double(perf_clock()->nsecsElapsed() - t0) / 1e6);
 }
 
 graph_editor::Node_View* Shell::graph_view_typed() {
@@ -1515,7 +2394,7 @@ void Shell::apply_chrome_theme() {
     if (panel_) panel_->setStyleSheet(panel_qss());
     if (panel_edge_) panel_edge_->setStyleSheet(panel_edge_qss());
     // Icons: tinted at build time, so re-tint with the active theme's text.
-    const QColor icon(kIconColor);
+    const QColor icon = icon_tint();
     if (save_btn_)
         save_btn_->setIcon(tinted_icon(":/qlementine/icons/24/action/save-all.svg",
                                        icon));
@@ -1527,6 +2406,41 @@ void Shell::apply_chrome_theme() {
     if (gear_btn_)
         gear_btn_->setIcon(tinted_icon(
             ":/qlementine/icons/24/navigation/settings.svg", icon));
+    // Preview segmented buttons: re-tint icons; overlays re-read the
+    // palette (frame border, snap dashes, gutter band). The pip caption's
+    // cached style must go too — its state colors follow the theme.
+    pip_style_color_.clear();
+    pip_text_.clear();
+    const char* p_icons[3] = {
+        ":/qlementine/icons/24/misc/empty-slot.svg",
+        ":/qlementine/icons/24/misc/items-grid-small.svg",
+        ":/qlementine/icons/24/misc/items-grid.svg",
+    };
+    for (int i = 0; i < 3; ++i)
+        if (preview_btns_[i])
+            preview_btns_[i]->setIcon(tinted_icon(p_icons[i], icon, 16));
+    if (preview_border_)
+        preview_border_->setStyleSheet(
+            QString("QLabel { border: 1px solid %1; border-radius: 6px;"
+                    " background: transparent; }")
+                .arg(theme::control_border()));
+    if (preview_gutter_)
+        preview_gutter_->setStyleSheet(
+            QString("QLabel { background: %1; border-radius: 2px; }")
+                .arg(theme::frame_border()));
+    if (preview_overlay_) {
+        const QString zone_qss =
+            QString("QLabel { border: 2px dashed %1; border-radius: 8px;"
+                    " background: %2; }")
+                .arg(theme::safelight(), theme::frame_border());
+        snap_left_->setStyleSheet(zone_qss);
+        snap_right_->setStyleSheet(zone_qss);
+    }
+    update_preview_overlays();
+    // plan13: the editor skin drives the pipeline graph too — grid, node
+    // bodies, wires and the live delegates all re-derive from the tokens.
+    // Lazy: a graph that was never opened has no instance to restyle.
+    if (graph_view_) graph_view_->apply_theme();
     for (auto* btn : strip_buttons_) btn->update();
     update();
 }
@@ -1539,7 +2453,24 @@ void Shell::apply_mode(Sidebar_Mode mode) {
     // The click already flipped Qt's own checked flag, so set ALL buttons
     // explicitly here: no stale "active" marks survive the pass.
     for (size_t i = 0; i < strip_buttons_.size(); ++i) {
-        bool active = Sidebar_Mode(i) == mode && ui.panel_open;
+        // modes[i] IS the array's mapping (FILES,GRAPH,CONTROLS,...) which
+        // does NOT match the enum's numeric order (CONTROLS=0, FILES=1...).
+        // The old `Sidebar_Mode(i) == mode` compared the wrong pairs.
+        bool active = strip_buttons_[i]->property("mode").toInt() ==
+                          int(mode) &&
+                      ui.panel_open;
+        // Plan 07 P2: icon follows state — folder→folder-open on FILES,
+        // and back on every other mode (the old code only restyled via QSS
+        // and never reset the icon, so the selected glyph stuck).
+        const QString want = active ? strip_buttons_[i]->property("icon_active")
+                                          .toString()
+                                    : strip_buttons_[i]->property("icon_rest")
+                                          .toString();
+        if (strip_buttons_[i]->property("current_icon").toString() != want) {
+            strip_buttons_[i]->setProperty("current_icon", want);
+            strip_buttons_[i]->setIcon(
+                tinted_icon(want.toUtf8().constData(), icon_tint()));
+        }
         if (strip_buttons_[i]->property("active").toBool() != active) {
             strip_buttons_[i]->setProperty("active", active);
             // Repolish: the stylesheet selector [active="true"] only
@@ -1549,10 +2480,6 @@ void Shell::apply_mode(Sidebar_Mode mode) {
             strip_buttons_[i]->update();
         }
     }
-
-    // Persistent pages: build each mode's panel ONCE, then flip the stack
-    // index. Tree expand state, selection, scroll position and form edits
-    // all survive mode switches (the old clear-and-rebuild destroyed them).
     // Page order mirrors Sidebar_Mode's enum order; LEARN/EFFECTS keep their
     // pages for menu access, they just have no strip button.
     auto ensure_page = [this](Sidebar_Mode mode) -> QWidget* {
@@ -1602,43 +2529,161 @@ void Shell::apply_mode(Sidebar_Mode mode) {
 // Bake feedback: an amber dot rides the save button while a scene build is
 // running (the save → 1-3 s silence → preview-jump loop needed visible state).
 void Shell::set_baking(bool on) {
+    perf_log("set-baking", -1.0); // temp instrumentation
     if (!save_btn_) return;
     const QString prop = on ? "1" : "0";
     if (save_btn_->property("baking") == prop) return;
     save_btn_->setProperty("baking", prop);
     // Restyle: amber border while baking; none when idle.
-    save_btn_->setStyleSheet(on ? "QPushButton { border: 1px solid #E8A857; }"
+    save_btn_->setStyleSheet(on ? QString("QPushButton { border: 1px solid %1; }")
+                                      .arg(theme::safelight())
                                 : "QPushButton { border: none; }");
     save_btn_->style()->unpolish(save_btn_);
     save_btn_->style()->polish(save_btn_);
     save_btn_->update();
     if (!on) update_pipeline_error_bar(); // bake finished: surface failures
+    // Bake pulse (overdrive): while the build runs the preview frame's
+    // border breathes amber; on success one green flash fades; on failure
+    // the frame returns to its normal tint immediately. Reduced motion:
+    // static amber border, no wave, no flash.
+    // LIFETIME: the animations are plain `new` (NO parent, NO
+    // DeleteWhenStopped) and owned exclusively by these members — the
+    // host calls set_baking every tick, and a deleteLater'd animation
+    // left a dangling member that SEGV'd on the next tick (invalid vptr).
+    if (bake_pulse_) {
+        bake_pulse_->stop();
+        delete bake_pulse_;
+        bake_pulse_ = nullptr;
+    }
+    if (bake_flash_) {
+        bake_flash_->stop();
+        delete bake_flash_;
+        bake_flash_ = nullptr;
+    }
+    if (!preview_border_) return;
+    if (on) {
+        if (reduced_motion()) {
+            preview_border_->setStyleSheet(
+                QString("QLabel { border: 1px solid %1; border-radius: 6px;"
+                        " background: transparent; }")
+                    .arg(theme::safelight()));
+        } else {
+            bake_pulse_ = new QVariantAnimation(); // member-owned (LIFETIME note)
+            bake_pulse_->setStartValue(theme::bake_pulse_alpha_min() / 100.0);
+            bake_pulse_->setEndValue(1.0);
+            bake_pulse_->setDuration(theme::bake_pulse_duration_ms());
+            bake_pulse_->setLoopCount(-1); // runs until the bake ends
+            bake_pulse_->setEasingCurve(QEasingCurve::InOutSine);
+            connect(bake_pulse_, &QVariantAnimation::valueChanged, this,
+                    [this](const QVariant& v) {
+                        QColor c = theme::safelight_rgb();
+                        c.setAlphaF(v.toDouble());
+                        if (preview_border_)
+                            preview_border_->setStyleSheet(
+                                QString("QLabel { border: 1px solid %1;"
+                                        " border-radius: 6px;"
+                                        " background: transparent; }")
+                                    .arg(c.name(QColor::HexArgb)));
+                    });
+            bake_pulse_->start(); // runs until set_baking stops it
+        }
+        return;
+    }
+    const bool bake_ok =
+        mgr_.scenes.empty() ||
+        mgr_.scenes[size_t(mgr_.current)].pipeline_error.empty();
+    if (bake_ok && !reduced_motion()) {
+        bake_flash_ = new QVariantAnimation(); // member-owned (LIFETIME note)
+        bake_flash_->setStartValue(1.0);
+        bake_flash_->setEndValue(0.0);
+        bake_flash_->setDuration(theme::bake_flash_duration_ms());
+        bake_flash_->setEasingCurve(QEasingCurve::OutCubic);
+        connect(bake_flash_, &QVariantAnimation::valueChanged, this,
+                [this](const QVariant& v) {
+                    QColor c = theme::success_rgb();
+                    c.setAlphaF(v.toDouble());
+                    if (preview_border_)
+                        preview_border_->setStyleSheet(
+                            QString("QLabel { border: 1px solid %1;"
+                                    " border-radius: 6px;"
+                                    " background: transparent; }")
+                                .arg(c.name(QColor::HexArgb)));
+                });
+        connect(bake_flash_, &QVariantAnimation::finished, this,
+                [this] { update_live_tint_border(); });
+        bake_flash_->start(); // finished() restores the border; member freed on next set_baking
+    } else {
+        update_live_tint_border(); // restore normal/live-tint frame
+    }
 }
 
-// O2: PiP context label — parked on the preview's top edge, shows WHAT is
-// rendering and at WHICH resolution. Global rect in Qt coords (top-left
-// origin); the host converts from the Cocoa PiP rect each tick.
+// Restores the preview border to its current live-tint (or theme) color.
+void Shell::update_live_tint_border() {
+    if (!preview_border_) return;
+    preview_border_->setStyleSheet(
+        QString("QLabel { border: 1px solid %1; border-radius: 6px;"
+                " background: transparent; }")
+            .arg(live_tint_.isValid() ? live_tint_.name()
+                                      : theme::control_border()));
+}
+
+// plan8 viewport caption — parked on the VIEWPORT's top-left corner (Qt
+// area, never under the SDL child NSWindow). Shows WHAT is rendering, at
+// WHICH resolution, WHICH pass, and the render state (compiling/paused/
+// ERROR). Global rect in Qt coords (top-left origin); the host passes the
+// viewport rect each tick.
 void Shell::set_pip_overlay(const QString& text, const QRect& global_rect) {
+    perf_log("pip-overlay", -1.0); // temp instrumentation
     if (!pip_overlay_) {
         pip_overlay_ = new QLabel(this);
         pip_overlay_->setObjectName("pipOverlay");
-        pip_overlay_->setStyleSheet(
-            "QLabel#pipOverlay { background: rgba(19,20,24,200);"
-            " color: #828894; padding: 2px 8px; font-size: 8pt;"
-            " font-family: 'JetBrains Mono', monospace;"
-            " border-radius: 3px; }");
         pip_overlay_->setAttribute(Qt::WA_TransparentForMouseEvents);
     }
     if (text.isEmpty() || global_rect.isEmpty()) {
         pip_overlay_->hide();
         return;
     }
-    pip_overlay_->setText(text);
-    pip_overlay_->adjustSize();
-    // Top-left INSIDE the PiP, 6px inset (reads as a caption, not chrome).
-    pip_overlay_->move(global_rect.topLeft() + QPoint(6, 6));
+    const qint64 t0 = perf_clock()->nsecsElapsed();
+    // Per-tick path (60 Hz): the style depends only on the state word +
+    // theme, the font only on the editor font size. Cache both and skip the
+    // rebuild when unchanged — setStyleSheet + adjustSize were ~0.25 ms per
+    // tick in the drag budget (Plan 04 Task A).
+    const bool error = text.contains(" · ERROR: ");
+    const bool compiling = text.endsWith(" · compiling");
+    const bool paused = text.endsWith(" · paused");
+    const QString state_color = error ? theme::error()
+                                : compiling ? theme::safelight()
+                                : paused ? theme::text_primary()
+                                : theme::text_muted();
+    if (state_color != pip_style_color_ || ui.editor_font != pip_style_font_) {
+        pip_style_color_ = state_color;
+        pip_style_font_ = ui.editor_font;
+        pip_overlay_->setStyleSheet(
+            QString("QLabel#pipOverlay { background: %1;"
+                    " color: %2; padding: 3px 10px 3px 8px; font-size: 8pt;"
+                    " font-family: 'JetBrains Mono', monospace;"
+                    " border-left: 2px solid %2; border-radius: 3px; }")
+                .arg(theme::overlay_scrim(210), state_color));
+        QFont readout = theme::code_font(8);
+        readout.setLetterSpacing(QFont::AbsoluteSpacing, 0.3);
+        pip_overlay_->setFont(readout);
+        pip_text_.clear(); // font change invalidates the cached size
+    }
+    if (text != pip_text_) {
+        pip_text_ = text;
+        pip_overlay_->setText(text);
+        pip_overlay_->adjustSize();
+    }
+    // Anchor to the preview frame rect the host passes (global coords):
+    // the caption belongs ON the preview surface, not parked at the
+    // viewport's top-left where it covers the editor's file selector.
+    const QPoint anchor = global_rect.isEmpty()
+                              ? viewport()->mapToGlobal(QPoint(0, 0))
+                              : global_rect.topLeft();
+    pip_overlay_->move(mapFromGlobal(anchor) + QPoint(6, 6));
     pip_overlay_->raise();
     pip_overlay_->show();
+    perf_log("pip-overlay-ms", double(perf_clock()->nsecsElapsed() - t0) / 1e6);
 }
 
 // P1-N2: the last bake failure, persistent and on-site (editor top). The
@@ -1789,7 +2834,21 @@ void Shell::open_settings_menu() {
                                    {"monokai", Editor_Theme::MONOKAI},
                                    {"solarized", Editor_Theme::SOLARIZED}};
     for (const Theme& t : themes) {
-        QAction* a = theme_menu->addAction(t.name);
+        // plan13 preview: a 3-stripe swatch (panel | text | accent) shows
+        // the identity at a glance — set BEFORE switching, from the
+        // chrome palette of THAT theme (not the active one).
+        const auto swatch = [t] {
+            const theme::App_Theme at = theme::App_Theme(int(t.theme));
+            QPixmap pm(44, 16);
+            QPainter p(&pm);
+            const QColor panel = QColor(theme::panel_of(at));
+            p.fillRect(0, 0, 16, 16, panel);
+            p.fillRect(16, 0, 14, 16, QColor(theme::text_of(at)));
+            p.fillRect(30, 0, 14, 16, QColor(theme::accent_of(at)));
+            p.end();
+            return QIcon(pm);
+        }();
+        QAction* a = theme_menu->addAction(swatch, t.name);
         a->setCheckable(true);
         a->setChecked(ui.theme == t.theme);
         connect(a, &QAction::triggered, this, [this, t] {
@@ -1803,6 +2862,25 @@ void Shell::open_settings_menu() {
             apply_chrome_theme();
             apply_mode(ui.mode); // current panel rebuilds with new palette
         });
+    }
+    // plan9: workspace presets — one checked action per layout, same
+    // set_layout path as the F6 cycle (state-preserving by construction).
+    auto* workspace_menu = settings.addMenu(i18n::tr("workspace"));
+    struct Workspace { const char* name; Ui_State::Layout_Preset preset; };
+    static const Workspace workspaces[] = {
+        {"development", Ui_State::Layout_Preset::Normal},
+        {"presentation", Ui_State::Layout_Preset::Presentation},
+        {"pipeline", Ui_State::Layout_Preset::Pipeline},
+        {"zen", Ui_State::Layout_Preset::Zen},
+        {"theater", Ui_State::Layout_Preset::Theater},
+        {"mobile", Ui_State::Layout_Preset::Mobile},
+    };
+    for (const Workspace& w : workspaces) {
+        QAction* a = workspace_menu->addAction(w.name);
+        a->setCheckable(true);
+        a->setChecked(ui.layout == w.preset);
+        connect(a, &QAction::triggered, this,
+                [this, w] { set_layout(w.preset); });
     }
     connect(settings.addAction(i18n::tr("editor font")), &QAction::triggered,
             this, [this] {

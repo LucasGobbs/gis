@@ -1,0 +1,395 @@
+{
+	"BUILD_DIR" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-build/QtNodes_autogen",
+	"CMAKE_BINARY_DIR" : "/Users/gobbi/Desktop/code/projects/gis/build",
+	"CMAKE_CURRENT_BINARY_DIR" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-build",
+	"CMAKE_CURRENT_SOURCE_DIR" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src",
+	"CMAKE_EXECUTABLE" : "/opt/homebrew/bin/cmake",
+	"CMAKE_LIST_FILES" : 
+	[
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/CMakeLists.txt",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6ConfigVersion.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6ConfigVersionImpl.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6Config.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeIncludeGuardHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeEarlyPolicyHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6ConfigExtras.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeVersionHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtInstallPaths.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6TargetsPrecheck.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtFeature.cmake",
+		"/opt/homebrew/share/cmake/Modules/CheckCXXCompilerFlag.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtFeatureCommon.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicAndroidHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicAppleHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeVersionHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicDependencyHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicExternalProjectHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicFinalizerHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicFindPackageHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicGitHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicJsonHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicPluginHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicPluginHelpers_v2.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomAttributionHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomBuildToolHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomCommonGenerationHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomCpeHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomCycloneDXHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomDocumentNamespaceHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomDepHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomExternalReferenceHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomFileHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomGenerationHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomGenerationCycloneDXHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomLicenseHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomOpsHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomPurlHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomPythonHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomQtEntityHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomRelationshipHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomSystemDepHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicTargetHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicTestHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicToolHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicWalkLibsHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicWindowsHelpers.cmake",
+		"/opt/homebrew/share/cmake/Modules/CMakeFindDependencyMacro.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6Dependencies.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6ConfigVersion.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6ConfigVersionImpl.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6Config.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeIncludeGuardHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeEarlyPolicyHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6ConfigExtras.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeVersionHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtInstallPaths.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6TargetsPrecheck.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtFeature.cmake",
+		"/opt/homebrew/share/cmake/Modules/CheckCXXCompilerFlag.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtFeatureCommon.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicAndroidHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicAppleHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicCMakeVersionHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicDependencyHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicExternalProjectHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicFinalizerHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicFindPackageHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicGitHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicJsonHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicPluginHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicPluginHelpers_v2.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomAttributionHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomBuildToolHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomCommonGenerationHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomCpeHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomCycloneDXHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomDocumentNamespaceHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomDepHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomExternalReferenceHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomFileHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomGenerationHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomGenerationCycloneDXHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomLicenseHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomOpsHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomPurlHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomPythonHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomQtEntityHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomRelationshipHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicSbomSystemDepHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicTargetHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicTestHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicToolHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicWalkLibsHelpers.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/QtPublicWindowsHelpers.cmake",
+		"/opt/homebrew/share/cmake/Modules/CMakeFindDependencyMacro.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/Qt6Dependencies.cmake",
+		"/opt/homebrew/lib/cmake/Qt6OpenGL/Qt6OpenGLConfigVersion.cmake",
+		"/opt/homebrew/lib/cmake/Qt6OpenGL/Qt6OpenGLConfigVersionImpl.cmake",
+		"/opt/homebrew/lib/cmake/Qt6OpenGL/Qt6OpenGLConfig.cmake",
+		"/opt/homebrew/share/cmake/Modules/CMakeFindDependencyMacro.cmake",
+		"/opt/homebrew/lib/cmake/Qt6OpenGL/Qt6OpenGLDependencies.cmake",
+		"/opt/homebrew/lib/cmake/Qt6/FindWrapVulkanHeaders.cmake",
+		"/opt/homebrew/lib/cmake/Qt6OpenGL/Qt6OpenGLTargetsPrecheck.cmake",
+		"/opt/homebrew/lib/cmake/Qt6OpenGL/Qt6OpenGLTargets.cmake",
+		"/opt/homebrew/lib/cmake/Qt6OpenGL/Qt6OpenGLTargets-release.cmake",
+		"/opt/homebrew/lib/cmake/Qt6OpenGL/Qt6OpenGLAdditionalTargetInfo.cmake",
+		"/opt/homebrew/lib/cmake/Qt6OpenGL/Qt6OpenGLVersionlessAliasTargets.cmake",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/resources/resources.qrc",
+		"/opt/homebrew/share/cmake/Modules/GNUInstallDirs.cmake",
+		"/opt/homebrew/share/cmake/Modules/CMakePackageConfigHelpers.cmake",
+		"/opt/homebrew/share/cmake/Modules/WriteBasicConfigVersionFile.cmake",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/cmake/QtNodesConfig.cmake.in"
+	],
+	"CMAKE_SOURCE_DIR" : "/Users/gobbi/Desktop/code/projects/gis",
+	"CROSS_CONFIG" : false,
+	"DEP_FILE" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-build/QtNodes_autogen/deps",
+	"DEP_FILE_RULE_NAME" : "QtNodes_autogen/timestamp",
+	"HEADERS" : 
+	[
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/ConnectionPainter.hpp",
+			"Mu",
+			"UVLADIE3JM/moc_ConnectionPainter.cpp",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/DefaultHorizontalNodeGeometry.hpp",
+			"Mu",
+			"UVLADIE3JM/moc_DefaultHorizontalNodeGeometry.cpp",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/DefaultVerticalNodeGeometry.hpp",
+			"Mu",
+			"UVLADIE3JM/moc_DefaultVerticalNodeGeometry.cpp",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/NodeConnectionInteraction.hpp",
+			"Mu",
+			"UVLADIE3JM/moc_NodeConnectionInteraction.cpp",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/UndoCommands.hpp",
+			"Mu",
+			"UVLADIE3JM/moc_UndoCommands.cpp",
+			null
+		]
+	],
+	"HEADER_EXTENSIONS" : [ "h", "hh", "h++", "hm", "hpp", "hxx", "in", "txx" ],
+	"INCLUDE_DIR" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-build/QtNodes_autogen/include",
+	"MOC_COMPILATION_FILE" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-build/QtNodes_autogen/mocs_compilation.cpp",
+	"MOC_DEFINITIONS" : 
+	[
+		"NODE_EDITOR_EXPORTS",
+		"NODE_EDITOR_SHARED",
+		"QT_CORE_LIB",
+		"QT_GUI_LIB",
+		"QT_NO_DEBUG",
+		"QT_NO_KEYWORDS",
+		"QT_OPENGL_LIB",
+		"QT_WIDGETS_LIB"
+	],
+	"MOC_DEPEND_FILTERS" : 
+	[
+		[
+			"Q_PLUGIN_METADATA",
+			"[\n][ \t]*Q_PLUGIN_METADATA[ \t]*\\([^\\)]*FILE[ \t]*\"([^\"]+)\""
+		]
+	],
+	"MOC_INCLUDES" : 
+	[
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal",
+		"/opt/homebrew/include/QtCore",
+		"/opt/homebrew/lib/QtCore.framework",
+		"/opt/homebrew/share/qt/mkspecs/macx-clang",
+		"/opt/homebrew/include/QtWidgets",
+		"/opt/homebrew/lib/QtWidgets.framework",
+		"/opt/homebrew/include/QtGui",
+		"/opt/homebrew/lib/QtGui.framework",
+		"/opt/homebrew/include",
+		"/opt/homebrew/include/QtOpenGL",
+		"/opt/homebrew/lib/QtOpenGL.framework",
+		"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1",
+		"/Library/Developer/CommandLineTools/usr/lib/clang/17/include",
+		"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include",
+		"/Library/Developer/CommandLineTools/usr/include"
+	],
+	"MOC_MACRO_NAMES" : 
+	[
+		"Q_OBJECT",
+		"Q_GADGET",
+		"Q_NAMESPACE",
+		"Q_NAMESPACE_EXPORT",
+		"Q_GADGET_EXPORT",
+		"Q_ENUM_NS"
+	],
+	"MOC_OPTIONS" : [],
+	"MOC_PATH_PREFIX" : false,
+	"MOC_PREDEFS_CMD" : 
+	[
+		"/usr/bin/c++",
+		"-std=gnu++17",
+		"-w",
+		"-dM",
+		"-E",
+		"/opt/homebrew/share/cmake/Modules/CMakeCXXCompilerABI.cpp"
+	],
+	"MOC_PREDEFS_FILE" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-build/QtNodes_autogen/moc_predefs.h",
+	"MOC_RELAXED_MODE" : false,
+	"MOC_SKIP" : 
+	[
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/AbstractGraphModel.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/AbstractNodeGeometry.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/AbstractNodePainter.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/BasicGraphicsScene.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/Compiler.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/ConnectionGraphicsObject.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/ConnectionIdHash.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/ConnectionIdUtils.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/ConnectionState.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/ConnectionStyle.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/DataFlowGraphModel.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/DataFlowGraphicsScene.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/DefaultNodePainter.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/Definitions.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/Export.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/GraphicsView.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/GraphicsViewStyle.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/NodeData.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/NodeDelegateModel.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/NodeDelegateModelRegistry.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/NodeGraphicsObject.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/NodeState.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/NodeStyle.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/OperatingSystem.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/QStringStdHash.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/QUuidStdHash.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/Serializable.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/Style.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/StyleCollection.hpp",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/include/QtNodes/internal/locateNode.hpp"
+	],
+	"MULTI_CONFIG" : false,
+	"PARALLEL" : 10,
+	"PARSE_CACHE_FILE" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-build/CMakeFiles/QtNodes_autogen.dir/ParseCache.txt",
+	"QT_MOC_EXECUTABLE" : "/opt/homebrew/share/qt/libexec/moc",
+	"QT_UIC_EXECUTABLE" : "",
+	"QT_VERSION_MAJOR" : 6,
+	"QT_VERSION_MINOR" : 12,
+	"SETTINGS_FILE" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-build/CMakeFiles/QtNodes_autogen.dir/AutogenUsed.txt",
+	"SOURCES" : 
+	[
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/AbstractGraphModel.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/AbstractNodeGeometry.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/BasicGraphicsScene.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/ConnectionGraphicsObject.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/ConnectionPainter.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/ConnectionState.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/ConnectionStyle.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/DataFlowGraphModel.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/DataFlowGraphicsScene.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/DefaultHorizontalNodeGeometry.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/DefaultNodePainter.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/DefaultVerticalNodeGeometry.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/Definitions.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/GraphicsView.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/GraphicsViewStyle.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/NodeConnectionInteraction.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/NodeDelegateModel.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/NodeDelegateModelRegistry.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/NodeGraphicsObject.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/NodeState.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/NodeStyle.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/StyleCollection.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/UndoCommands.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-src/src/locateNode.cpp",
+			"Mu",
+			null
+		]
+	],
+	"USE_BETTER_GRAPH" : true,
+	"VERBOSITY" : 0
+}

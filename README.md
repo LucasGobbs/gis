@@ -147,7 +147,8 @@ working examples.
 ## Input map
 
 `assets/input.ini` is the single key source (ini: `action = [mod+]key`; mods
-`shift|ctrl|alt|gui`): F1 zen, F2 editor, F3 glass, F4 theater, F5 mobile,
+`shift|ctrl|alt|gui`): F1 zen, F2 editor, F3 preview cycle (float/split/full),
+F4 theater, F5 mobile,
 Cmd+S save-all, Cmd+B sidebar, Tab flycam, Q/E fly up/down. Window actions
 fall back to compiled defaults when the file is missing.
 

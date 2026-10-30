@@ -96,13 +96,21 @@ Plan plan_build(const std::vector<Pass_Descriptor>& passes, const Graph_Json& do
     plan.output_pass = -1;
     int pass_edges = 0;
 
-    for (const Link_Json& link : doc.links) {
+    // Legacy documents link the viewport node without the pin
+    // ("show2d"); the editor migrates on read, the runtime normalizes
+    // here so old graph.json files keep their viewport output. doc is
+    // const: normalize into a local copy.
+    std::vector<Link_Json> links = doc.links;
+    for (Link_Json& link : links)
+        if (link.to == "show2d") link.to = "show2d:frame";
+    for (const Link_Json& link : links) {
         int producer = -1;
         std::string output_pin;
         bool producer_ok = find_pass_endpoint(passes, link.from, producer, output_pin);
         if (!producer_ok) {
-            // Not a pass output: user resource, legacy fixed node, or params
-            // endpoint. Only user resources route into the plan.
+            // Not a pass output: user resource or legacy fixed node. params is
+            // wireless (broadcast uniforms), never a wired producer.
+            if (link.from == "params") return fail("params is wireless: remove wired link from " + link.to);
             Resource_Kind kind = Resource_Kind::TEXTURE;
             Resource_Source source = Resource_Source::FILE;
             size_t prefix_len = 0;

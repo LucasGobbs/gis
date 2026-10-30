@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/CMakeFiles/qlementine-icons-populate"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/CMakeFiles/qlementine-icons-populate.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/CMakeFiles/qlementine-icons-populate-complete.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/qlementine-icons-populate-prefix/src/qlementine-icons-populate-stamp/qlementine-icons-populate-build.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/qlementine-icons-populate-prefix/src/qlementine-icons-populate-stamp/qlementine-icons-populate-configure.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/qlementine-icons-populate-prefix/src/qlementine-icons-populate-stamp/qlementine-icons-populate-download.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/qlementine-icons-populate-prefix/src/qlementine-icons-populate-stamp/qlementine-icons-populate-install.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/qlementine-icons-populate-prefix/src/qlementine-icons-populate-stamp/qlementine-icons-populate-mkdir.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/qlementine-icons-populate-prefix/src/qlementine-icons-populate-stamp/qlementine-icons-populate-patch.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/qlementine-icons-populate-prefix/src/qlementine-icons-populate-stamp/qlementine-icons-populate-test.rule"
+		},
+		{
+			"file" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/qlementine-icons-populate-prefix/src/qlementine-icons-populate-stamp/qlementine-icons-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"qlementine-icons-populate"
+		],
+		"name" : "qlementine-icons-populate"
+	}
+}

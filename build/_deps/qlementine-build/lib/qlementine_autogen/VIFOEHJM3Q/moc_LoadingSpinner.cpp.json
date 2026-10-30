@@ -1,0 +1,61 @@
+{
+    "classes": [
+        {
+            "className": "LoadingSpinner",
+            "lineNumber": 16,
+            "object": true,
+            "properties": [
+                {
+                    "constant": false,
+                    "designable": true,
+                    "final": false,
+                    "index": 0,
+                    "lineNumber": 19,
+                    "name": "spinning",
+                    "notify": "spinningChanged",
+                    "override": false,
+                    "read": "spinning",
+                    "required": false,
+                    "scriptable": true,
+                    "stored": true,
+                    "type": "bool",
+                    "user": false,
+                    "virtual": false,
+                    "write": "setSpinning"
+                }
+            ],
+            "qualifiedClassName": "oclero::qlementine::LoadingSpinner",
+            "signals": [
+                {
+                    "access": "public",
+                    "index": 0,
+                    "lineNumber": 32,
+                    "name": "spinningChanged",
+                    "returnType": "void"
+                }
+            ],
+            "slots": [
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "type": "bool"
+                        }
+                    ],
+                    "index": 1,
+                    "lineNumber": 26,
+                    "name": "setSpinning",
+                    "returnType": "void"
+                }
+            ],
+            "superClasses": [
+                {
+                    "access": "public",
+                    "name": "QWidget"
+                }
+            ]
+        }
+    ],
+    "inputFile": "LoadingSpinner.hpp",
+    "outputRevision": 69
+}

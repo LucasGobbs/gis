@@ -1,0 +1,56 @@
+{
+    "classes": [
+        {
+            "className": "Node_View",
+            "lineNumber": 98,
+            "object": true,
+            "qualifiedClassName": "graph_editor::Node_View",
+            "signals": [
+                {
+                    "access": "public",
+                    "index": 0,
+                    "lineNumber": 170,
+                    "name": "pipeline_changed",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "name": "key",
+                            "type": "QString"
+                        },
+                        {
+                            "name": "kind",
+                            "type": "QString"
+                        }
+                    ],
+                    "index": 1,
+                    "lineNumber": 173,
+                    "name": "node_selected",
+                    "returnType": "void"
+                }
+            ],
+            "superClasses": [
+                {
+                    "access": "public",
+                    "name": "QWidget"
+                }
+            ]
+        },
+        {
+            "className": "Confirm_Dialog",
+            "lineNumber": 204,
+            "object": true,
+            "qualifiedClassName": "graph_editor::Confirm_Dialog",
+            "superClasses": [
+                {
+                    "access": "public",
+                    "name": "QDialog"
+                }
+            ]
+        }
+    ],
+    "inputFile": "graph_editor.hpp",
+    "outputRevision": 69
+}

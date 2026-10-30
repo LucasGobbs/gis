@@ -1,0 +1,15 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/gobbi/Desktop/code/projects/gis/build/cmake_install.cmake",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-build/cmake_install.cmake",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-build/sources/cmake_install.cmake",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-build/cmake_install.cmake",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-build/lib/cmake_install.cmake",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-build/cmake_install.cmake",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-build/external/cmake_install.cmake",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/cmake_install.cmake",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/src/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

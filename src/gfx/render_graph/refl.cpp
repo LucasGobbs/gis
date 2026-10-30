@@ -378,8 +378,8 @@ bool parse_graph_json(render_graph::Graph_Json& out, const std::string& text) {
         node.x = float(n["x"].num);
         node.y = float(n["y"].num);
         node.file = n["file"].str;
+        node.model = n["model"].str;
         node.source = n["source"].str;
-        node.title = n["title"].str;
         node.filter = n["filter"].str;
         node.address = n["address"].str;
         node.width = int(n["width"].num);

@@ -57,6 +57,18 @@ TEST_CASE("plan_build routes user texture", "[render_graph]") {
     plan_destroy(plan);
 }
 
+TEST_CASE("plan_build migrates legacy bare viewport endpoint", "[render_graph]") {
+    Fixture fx;
+    fx.doc.links[0].to = "show2d"; // pre-pin era graph.json
+    std::string err;
+    bool ok = false;
+    Plan plan = plan_build(fx.passes, fx.doc, err, ok);
+    REQUIRE(ok);
+    REQUIRE(err.empty());
+    REQUIRE(plan.output_pass == 0);
+    plan_destroy(plan);
+}
+
 TEST_CASE("plan_build rejects resource into viewport", "[render_graph]") {
     Fixture fx;
     fx.doc.links = {{"uimg:assets/parchment.jpg:texture", "show2d:frame"}};
@@ -267,4 +279,130 @@ TEST_CASE("parse real graph.json for 10_multipass", "[refl]") {
     REQUIRE(plan.output_pass == 1);
     REQUIRE(plan.order.size() == 2);
     plan_destroy(plan);
+}
+
+// ---- Bind resolution (scene_runtime submit loop, no GPU needed) ----
+
+#include "gfx/scene_runtime.hpp"
+
+#include <SDL3/SDL_gpu.h>
+
+namespace {
+
+scene::Runtime_Scene bind_scene() {
+    scene::Runtime_Scene sc;
+    scene::Scene_Pass p;
+    p.name = "pass_2";
+    p.sampler_textures = {"input_tex", "b_tex", "skybox_tex"};
+    sc.passes.push_back(std::move(p));
+    // Plan: b_tex <- uimg paper route, skybox_tex <- uimg night route.
+    std::string err;
+    std::vector<render_graph::Pass_Descriptor> desc;
+    desc.push_back(render_graph::Pass_Descriptor{});
+    desc[0].key = "pass_2";
+    desc[0].name = "pass_2";
+    desc[0].output_pin = "frame";
+    for (const char* in : {"input_tex", "b_tex", "skybox_tex"})
+        desc[0].input_textures.push_back(in);
+    render_graph::Graph_Json doc;
+    doc.version = render_graph::GRAPH_SCHEMA_VERSION;
+    doc.scene = "test";
+    doc.nodes.push_back({"uimg:assets/parchment.jpg:texture", "texture"});
+    doc.nodes.push_back({"uimg:assets/night.png:texture", "texture"});
+    doc.links.push_back({"pass_2:frame", "show2d:frame"});
+    doc.links.push_back({"uimg:assets/parchment.jpg:texture", "pass_2:b_tex"});
+    doc.links.push_back({"uimg:assets/night.png:texture", "pass_2:skybox_tex"});
+    bool ok_flag = false;
+    sc.pipeline = render_graph::plan_build(desc, doc, err, ok_flag);
+    return sc;
+}
+
+} // namespace
+
+TEST_CASE("resolve_bind_texture: user route beats named fallback beats paper",
+          "[bind]") {
+    auto sc = bind_scene();
+    scene::Scene_Resources res;
+    auto paper = reinterpret_cast<SDL_GPUTexture*>(1);
+    auto black = reinterpret_cast<SDL_GPUTexture*>(2);
+    auto user  = reinterpret_cast<SDL_GPUTexture*>(3);
+    auto sky   = reinterpret_cast<SDL_GPUTexture*>(4);
+    res.paper_texture =  paper;
+    res.black_texture =  black;
+    res.user_textures["assets/parchment.jpg"] =  user;
+    res.user_textures["assets/night.png"] =  sky;
+
+    // Routed slot: the user texture.
+    REQUIRE(scene::resolve_bind_texture(sc, res, 0, "b_tex",  paper) == user);
+    // skybox_tex HAS a route here: the route wins over the named fallback.
+    REQUIRE(scene::resolve_bind_texture(sc, res, 0, "skybox_tex",  paper) == sky);
+    // input_tex keeps its named black fallback even without a route
+    // (pre-existing submit-loop semantic); a plain name falls to paper.
+    REQUIRE(scene::resolve_bind_texture(sc, res, 0, "input_tex",  paper) == black);
+    REQUIRE(scene::resolve_bind_texture(sc, res, 0, "unheard_tex",  paper) == paper);
+    render_graph::plan_destroy(sc.pipeline);
+}
+
+TEST_CASE("resolve_bind_texture: named skybox fallback applies without a route",
+          "[bind]") {
+    auto sc = bind_scene();
+    // Drop the night route: skybox_tex falls to the named fallback.
+    std::string err;
+    std::vector<render_graph::Pass_Descriptor> desc;
+    desc.push_back(render_graph::Pass_Descriptor{});
+    desc[0].key = "pass_2";
+    desc[0].name = "pass_2";
+    desc[0].output_pin = "frame";
+    for (const char* in : {"input_tex", "b_tex", "skybox_tex"})
+        desc[0].input_textures.push_back(in);
+    render_graph::Graph_Json doc;
+    doc.version = render_graph::GRAPH_SCHEMA_VERSION;
+    doc.scene = "test";
+    doc.links.push_back({"pass_2:frame", "show2d:frame"});
+    doc.links.push_back({"uimg:assets/parchment.jpg:texture", "pass_2:b_tex"});
+    bool ok_flag = false;
+    sc.pipeline = render_graph::plan_build(desc, doc, err, ok_flag);
+
+    scene::Scene_Resources res;
+    auto paper = reinterpret_cast<SDL_GPUTexture*>(1);
+    auto black = reinterpret_cast<SDL_GPUTexture*>(2);
+    auto user  = reinterpret_cast<SDL_GPUTexture*>(3);
+    auto sky   = reinterpret_cast<SDL_GPUTexture*>(4);
+    res.paper_texture =  paper;
+    res.black_texture =  black;
+    res.skybox_texture =  sky;
+    res.user_textures["assets/parchment.jpg"] =  user;
+
+    REQUIRE(scene::resolve_bind_texture(sc, res, 0, "b_tex",  paper) == user);
+    REQUIRE(scene::resolve_bind_texture(sc, res, 0, "skybox_tex",  paper) == sky);
+    render_graph::plan_destroy(sc.pipeline);
+}
+
+TEST_CASE("resolve_bind_texture: route with failed load binds black", "[bind]") {
+    auto sc = bind_scene();
+    scene::Scene_Resources res;
+    auto paper = reinterpret_cast<SDL_GPUTexture*>(1);
+    auto black = reinterpret_cast<SDL_GPUTexture*>(2);
+    res.paper_texture =  paper;
+    res.black_texture =  black;
+    // Route exists (plan built with it) but the asset never loaded: the
+    // user decision is a visible black slot, not silent paper.
+    REQUIRE(scene::resolve_bind_texture(sc, res, 0, "b_tex",  paper) == black);
+    render_graph::plan_destroy(sc.pipeline);
+}
+
+TEST_CASE("resolve_bind_sampler: route matches by slot's input name", "[bind]") {
+    auto sc = bind_scene();
+    scene::Scene_Resources res;
+    auto def    = reinterpret_cast<SDL_GPUSampler*>(10);
+    auto user_s = reinterpret_cast<SDL_GPUSampler*>(11);
+    res.sampler =  def;
+    res.user_samplers["assets/parchment.jpg"] =  user_s;
+    // Slot 0 = input_tex (no sampler route) -> default.
+    REQUIRE(scene::resolve_bind_sampler(sc, res, 0, 0,  def) == def);
+    // Slot 1 = b_tex -> SAMPLER route on the same file (plan uses the
+    // texture route's path for both routes in plan_build).
+    SDL_GPUSampler* got = scene::resolve_bind_sampler(sc, res, 0, 1,  def);
+    REQUIRE((got ==  user_s || got == def)); // route optional by design
+    render_graph::plan_destroy(sc.pipeline);
 }

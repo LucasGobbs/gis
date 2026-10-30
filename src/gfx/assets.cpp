@@ -273,18 +273,19 @@ bool load_gltf(gfx::Gfx& gfx, const std::string& path, Model& out) {
                 int w = 0, h = 0, channels = 0;
                 stbi_uc* pixels = stbi_load_from_memory(img_data, int(img_size), &w, &h, &channels, 4);
                 if (pixels) {
-                    out.base_color_texture = gfx::gfx_texture_create(
+                    out.base_color_texture_handle = gfx::gfx_texture_create(
                         gfx, uint32_t(w), uint32_t(h),
                         SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
                         SDL_GPU_TEXTUREUSAGE_SAMPLER);
-                    if (gfx.texture_handles.contains(out.base_color_texture)) {
-                        gfx::Texture* resource = gfx::gfx_texture_get(gfx, out.base_color_texture);
+                    if (gfx.texture_handles.contains(out.base_color_texture_handle)) {
+                        gfx::Texture* resource = gfx::gfx_texture_get(gfx, out.base_color_texture_handle);
                         size_t bytes = size_t(w) * size_t(h) * 4;
                         resource->staging_data.assign(pixels, pixels + bytes);
                         gfx::uploader_begin(gfx.uploader);
-                        gfx::uploader_upload_texture(gfx.uploader, out.base_color_texture);
+                        gfx::uploader_upload_texture(gfx.uploader, out.base_color_texture_handle);
                         gfx::uploader_flush_blocking(gfx.uploader);
                         resource->staging_data.clear();
+                        out.base_color_texture = resource->handle;  // cache pointer for shader binding
                         std::fprintf(stderr, "model: %s extracted base color texture %dx%d\n",
                                      path.c_str(), w, h);
                     }
@@ -589,7 +590,7 @@ void destroy(gfx::Gfx& gfx, Assets& a) {
     for (Model& m : a.models) {
         gfx::gfx_buffer_destroy(gfx, m.vb_handle);
         gfx::gfx_buffer_destroy(gfx, m.ib_handle);
-        gfx::gfx_texture_destroy(gfx, m.base_color_texture);
+        gfx::gfx_texture_destroy(gfx, m.base_color_texture_handle);
         if (m.texture_sampler) SDL_ReleaseGPUSampler(gfx.gpu, m.texture_sampler);
     }
     a = {};

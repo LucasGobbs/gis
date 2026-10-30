@@ -1,0 +1,2 @@
+/usr/bin/ar qc libqlementine-icons.a "CMakeFiles/qlementine-icons.dir/qlementine-icons_autogen/mocs_compilation.cpp.o" "CMakeFiles/qlementine-icons.dir/src/icons/QlementineIcons.cpp.o" "CMakeFiles/qlementine-icons.dir/.qt/rcc/qrc_qlementine_icons.cpp.o"
+/usr/bin/ranlib libqlementine-icons.a

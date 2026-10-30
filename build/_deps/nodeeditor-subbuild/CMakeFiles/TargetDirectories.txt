@@ -1,0 +1,3 @@
+/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/CMakeFiles/nodeeditor-populate.dir
+/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/CMakeFiles/edit_cache.dir
+/Users/gobbi/Desktop/code/projects/gis/build/_deps/nodeeditor-subbuild/CMakeFiles/rebuild_cache.dir

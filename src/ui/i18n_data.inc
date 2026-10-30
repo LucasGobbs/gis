@@ -2,6 +2,14 @@
 // re-run the extraction when the Odin catalogs change.
 struct Entry { const char* key; const char* value; };
 static const Entry k_es[] = {
+    {"float the preview", "flotar la vista previa"},
+    {"drop: dock split", "soltar: dividir aquí"},
+    {"drag me: dock left or right",
+     "arrástrame: acoplar a izquierda o derecha"},
+    {"dock preview: split", "acoplar vista previa: dividida"},
+    {"dock preview: full", "acoplar vista previa: completa"},
+    {"cycle preview: float, split, full",
+     "alternar vista previa: flotante, dividida, completa"},
     {"%d frames @ %d fps", "%d cuadros @ %d fps"},
     {"%s params", "parámetros de %s"},
     {"%s: definition in %s.slang:%d", "%s: definición en %s.slang:%d"},
@@ -138,6 +146,10 @@ static const Entry k_es[] = {
     {"time (s)", "tiempo (s)"},
     {"transparency", "transparencia"},
     {"ui font", "fuente de la UI"},
+    {"workspace", "espacio de trabajo"},
+    {"development", "desarrollo"},
+    {"presentation", "presentación"},
+    {"pipeline", "pipeline"},
     {"waiting for GPU...", "esperando la GPU..."},
     {"apply", "aplicar"},
     {"cancel", "cancelar"},
@@ -190,6 +202,14 @@ static const Entry k_es[] = {
 };
 
 static const Entry k_pt[] = {
+    {"float the preview", "flutuar a pré-visualização"},
+    {"drop: dock split", "soltar: dividir aqui"},
+    {"drag me: dock left or right",
+     "arraste-me: acoplar à esquerda ou direita"},
+    {"dock preview: split", "acoplar pré-visualização: dividida"},
+    {"dock preview: full", "acoplar pré-visualização: completa"},
+    {"cycle preview: float, split, full",
+     "alternar pré-visualização: flutuante, dividida, completa"},
     {"%d frames @ %d fps", "%d quadros @ %d fps"},
     {"%s params", "parâmetros de %s"},
     {"%s: definition in %s.slang:%d", "%s: definição em %s.slang:%d"},
@@ -312,6 +332,10 @@ static const Entry k_pt[] = {
     {"time (s)", "tempo (s)"},
     {"transparency", "transparência"},
     {"ui font", "fonte da UI"},
+    {"workspace", "espaço de trabalho"},
+    {"development", "desenvolvimento"},
+    {"presentation", "apresentação"},
+    {"pipeline", "pipeline"},
     {"waiting for GPU...", "aguardando a GPU..."},
     {"apply", "aplicar"},
     {"cancel", "cancelar"},

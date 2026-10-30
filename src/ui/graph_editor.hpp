@@ -12,8 +12,8 @@
 #include <QImage>
 #include <QGraphicsPixmapItem>
 #include <QMap>
+#include <QVariantAnimation>
 #include <QString>
-#include <QTimer>
 #include <QWidget>
 #include "QtNodes/internal/DataFlowGraphModel.hpp"
 #include "QtNodes/internal/DataFlowGraphicsScene.hpp"
@@ -21,6 +21,7 @@
 #include "QtNodes/internal/NodeDelegateModel.hpp"
 
 #include <QGraphicsObject>
+#include <cstring>
 
 #include "gfx/scene_runtime.hpp"
 
@@ -36,6 +37,7 @@ struct Graph_Node {
     float x = 0, y = 0;
     // User-resource extras.
     QString file;
+    QString model;     // mesh nodes: assets/models basename ("stanford_dragon")
     QString filter;    // point|linear
     QString address;   // clamp|repeat|mirror
     int width = 0, height = 0;
@@ -60,6 +62,11 @@ public:
         QString file = key_;
         file.remove("comp:");
         file.remove("gfx:");
+        // Resource nodes carry a pin suffix ("uimg:<path>:texture") — show
+        // just the file basename.
+        for (const char* suffix : {":texture", ":sampler", ":ModelVertex"})
+            if (file.endsWith(QLatin1String(suffix)))
+                file.chop(int(std::strlen(suffix)));
         return file.section('/', -1);
     }
     QString name() const override { return kind_; }
@@ -79,6 +86,9 @@ public:
     // model's port counts are applied.
     QStringList tex_inputs;
     QStringList uniform_inputs;
+    // plan13: re-derive the node style from the active editor skin
+    // (called by Node_View::apply_theme on every theme switch).
+    void apply_theme();
 
 private:
     QString kind_;
@@ -111,6 +121,11 @@ public:
     void clear_dirty() { dirty_ = false; }
     bool dirty_layout() const { return dirty_; }
 
+    // Plan 05 test hook: QVariantAnimation needs a running event loop to
+    // tick; tests drive the fade synchronously instead. Advances every
+    // running flash animation to `elapsed_ms` (setCurrentTime = the exact
+    // stack of the reported crash). Returns animations still running.
+    int debug_step_flashes(int elapsed_ms);
 
 private:
     const scene::Runtime_Scene* current_scene_ = nullptr;
@@ -142,9 +157,29 @@ private:
     bool previews_enabled_ = true;
     QMap<QtNodes::NodeId, QGraphicsPixmapItem*> preview_items_;
     QMap<QtNodes::NodeId, QGraphicsTextItem*> provenance_items_;
+    // plan10 feedback: one-shot halo flashes (self-removing after the
+    // fade). Keyed by node id; a new flash replaces the old one.
+    QMap<QtNodes::NodeId, QGraphicsPathItem*> link_flash_items_;
+    QMap<QtNodes::NodeId, QGraphicsEllipseItem*> pass_flash_items_;
+    std::vector<QVariantAnimation*> flash_anims_; // live fades (Plan 05 hook)
+    void flash_link(QtNodes::ConnectionId id);   // new wire accepted
+    void flash_pass(QtNodes::NodeId id);         // pass output changed
 
 signals:
-    void pipeline_changed(); // links changed; host flushes graph.json now
+    // Links changed; the host flushes graph.json now (immediate save).
+    void pipeline_changed();
+    // plan6 selection sync: a pass node was clicked; the shell opens the
+    // matching shader tab (pass nodes only; params/output are silent).
+    void node_selected(const QString& key, const QString& kind);
+
+public:
+    // Inverse sync: the editor activated a shader tab; select (and reveal)
+    // the matching pass node. No-op when no node carries the key.
+    void select_node_for_key(const QString& key);
+    // plan13: the editor skin drives the whole graph look — re-applies
+    // StyleCollection (grid/nodes/wires) and every live Scene_Delegate.
+    // Called by Shell::apply_chrome_theme on every theme switch.
+    void apply_theme();
 
 private:
     void rebuild_scene();

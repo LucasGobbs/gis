@@ -101,23 +101,34 @@ signals:
     void diagnostics_ready(const std::vector<editor::Diagnostic>& diags);
     void font_changed(int pt);
     void split_toggled(bool on);
+    // plan6 graph sync: the user activated this file's tab (rel path).
+    void tab_activated(const QString& rel);
 
 private slots:
     void on_tab_changed(int index);
-private:
-    // Empty-state overlay (first run / all tabs closed): teaches the model.
-    QWidget* empty_state_ = nullptr;
-    void update_empty_state();
     void on_modified(int index);
     void on_lsp_ready_read();
     void on_lsp_finished(int exit_code, int status); // QProcess::ExitStatus as int (keeps the header QProcess-free)
+
+private:
+    QWidget* empty_state_ = nullptr;
+    void update_empty_state();
+    // Chrome pieces of the editor that follow the code skin (find bar,
+    // split button) — restyled from the shared skin table, no literals.
+    void set_find_bar_theme();
+    void update_split_btn_theme();
     // Editor viewport event filter: Cmd+click -> definition; Cmd hover ->
     // underline the identifier under the cursor. Per-viewport (load_named).
     bool eventFilter(QObject* watched, QEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     bool line_col_at(QsciScintilla* edit, const QPoint& vp, int& line, int& col);
     void update_link_underline(QsciScintilla* edit, const QPoint& vp, bool cmd);
+    // Tab chrome (Plan 03 §2): per-tab text colors follow active/dirty
+    // state; called from set_find_bar_theme, on_tab_changed, on_modified.
+    void sync_tab_colors();
+public: // TEMP-PROF (Plan 01 shim reads the active tab; revert with probes)
     QsciScintilla* current_editor();
+private:
     QString file_path_for_rel(const QString& rel) const;
     Open_Doc* find_doc(const QString& rel);
     Open_Doc* doc_for_widget(QWidget* widget);

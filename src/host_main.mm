@@ -792,8 +792,7 @@ auto vph = [&] { return shell.viewport()->height(); };
             resources.model_vb = picked->vb;
             resources.model_ib = picked->ib;
             resources.model_index_count = picked->index_count;
-            gfx::Texture* tex_res = gfx::gfx_texture_get(gfx, picked->base_color_texture);
-            resources.model_base_color_texture = tex_res ? tex_res->handle : nullptr;
+            resources.model_base_color_texture = picked->base_color_texture;
             resources.model_base_color_sampler = picked->texture_sampler;
             std::fprintf(stderr, "scene: picked model '%s', texture=%p sampler=%p\n",
                          picked->name.c_str(), resources.model_base_color_texture, picked->texture_sampler);

@@ -5,8 +5,17 @@
 #include "graph_editor.hpp"
 #include "gfx/render_graph/refl.hpp"
 #include "notify.hpp"
+#include <algorithm>
+#include "theme.hpp"
 
 #include "QtNodes/internal/NodeGraphicsObject.hpp"
+#include "QtNodes/internal/StyleCollection.hpp"
+#include "QtNodes/internal/ConnectionGraphicsObject.hpp"
+#include "shell.hpp" // reduced_motion()
+
+#include <QGraphicsPathItem>
+#include <QTimer>
+#include <QVariantAnimation>
 
 
 #include <QDialogButtonBox>
@@ -36,23 +45,25 @@ namespace graph_editor {
 
 Scene_Delegate::Scene_Delegate(QString kind, QString key)
     : kind_(std::move(kind)), key_(std::move(key)) {
-    // Kind at a GLANCE: boundary + gradient hues per node type, so the
-    // title only needs the file name (no comp:/gfx: prefix in the way).
-    // params=amber (Safelight), compute=violet, graphics=blue, output=
-    // green, texture/mesh/widget=gray.
+    apply_theme();
+}
+
+// plan13: the editor skin drives the node look — re-derived on theme
+// switch (Node_View::apply_theme re-styles every live delegate).
+void Scene_Delegate::apply_theme() {
+    // Kind at a GLANCE: boundary + gradient hues per node type from the
+    // theme's semantic resource tokens (per-skin; data-defined link colors
+    // follow the same hues). params=accent, compute=violet, graphics=blue,
+    // output=green, texture/mesh/widget=neutral.
     QtNodes::NodeStyle st = nodeStyle();
-    QColor boundary, g0, g1;
-    if (kind_ == "params") {
-        boundary = QColor(0xE8, 0xA8, 0x57); g0 = QColor(0x8f, 0x62, 0x2b); g1 = QColor(0x5e, 0x40, 0x1c);
-    } else if (kind_ == "compute") {
-        boundary = QColor(0xc9, 0x9e, 0xf2); g0 = QColor(0x6b, 0x53, 0x8c); g1 = QColor(0x46, 0x37, 0x5e);
-    } else if (kind_ == "graphics") {
-        boundary = QColor(0x9e, 0xc2, 0xf2); g0 = QColor(0x4a, 0x5e, 0x8c); g1 = QColor(0x31, 0x3f, 0x5e);
-    } else if (kind_ == "output") {
-        boundary = QColor(0xa9, 0xd4, 0x9e); g0 = QColor(0x4f, 0x74, 0x48); g1 = QColor(0x35, 0x4d, 0x30);
-    } else {
-        boundary = QColor(0x8c, 0x90, 0x99); g0 = QColor(0x4a, 0x4d, 0x55); g1 = QColor(0x31, 0x33, 0x38);
-    }
+    theme::Resource_Kind rk = theme::Resource_Kind::Neutral;
+    if (kind_ == "params") rk = theme::Resource_Kind::Params;
+    else if (kind_ == "compute") rk = theme::Resource_Kind::Compute;
+    else if (kind_ == "graphics") rk = theme::Resource_Kind::Graphics;
+    else if (kind_ == "output") rk = theme::Resource_Kind::Output;
+    const QColor boundary = theme::resource_rgb(rk);
+    const QColor g0 = boundary.darker(190);
+    const QColor g1 = boundary.darker(300);
     st.NormalBoundaryColor = boundary;
     st.SelectedBoundaryColor = boundary.lighter(130);
     st.GradientColor0 = g0; st.GradientColor1 = g1;
@@ -61,9 +72,14 @@ Scene_Delegate::Scene_Delegate(QString kind, QString key)
 }
 
 unsigned int Scene_Delegate::nPorts(QtNodes::PortType type) const {
-    if (type == QtNodes::PortType::Out)
-        return (kind_ == "params") ? unsigned(uniform_inputs.size())
-             : (kind_ == "output" ? 0u : 1u);
+    if (type == QtNodes::PortType::Out) {
+        if (kind_ == "params") return unsigned(uniform_inputs.size());
+        if (kind_ == "output") return 0u;
+        // Image nodes expose BOTH route pins: the sampled texture and the
+        // sampler configured by the node's filter/address fields.
+        if (kind_ == "texture") return 2u;
+        return 1u;
+    }
     if (type == QtNodes::PortType::In) {
         if (kind_ == "output") return 1u;
         return unsigned(tex_inputs.size() + uniform_inputs.size());
@@ -73,12 +89,18 @@ unsigned int Scene_Delegate::nPorts(QtNodes::PortType type) const {
 
 QtNodes::NodeDataType Scene_Delegate::dataType(QtNodes::PortType type,
                                                QtNodes::PortIndex index) const {
+    if (type == QtNodes::PortType::Out) {
+        // id "frame" matches shader texture inputs: DataFlowGraphModel::connectionPossible
+        // requires id equality. The name labels the port as texture or sampler.
+        if (kind_ == "texture") return index == 1 ? QtNodes::NodeDataType{"frame", "sampler"}
+                                                  : QtNodes::NodeDataType{"frame", "texture"};
+        if (kind_ == "mesh") return {"vertex", "vertex"};
+    }
     if (type == QtNodes::PortType::In && index >= QtNodes::PortIndex(tex_inputs.size())) {
         return {"uniform", "uniform"};
     }
     return {"frame", type == QtNodes::PortType::In ? "in" : "frame"};
 }
-
 // Port captions: the Odin labels. Texture inputs show the binding name;
 // uniform inputs show "<block> (SceneUniforms)"-style (the block name);
 // the params node's outputs show the block each broadcast feeds. Captions
@@ -95,6 +117,10 @@ QString Scene_Delegate::portCaption(QtNodes::PortType type, QtNodes::PortIndex i
             return uniform_inputs[u] + " (uniform)";
     } else if (type == QtNodes::PortType::Out && kind_ == "params") {
         if (index < uniform_inputs.size()) return uniform_inputs[index] + " (uniform)";
+    } else if (type == QtNodes::PortType::Out && kind_ == "texture") {
+        return index == 1 ? "sampler" : "texture";
+    } else if (type == QtNodes::PortType::Out && kind_ == "mesh") {
+        return "vertex";
     } else if (type == QtNodes::PortType::Out) {
         return "frame";
     }
@@ -150,6 +176,11 @@ Node_View::Node_View(QWidget* parent) : QWidget(parent) {
             model_->deleteConnection(id);
             return;
         }
+        // params is wireless: its outputs broadcast by name, never wire.
+        if (from_key == "params") {
+            model_->deleteConnection(id);
+            return;
+        }
         QString to_pin = to_key;
         const auto descs = descriptors();
         QString from_pin = from_key;
@@ -162,14 +193,25 @@ Node_View::Node_View(QWidget* parent) : QWidget(parent) {
             if (QString::fromStdString(desc.key) == from_key)
                 from_pin = from_key + ":" + QString::fromStdString(desc.output_pin);
         }
-        if (to_key == "show2d") to_pin = to_key + ":frame";
+        // Resource-node outputs name their PLAN route suffix: the texture
+        // node's two pins route as "uimg:<path>:texture"/":sampler"; the
+        // mesh node's single pin routes as "uobj:<path>:ModelVertex".
+        if (from_key.startsWith("uimg:")) {
+            const QString path = from_key.section(':', 1, -2);
+            from_pin = id.outPortIndex == 1 ? "uimg:" + path + ":sampler"
+                                            : "uimg:" + path + ":texture";
+        } else if (from_key.startsWith("uobj:")) {
+            const QString path = from_key.section(':', 1, -2);
+            from_pin = "uobj:" + path + ":ModelVertex";
+        }
         // Producer replacement: an input can have one producer. If the target
         // pin already had a link, ask before rewiring (Odin parity).
         QString replaced_from;
         for (long i = long(links_.size()) - 1; i >= 0; --i) {
             if (links_[size_t(i)].to == to_pin) replaced_from = links_[size_t(i)].from;
         }
-        if (!replaced_from.isEmpty() && replaced_from != from_pin) {
+        if (!replaced_from.isEmpty() && replaced_from != from_pin &&
+            !from_key.startsWith("uimg:") && !from_key.startsWith("uobj:")) {
             Confirm_Dialog dlg(
                 QString("replace %1 -> %2 with %3 -> %2?")
                     .arg(replaced_from, to_pin, from_pin),
@@ -212,6 +254,7 @@ Node_View::Node_View(QWidget* parent) : QWidget(parent) {
             return;
         }
         dirty_ = true;
+        flash_link(id); // plan10: one-shot halo on the new wire
         emit pipeline_changed();
     });
     connect(model_, &QtNodes::AbstractGraphModel::connectionDeleted, this, [this](QtNodes::ConnectionId id) {
@@ -254,8 +297,8 @@ Node_View::Node_View(QWidget* parent) : QWidget(parent) {
         QAction* combine_not = menu.addAction("NOT");
         menu.addSection("create resource");
         QAction* image = menu.addAction("image…");
+        QAction* skybox = menu.addAction("skybox…");
         QAction* mesh = menu.addAction("mesh…");
-        menu.addAction("render target");
         QAction* chosen = menu.exec(view_->mapToGlobal(pos));
         if (!chosen) return;
         if (chosen == gfx_pass || chosen == cmp_pass) {
@@ -271,20 +314,31 @@ Node_View::Node_View(QWidget* parent) : QWidget(parent) {
             create_combine_file(op);
             return;
         }
-        if (chosen == image || chosen == mesh) {
+        if (chosen == image || chosen == skybox || chosen == mesh) {
             // Real asset pick: the node key embeds the path the runtime
             // loads; a fake path would create a dead node (bind-site miss).
-            const char* caption = chosen == image ? "pick image" : "pick mesh";
-            const char* filter = chosen == image ? "Images (*.png *.jpg *.jpeg *.bmp)"
-                                                 : "Models (*.glb *.gltf)";
-            QString path = QFileDialog::getOpenFileName(this, caption, "assets", filter);
+            const char* caption = chosen == mesh ? "pick mesh" : "pick image";
+            QString filter = chosen == mesh ? "Models (*.glb *.gltf)"
+                                            : "Images (*.png *.jpg *.jpeg *.bmp)";
+            QString start_dir = chosen == skybox ? "assets/skybox" : "assets";
+            QString path =
+                QFileDialog::getOpenFileName(this, caption, start_dir, filter);
             if (path.isEmpty()) return;
             QFileInfo info(path);
             Graph_Node node;
-            node.kind = chosen == image ? "texture" : "mesh";
-            node.key = chosen == image
-                           ? QString("uimg:%1:texture").arg(info.filePath())
-                           : QString("uobj:%1:ModelVertex").arg(info.filePath());
+            node.kind = chosen == mesh ? "mesh" : "texture";
+            node.key = chosen == mesh
+                           ? QString("uobj:%1:ModelVertex").arg(info.filePath())
+                           : QString("uimg:%1:texture").arg(info.filePath());
+            if (chosen == skybox) {
+                // Equirect convention check (existing assets/skybox
+                // images are 2:1); warn but still create.
+                QImage probe(info.filePath());
+                if (probe.width() > 0 && probe.width() != 2 * probe.height())
+                    notify::notify(notify::Kind::WARN,
+                                   "not equirectangular (expected 2:1); sampling "
+                                   "will look stretched");
+            }
             QPointF spos = view_->mapToScene(pos);
             node.x = float(spos.x());
             node.y = float(spos.y());
@@ -304,6 +358,21 @@ Node_View::Node_View(QWidget* parent) : QWidget(parent) {
         dirty_ = true;
         rebuild_scene();
     });
+    // plan6 selection sync: clicking a pass node selects it (QtNodes) AND
+    // asks the shell to open the matching shader tab. Selection painting is
+    // QtNodes-native (amber boundary; no rebuild, no per-frame work).
+    connect(scene_, &QtNodes::BasicGraphicsScene::nodeClicked, this,
+            [this](QtNodes::NodeId id) {
+        const QString key = node_key(id);
+        if (key.isEmpty()) return;
+        for (const Graph_Node& n : nodes_) {
+            if (n.key != key) continue;
+            if (n.kind == "graphics" || n.kind == "compute")
+                emit node_selected(key, n.kind);
+            break;
+        }
+    });
+
     // Node context menu (right-click on a NODE): delete for user resource
     // nodes and combine passes (removes the .slang — the watcher resyncs).
     // Derived nodes (params/show2d/reflection passes) are not deletable.
@@ -315,17 +384,20 @@ Node_View::Node_View(QWidget* parent) : QWidget(parent) {
         bool combine = key.contains("combine_");
         if (!user_node && !combine) return;
         QAction* del = menu.addAction("delete node");
-        QAction* swap = user_node && key.startsWith("uimg:") && !key.contains(":target:")
+        QAction* swap = user_node && !key.contains(":target:")
                             ? menu.addAction("swap file…") : nullptr;
         QAction* chosen = menu.exec(QCursor::pos());
         if (!chosen) return;
         if (chosen == swap) {
+            const bool mesh = key.startsWith("uobj:");
             QString path = QFileDialog::getOpenFileName(
-                this, "pick image", "assets", "Images (*.png *.jpg *.jpeg *.bmp)");
+                this, mesh ? "pick mesh" : "pick image", "assets",
+                mesh ? "Models (*.glb *.gltf)" : "Images (*.png *.jpg *.jpeg *.bmp)");
             if (path.isEmpty()) return;
             for (Graph_Node& node : nodes_) {
                 if (node.key != key) continue;
-                node.key = QString("uimg:%1:texture").arg(path);
+                node.key = mesh ? QString("uobj:%1:ModelVertex").arg(path)
+                                : QString("uimg:%1:texture").arg(path);
                 break;
             }
             dirty_ = true;
@@ -351,6 +423,216 @@ Node_View::Node_View(QWidget* parent) : QWidget(parent) {
         rebuild_scene();
     });
 }
+
+void Node_View::select_node_for_key(const QString& key) {
+    if (!scene_ || key.isEmpty()) return;
+    // Exact key match OR comp entry-prefix match ("comp:<rel>:" matches
+    // "comp:<rel>:<entry>"). First hit wins; exact matches preferred by
+    // iteration order over pass nodes (unique per key anyway).
+    for (auto it = id_to_key_.begin(); it != id_to_key_.end(); ++it) {
+        const QString& node_key = it.value();
+        if (node_key != key && !node_key.startsWith(key)) continue;
+        if (auto* ngo = scene_->nodeGraphicsObject(it.key())) {
+            scene_->clearSelection();
+            ngo->setSelected(true);
+            view_->centerOn(ngo); // reveal: bring the node into view
+        }
+        return;
+    }
+}
+
+// plan13: the editor skin drives the whole graph look — StyleCollection
+// (grid/nodes/wires) + every live Scene_Delegate. Called from the ctor and
+// from Shell::apply_chrome_theme on every theme switch. Derived from the
+// theme:: tokens (no per-theme literals): surfaces from chrome, text tiers
+// from the chrome palette, selection halo = safelight, semantic states
+// from the token layer.
+void Node_View::apply_theme() {
+    // Ctor order: apply_theme runs BEFORE model_/scene_ exist — the
+    // StyleCollection pass is safe, the live-delegate loop is not.
+    const QColor text = QColor(theme::text_primary());
+    const QColor muted = QColor(theme::text_muted());
+    const QColor panel = QColor(theme::surface_panel());
+    const QColor control = QColor(theme::control_border());
+    const QColor accent = theme::safelight_rgb();
+
+    QtNodes::GraphicsViewStyle view_style;
+    view_style.BackgroundColor = QColor(theme::surface_workspace());
+    // Grid strength follows the surface: dark skins get white dots, light
+    // skins get black dots (contrast rule — same alpha, hue flips).
+    const bool dark_surface = view_style.BackgroundColor.lightness() < 128;
+    const int grid_hue = dark_surface ? 255 : 0;
+    view_style.FineGridColor = QColor(grid_hue, grid_hue, grid_hue, 12);
+    view_style.CoarseGridColor = QColor(grid_hue, grid_hue, grid_hue, 26);
+    QtNodes::StyleCollection::setGraphicsViewStyle(view_style);
+
+    QtNodes::ConnectionStyle conn_style;
+    conn_style.loadJsonText(QString(R"(
+    {
+        "ConnectionStyle": {
+            "UseDataDefinedColors": true,
+            "LineWidth": 1.5,
+            "ConstructionLineWidth": 2.0,
+            "PointDiameter": 6.0,
+            "SelectedHaloColor": "%1"
+        }
+    })").arg(accent.name()));
+    QtNodes::StyleCollection::setConnectionStyle(conn_style);
+
+    QtNodes::NodeStyle node_style;
+    node_style.loadJsonText(QString(R"(
+    {
+        "NodeStyle": {
+            "NormalBoundaryColor": "%2",
+            "SelectedBoundaryColor": "%1",
+            "GradientColor0": "%3",
+            "GradientColor1": "%4",
+            "GradientColor2": "%4",
+            "GradientColor3": "%5",
+            "ShadowColor": "#00000040",
+            "FontColor": "%6",
+            "FontColorFaded": "%7",
+            "ConnectionPointColor": "%7",
+            "FilledConnectionPointColor": "%1",
+            "WarningColor": "%1",
+            "ErrorColor": "%8",
+            "PenWidth": 1.0,
+            "HoveredPenWidth": 1.5,
+            "ConnectionPointDiameter": 8.0,
+            "Opacity": 1.0
+        }
+    })").arg(accent.name(), control.name(),
+             panel.lighter(112).name(), panel.name(), panel.darker(112).name(),
+             text.name(), muted.name(), theme::error()));
+    QtNodes::StyleCollection::setNodeStyle(node_style);
+    // Live delegates re-derive their resource boundary from the tokens;
+    // nodeUpdated triggers the repaint of every live NodeGraphicsObject.
+    // Skipped pre-ctor (model_ null): the ctor loop applies per-delegate
+    // styles as nodes are created.
+    if (!model_) return;
+    for (const auto& id : model_->allNodeIds()) {
+        if (auto* d = model_->delegateModel<Scene_Delegate>(id)) d->apply_theme();
+        model_->nodeUpdated(id);
+    }
+}
+
+// plan10 feedback (quietly expressive): a one-shot halo over the new wire
+// (success green, 400ms fade) says "the pipeline accepted this" without a
+// modal or a toast. Reduced motion: skip the halo — the wire itself is
+// the confirmation.
+void Node_View::flash_link(QtNodes::ConnectionId id) {
+    if (!scene_ || shell::reduced_motion()) return;
+    auto* cgo = scene_->connectionGraphicsObject(id);
+    if (!cgo) return;
+    QPainterPath halo = cgo->shape(); // stroked wire path (qt6: shape)
+    if (halo.isEmpty()) return;
+    auto* flash = new QGraphicsPathItem(halo);
+    QColor c = theme::success_rgb();
+    c.setAlpha(160);
+    QPen pen(c, 6.0);
+    pen.setCapStyle(Qt::RoundCap);
+    flash->setPen(pen);
+    flash->setZValue(8.0); // over wires (2), under the wireless rings (20)
+    scene_->addItem(flash);
+    auto* anim = new QVariantAnimation();
+    anim->setDuration(400);
+    anim->setStartValue(160.0);
+    anim->setEndValue(0.0);
+    anim->setEasingCurve(QEasingCurve::OutCubic);
+    // Plan 05 (same class as flash_pass): a scene rebuild mid-fade deletes
+    // the flash item; the QObject guard parented to the SCENE dies with the
+    // scene (clear) and disconnects the valueChanged lambda before it could
+    // call flash->pen() on freed memory.
+    auto* guard = new QObject(scene_);
+    QObject::connect(anim, &QVariantAnimation::valueChanged, guard,
+            [flash](const QVariant& v) {
+                QColor c = flash->pen().color();
+                c.setAlpha(int(v.toDouble()));
+                QPen p = flash->pen();
+                p.setColor(c);
+                flash->setPen(p);
+            });
+    QObject::connect(guard, &QObject::destroyed, anim,
+                     &QVariantAnimation::stop);
+    QObject::connect(anim, &QVariantAnimation::finished, anim, [this, anim, flash] {
+        flash_anims_.erase(std::remove(flash_anims_.begin(),
+                                       flash_anims_.end(), anim),
+                           flash_anims_.end());
+        if (auto* sc = flash->scene()) sc->removeItem(flash);
+        delete flash; // scene drop; anim (DeleteWhenStopped) deletes itself
+    });
+    flash_anims_.push_back(anim);
+    anim->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
+// Plan 05 test hook: advances every live flash to `elapsed_ms`. setCurrentTime
+// is the exact emission path of the reported crash (synchronous valueChanged),
+// so the test exercises the callback without an event loop.
+int Node_View::debug_step_flashes(int elapsed_ms) {
+    int running = 0;
+    for (QVariantAnimation* anim : flash_anims_) {
+        if (anim->state() != QAbstractAnimation::Running) continue;
+        ++running;
+        anim->setCurrentTime(elapsed_ms);
+    }
+    return running;
+}
+
+// plan10: a ring around a pass node that fades when the pass output
+// CHANGES (not every frame). One per node; a new flash replaces the old.
+void Node_View::flash_pass(QtNodes::NodeId id) {
+    if (!scene_ || shell::reduced_motion()) return;
+    if (auto* old = pass_flash_items_.take(id)) {
+        if (auto* sc = old->scene()) sc->removeItem(old);
+        delete old;
+    }
+    auto* ngo = scene_->nodeGraphicsObject(id);
+    if (!ngo) return;
+    const QRectF bounds = ngo->boundingRect();
+    auto* ring = new QGraphicsEllipseItem(bounds.adjusted(-6, -6, 6, 6), ngo);
+    QColor c = theme::safelight_rgb();
+    c.setAlpha(140);
+    ring->setPen(QPen(c, 2.0));
+    ring->setBrush(Qt::NoBrush);
+    ring->setZValue(6.0); // under the wireless rings, over previews
+    pass_flash_items_[id] = ring;
+    auto* anim = new QVariantAnimation();
+    anim->setDuration(600);
+    anim->setStartValue(140.0);
+    anim->setEndValue(0.0);
+    anim->setEasingCurve(QEasingCurve::OutCubic);
+    // Plan 05: the ring can die while the fade runs — load_layout's
+    // deleteNode sweep (theme switch → apply_mode → GRAPH reload) destroys
+    // the NGO the ring is parented to, and flash_pass itself replaces the
+    // ring on every fresh preview. QGraphicsItem is NOT a QObject, so the
+    // animation gets a QObject GUARD parented to the NGO instead: the NGO
+    // dying destroys the guard, which disconnects the valueChanged lambda
+    // before it could call ring->pen() on freed memory (the ASan crash at
+    // 0x8). Replacing the ring deletes the guard with it, stopping the old
+    // fade cleanly.
+    auto* guard = new QObject(ngo);
+    QObject::connect(anim, &QVariantAnimation::valueChanged, guard,
+            [ring](const QVariant& v) {
+                QColor c = ring->pen().color();
+                c.setAlpha(int(v.toDouble()));
+                QPen p = ring->pen();
+                p.setColor(c);
+                ring->setPen(p);
+            });
+    QObject::connect(guard, &QObject::destroyed, anim,
+                     &QVariantAnimation::stop);
+    connect(anim, &QVariantAnimation::finished, this, [this, id, ring, anim] {
+        if (pass_flash_items_.value(id) == ring) pass_flash_items_.remove(id);
+        flash_anims_.erase(std::remove(flash_anims_.begin(),
+                                       flash_anims_.end(), anim),
+                           flash_anims_.end());
+        delete ring; // child of the NGO: scene drop is implicit
+    });
+    connect(anim, &QVariantAnimation::finished, anim, &QObject::deleteLater);
+    flash_anims_.push_back(anim);
+    anim->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
 // Writes a pass template (legacy imgui_nodes SG_TEMPLATE_*) into the
 // scene dir as pass_N.slang. The watcher sees the new file, the build
 // runs, and the next graph rebuild picks the pass up as a node.
@@ -543,8 +825,10 @@ bool Node_View::load_layout(const QString& scene_title, const QString& scene_roo
     scene_root_ = scene_root;
     current_scene_ = &scene;
     for (const auto& id : model_->allNodeIds()) model_->deleteNode(id);
+    // Plan 05: the rings die WITH their NodeGraphicsObjects here — drop the
+    // stale pointers so flash_pass's replace path never touches freed items.
+    pass_flash_items_.clear();
     id_to_key_.clear();
-    nodes_.clear();
     links_.clear();
     pipeline_error_.clear();
 
@@ -586,6 +870,7 @@ bool Node_View::load_layout(const QString& scene_title, const QString& scene_roo
         node.x = n.x;
         node.y = n.y;
         node.file = QString::fromStdString(n.file);
+        node.model = QString::fromStdString(n.model);
         node.filter = QString::fromStdString(n.filter);
         node.address = QString::fromStdString(n.address);
         node.width = n.width;
@@ -642,7 +927,9 @@ void Node_View::rebuild_scene() {
             out = unsigned(uniforms.size());
         } else if (node.kind == "output") {
             in = 1;
-        } else if (node.kind == "texture" || node.kind == "mesh") {
+        } else if (node.kind == "texture") {
+            out = 2; // texture + sampler pins
+        } else if (node.kind == "mesh") {
             out = 1;
         } else if (node.kind != "widget") {
             in = unsigned(tex.size() + uniforms.size());
@@ -661,15 +948,36 @@ void Node_View::rebuild_scene() {
     // producer-replacement modal must not pop during load).
     loading_ = true;
     for (const Graph_Link& link : links_) {
-        QString from_key = link.from.section(':', 0, -2); // "<key>:<pin>"
-        QString to_key = link.to.section(':', 0, 0);
+        // FROM keys: resource nodes carry the FULL resource key as their
+        // node identity ("uimg:<path>:texture", "uobj:<path>:ModelVertex"),
+        // so the serialized link may be node-key + ":sampler" (texture's
+        // second pin) or exactly the node key (mesh). Try both.
+        QString from_key = link.from;
+        if (node_id(from_key) == QtNodes::InvalidNodeId)
+            from_key = link.from.section(':', 0, -2);
+        // TO keys may contain colons (pass keys "gfx:<path>"): the node key
+        // is everything before the LAST ':' (the pin); a key with no pin
+        // (show2d) stays whole.
+        const int last_colon = link.to.lastIndexOf(':');
+        QString to_key = last_colon > 0 && node_id(link.to.left(last_colon)) !=
+                                                   QtNodes::InvalidNodeId
+                             ? link.to.left(last_colon)
+                             : link.to.section(':', 0, 0);
         QtNodes::NodeId from = node_id(from_key);
         QtNodes::NodeId to = node_id(to_key);
-        if (from == QtNodes::InvalidNodeId || to == QtNodes::InvalidNodeId) continue;
+        if (from == QtNodes::InvalidNodeId || to == QtNodes::InvalidNodeId) {
+            std::fprintf(stderr, "[rebuild] unresolved link: from='%s' to='%s'\n",
+                         link.from.toUtf8().constData(), link.to.toUtf8().constData());
+            continue;
+        }
         uint32_t from_port = 0, to_port = 0;
         bool to_ok = false;
-        // Port resolution: "<key>:<pin>" — pin is an input name on `to`;
-        // on `from` it's that node's frame output (port 0).
+        // Resource links: the FROM pin follows the link suffix —
+        // "uimg:<path>:sampler" connects the image node's sampler output
+        // (port 1); ":texture"/mesh links use port 0.
+        if (link.from.startsWith("uimg:"))
+            from_port = link.from.endsWith(":sampler") ? 1 : 0;
+        // Port resolution: "<key>:<pin>" — pin is an input name on `to`.
         for (const auto& desc : descs) {
             if (QString::fromStdString(desc.key) == to_key) {
                 for (uint32_t i = 0; i < desc.input_textures.size(); ++i) {
@@ -692,6 +1000,11 @@ void Node_View::rebuild_scene() {
     loading_ = false;
     refresh_wireless_marks();
     refresh_previews();
+    // Reveal the graph after a rebuild: without this the view keeps the
+    // old transform and a loaded layout can sit entirely off-screen.
+    // Deferred: on first open the view still has 0x0 geometry (the panel
+    // spring is running), so an immediate fit would be a no-op.
+    QTimer::singleShot(250, this, [this] { view_->centerScene(); }); // after the panel spring
 }
 
 // Pass thumbnails: one pixmap per pass node, parked under the node title
@@ -752,7 +1065,17 @@ void Node_View::refresh_previews() {
             scene_->addItem(item);
         }
         item->setVisible(true);
-        item->setPixmap(QPixmap::fromImage(previews_[size_t(index)]));
+        const QImage& img = previews_[size_t(index)];
+        // plan10: flash the node only when its OUTPUT CHANGED (compare
+        // against the last shown pixmap — a checksum of the new image).
+        const qint64 fresh =
+            img.sizeInBytes() * 31 + qint64(img.constBits()[0]) * 7 +
+            qint64(img.constBits()[img.sizeInBytes() / 2]);
+        if (item->pixmap().isNull() || item->data(0) != fresh) {
+            if (!item->pixmap().isNull()) flash_pass(it.key()); // skip first paint
+            item->setData(0, fresh);
+        }
+        item->setPixmap(QPixmap::fromImage(img));
         if (auto* ngo = scene_->nodeGraphicsObject(it.key())) {
             QRectF bounds = ngo->boundingRect();
             // Below the caption bar, full node width (Odin: window-aspect
@@ -960,6 +1283,9 @@ bool Node_View::save_layout(const QString& scene_title, const QString& scene_roo
     // (graphics) or "out_tex" (compute) — the plan's output pins; consumers
     // use their descriptor input name; show2d keeps ":frame" so plan_build
     // still sees the viewport endpoint after a reload.
+    // Resource links keep their authored TO endpoints: the sampler link's
+    // ":<sampler_name>" suffix is what plan_build's SAMPLER route matches.
+    const QList<Graph_Link> prev_links = links_;
     links_.clear();
     const auto descs = descriptors();
     for (const auto& from_id : model_->allNodeIds())
@@ -977,6 +1303,27 @@ bool Node_View::save_layout(const QString& scene_title, const QString& scene_roo
                 to_pin = to_key + ":" +
                          QString::fromStdString(desc.input_textures[cid.inPortIndex]);
         }
+        // Same resource-pin mapping as connectionCreated: texture node's
+        // two pins route as :texture/:sampler; mesh pin as :ModelVertex.
+        // The SAMPLER link keeps its original ":sampler" TO endpoint (the
+        // plan's SAMPLER route matches by SamplerState name, and both
+        // resource links share the same visual input pin, so the model
+        // roundtrip alone can't distinguish them).
+        QString sampler_to;
+        for (const Graph_Link& l : prev_links) {
+            if (l.from.startsWith("uimg:") && l.from.endsWith(":sampler") &&
+                l.from.section(':', 0, -2) == from_key)
+                sampler_to = l.to;
+        }
+        if (from_key.startsWith("uimg:")) {
+            const QString path = from_key.section(':', 1, -2);
+            from_pin = cid.outPortIndex == 1 ? "uimg:" + path + ":sampler"
+                                             : "uimg:" + path + ":texture";
+            if (cid.outPortIndex == 1 && !sampler_to.isEmpty()) to_pin = sampler_to;
+        } else if (from_key.startsWith("uobj:")) {
+            const QString path = from_key.section(':', 1, -2);
+            from_pin = "uobj:" + path + ":ModelVertex";
+        }
         if (to_key == "show2d") to_pin = to_key + ":frame";
         bool dup = false;
         for (const Graph_Link& existing : links_)
@@ -989,6 +1336,7 @@ bool Node_View::save_layout(const QString& scene_title, const QString& scene_roo
         QJsonObject nj{{"key", node.key}, {"kind", node.kind},
                        {"x", node.x}, {"y", node.y}};
         if (!node.file.isEmpty()) nj["file"] = node.file;
+        if (!node.model.isEmpty()) nj["model"] = node.model;
         if (!node.filter.isEmpty() && node.filter != "linear") nj["filter"] = node.filter;
         if (!node.address.isEmpty() && node.address != "clamp") nj["address"] = node.address;
         if (node.width > 0) nj["width"] = node.width;

@@ -19,7 +19,10 @@ public struct SceneUniforms {
     public float2 iMousePos;
     // 1.0 while the left button is pressed outside the UI.
     public float iMouseClick;
-    // Camera computed by Odin and passed to every scene.
+    // Camera computed by the APP every frame (src/gfx/camera.{hpp,cpp},
+    // legacy camera.odin port): column-major VP; NDC z maps to [0,1]
+    // (Metal/D3D); position/basis in world units, forward = look direction.
+    // Shaders must not recompute the camera — use these directly.
     public column_major float4x4 iViewProjection;
     public float3 iCameraPosition;
     public float3 iCameraRight;
@@ -273,6 +276,7 @@ public struct ModelVaryings {
     public float3 normal : TEXCOORD0;
     public float2 uv : TEXCOORD1;
     public float2 ndc : TEXCOORD2;
+    public float3 world : TEXCOORD3;
 };
 
 // Handles both runtime draws: fullscreen background (iManual=1) and
@@ -283,6 +287,7 @@ public ModelVaryings model_scene_vertex(
     ConstantBuffer<SceneUniforms> uniforms)
 {
     ModelVaryings o;
+    o.world = float3(0.0);
     if (uniforms.iManual > 0.5) {
         float2 p = float2((vertexIndex << 1) & 2, vertexIndex & 2);
         o.pos = float4(p * 2.0 - 1.0, 0.9999, 1.0);
@@ -294,6 +299,7 @@ public ModelVaryings model_scene_vertex(
 
     o.pos = mul(uniforms.iViewProjection, float4(input.position, 1.0));
     o.normal = input.normal;
+    o.world = input.position;
     o.uv = input.uv;
     o.ndc = float2(0.0);
     return o;

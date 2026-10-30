@@ -21,7 +21,7 @@ struct Node_Json {
     // User-authored resource nodes ("uimg:"/"uobj:" keys).
     std::string file;
     std::string source;   // "file" (default) | "target"
-    std::string title;    // overrides derived title
+    std::string model;    // mesh nodes: assets/models basename to render
     std::string filter;   // "point"|"linear"
     std::string address;  // "clamp"|"repeat"|"mirror"
     int width = 0, height = 0;  // targets only

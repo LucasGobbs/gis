@@ -1,0 +1,7 @@
+Catch2WithMain_autogen/timestamp: \
+	/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-src/CMake/CatchMiscFunctions.cmake \
+	/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-src/src/CMakeLists.txt \
+	/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-src/src/catch2/catch_user_config.hpp.in \
+	/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-src/src/catch2/internal/catch_main.cpp \
+	/opt/homebrew/share/cmake/Modules/CheckCXXCompilerFlag.cmake \
+	/opt/homebrew/bin/cmake

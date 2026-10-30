@@ -1,0 +1,90 @@
+{
+	"BUILD_DIR" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/src/Catch2WithMain_autogen",
+	"CMAKE_BINARY_DIR" : "/Users/gobbi/Desktop/code/projects/gis/build",
+	"CMAKE_CURRENT_BINARY_DIR" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/src",
+	"CMAKE_CURRENT_SOURCE_DIR" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-src/src",
+	"CMAKE_EXECUTABLE" : "/opt/homebrew/bin/cmake",
+	"CMAKE_LIST_FILES" : 
+	[
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-src/src/CMakeLists.txt",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-src/CMake/CatchMiscFunctions.cmake",
+		"/opt/homebrew/share/cmake/Modules/CheckCXXCompilerFlag.cmake",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-src/src/catch2/catch_user_config.hpp.in"
+	],
+	"CMAKE_SOURCE_DIR" : "/Users/gobbi/Desktop/code/projects/gis",
+	"CROSS_CONFIG" : false,
+	"DEP_FILE" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/src/Catch2WithMain_autogen/deps",
+	"DEP_FILE_RULE_NAME" : "Catch2WithMain_autogen/timestamp",
+	"HEADERS" : [],
+	"HEADER_EXTENSIONS" : [ "h", "hh", "h++", "hm", "hpp", "hxx", "in", "txx" ],
+	"INCLUDE_DIR" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/src/Catch2WithMain_autogen/include",
+	"MOC_COMPILATION_FILE" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/src/Catch2WithMain_autogen/mocs_compilation.cpp",
+	"MOC_DEFINITIONS" : [],
+	"MOC_DEPEND_FILTERS" : 
+	[
+		[
+			"Q_PLUGIN_METADATA",
+			"[\n][ \t]*Q_PLUGIN_METADATA[ \t]*\\([^\\)]*FILE[ \t]*\"([^\"]+)\""
+		]
+	],
+	"MOC_INCLUDES" : 
+	[
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-src/src",
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/generated-includes",
+		"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1",
+		"/Library/Developer/CommandLineTools/usr/lib/clang/17/include",
+		"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include",
+		"/Library/Developer/CommandLineTools/usr/include"
+	],
+	"MOC_MACRO_NAMES" : 
+	[
+		"Q_OBJECT",
+		"Q_GADGET",
+		"Q_NAMESPACE",
+		"Q_NAMESPACE_EXPORT",
+		"Q_GADGET_EXPORT",
+		"Q_ENUM_NS"
+	],
+	"MOC_OPTIONS" : [],
+	"MOC_PATH_PREFIX" : false,
+	"MOC_PREDEFS_CMD" : 
+	[
+		"/usr/bin/c++",
+		"-std=gnu++17",
+		"-w",
+		"-dM",
+		"-E",
+		"/opt/homebrew/share/cmake/Modules/CMakeCXXCompilerABI.cpp"
+	],
+	"MOC_PREDEFS_FILE" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/src/Catch2WithMain_autogen/moc_predefs.h",
+	"MOC_RELAXED_MODE" : false,
+	"MOC_SKIP" : 
+	[
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/src/Catch2_autogen/mocs_compilation.cpp"
+	],
+	"MULTI_CONFIG" : false,
+	"PARALLEL" : 10,
+	"PARSE_CACHE_FILE" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/src/CMakeFiles/Catch2WithMain_autogen.dir/ParseCache.txt",
+	"QT_MOC_EXECUTABLE" : "/opt/homebrew/share/qt/libexec/moc",
+	"QT_UIC_EXECUTABLE" : "/opt/homebrew/share/qt/libexec/uic",
+	"QT_VERSION_MAJOR" : 6,
+	"QT_VERSION_MINOR" : 12,
+	"SETTINGS_FILE" : "/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/src/CMakeFiles/Catch2WithMain_autogen.dir/AutogenUsed.txt",
+	"SOURCES" : 
+	[
+		[
+			"/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-src/src/catch2/internal/catch_main.cpp",
+			"MU",
+			null
+		]
+	],
+	"UIC_OPTIONS" : [],
+	"UIC_SEARCH_PATHS" : [],
+	"UIC_SKIP" : 
+	[
+		"/Users/gobbi/Desktop/code/projects/gis/build/_deps/catch2-build/src/Catch2_autogen/mocs_compilation.cpp"
+	],
+	"UIC_UI_FILES" : [],
+	"USE_BETTER_GRAPH" : true,
+	"VERBOSITY" : 0
+}

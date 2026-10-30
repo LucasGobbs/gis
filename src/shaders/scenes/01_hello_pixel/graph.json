@@ -6,7 +6,7 @@
         },
         {
             "from": "gfx:scenes/01_hello_pixel/pass_2:frame",
-            "to": "show2d:frame"
+            "to": "show2d"
         }
     ],
     "nodes": [

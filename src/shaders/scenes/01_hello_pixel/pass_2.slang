@@ -22,3 +22,6 @@ float4 pixelMain(VsOut input) : SV_Target0 {
     float2 uv = input.gl_FragCoord / Uniforms.iResolution.xy;
     return input_tex.Sample(input_sampler, uv);
 }
+
+
+

@@ -1,0 +1,50 @@
+{
+    "links": [
+        {
+            "from": "uimg:assets/skybox/skybox-night.png:texture",
+            "to": "gfx:scenes/dragon_showcase/dragon_showcase:skybox_tex"
+        },
+        {
+            "from": "gfx:scenes/dragon_showcase/dragon_showcase:frame",
+            "to": "show2d:frame"
+        }
+    ],
+    "nodes": [
+        {
+            "key": "params",
+            "kind": "params",
+            "x": 364.66131591796875,
+            "y": -276.7572937011719
+        },
+        {
+            "file": "stanford_dragon_pbr.glb",
+            "key": "uobj:assets/models/stanford_dragon_pbr.glb:ModelVertex",
+            "kind": "mesh",
+            "model": "stanford_dragon_pbr",
+            "x": 280.34783935546875,
+            "y": -180.7458953857422
+        },
+        {
+            "address": "repeat",
+            "file": "assets/skybox/skybox-night.png",
+            "key": "uimg:assets/skybox/skybox-night.png:texture",
+            "kind": "texture",
+            "x": 269.3670349121094,
+            "y": -91.29653930664062
+        },
+        {
+            "key": "gfx:scenes/dragon_showcase/dragon_showcase",
+            "kind": "graphics",
+            "x": 560.6589965820312,
+            "y": -115.09016418457031
+        },
+        {
+            "key": "show2d",
+            "kind": "output",
+            "x": 810.0371704101562,
+            "y": -66.74073791503906
+        }
+    ],
+    "scene": "dragon_showcase",
+    "version": 1
+}

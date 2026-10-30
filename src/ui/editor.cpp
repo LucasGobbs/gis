@@ -1,3 +1,4 @@
+#include "perf_probe.hpp" // TEMP-PROF: diagnosis instrumentation, remove after Plan 01
 // Editor implementation: QScintilla tabs per open doc, unit loading, save
 // all, and the slangd LSP client over stdio JSON-RPC.
 #include "editor.hpp"
@@ -11,9 +12,11 @@
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QLabel>
-#include <QToolTip>
-#include <QPushButton>
 #include <QTabBar>
+#include <QToolTip>
+#include <QTimer>
+#include <QPointer>
+#include <QPushButton>
 #include <Qsci/qscilexercpp.h>
 #include <QSplitter>
 #include <cmath>
@@ -28,6 +31,7 @@
 #include <QJsonArray>
 #include <QProcess>
 #include <cstdlib>
+#include <cstdio>
 
 #include <cmath>
 
@@ -52,14 +56,148 @@ QString Editor::file_path_for_rel(const QString& rel) const {
     return QString(kShaderDir) + "/" + rel + ".slang";
 }
 
+// One skin per theme (the single source the editor chrome, apply_skin and
+// the LEARN renderer read — no per-widget hex literals). DARK = Darkroom
+// tokens; MONOKAI/SOLARIZED/LIGHT are the standard schemes. Order = the
+// Editor_Theme enum.
+struct Editor_Skin {
+    QColor paper, text, keyword, type, number, comment, string,
+           preproc, operator_, margin_bg, margin_fg, caret_line,
+           selection_bg, selection_fg;
+};
+// One table per skin — the single source the editor, the find bar, the
+// LEARN renderer and graph chrome read (no per-widget hex literals).
+// Order = the Editor_Theme enum (DARK first).
+constexpr Editor_Skin kEditorSkins[] = {
+    // DARK = Darkroom: quiet proof text, one accent per token class.
+    {QColor(0x13, 0x14, 0x18), QColor(0xd7, 0xda, 0xe2),
+     QColor(0xe8, 0xa8, 0x57),          // keywords: Safelight amber
+     QColor(0x9e, 0xc2, 0xf2),          // slang types: soft blue
+     QColor(0xf2, 0x8c, 0x7a),          // numbers: muted rose
+     QColor(0x7e, 0x83, 0x8e),          // comments: Fog Gray (4.8:1 AA)
+     QColor(0xa9, 0xd4, 0x9e),          // strings: soft green
+     QColor(0xc9, 0x9e, 0xf2),          // preprocessor: soft violet
+     QColor(0x8c, 0x90, 0x99),          // operators: mid gray
+     QColor(0x1a, 0x1b, 0x20), QColor(0x75, 0x7a, 0x85),
+     QColor(0xff, 0xff, 0xff, 0x0d), QColor(0x3a, 0x2c, 0x18),
+     QColor(0xde, 0xe0, 0xe6)},
+    // LIGHT.
+    {QColor(0xff, 0xff, 0xff), QColor(0x1f, 0x20, 0x24),
+     QColor(0x1c, 0x46, 0x9c), QColor(0x78, 0x35, 0x96),
+     QColor(0x9c, 0x42, 0x2e), QColor(0x6f, 0x74, 0x7e),
+     QColor(0x1d, 0x6b, 0x33), QColor(0x9a, 0x5b, 0x0a),
+     QColor(0x2c, 0x30, 0x3a), QColor(0xf2, 0xf3, 0xf5),
+     QColor(0x8c, 0x90, 0x99), QColor(0xff, 0xf3, 0xd6),
+     QColor(0xd8, 0xe2, 0xf4), QColor(0x1f, 0x20, 0x24)},
+    // MONOKAI.
+    {QColor(0x27, 0x28, 0x22), QColor(0xf8, 0xf8, 0xf2),
+     QColor(0xf9, 0x26, 0x72), QColor(0xa6, 0xe2, 0x2e),
+     QColor(0xae, 0x81, 0xff), QColor(0x75, 0x71, 0x5e),
+     QColor(0xe6, 0xdb, 0x74), QColor(0xfd, 0x97, 0x1f),
+     QColor(0xf8, 0xf8, 0xf2), QColor(0x1e, 0x1f, 0x1a),
+     QColor(0x75, 0x71, 0x5e), QColor(0x32, 0x33, 0x2b),
+     QColor(0x49, 0x48, 0x34), QColor(0xf8, 0xf8, 0xf2)},
+    // SOLARIZED.
+    {QColor(0x00, 0x2b, 0x36), QColor(0x93, 0xa1, 0xa1),
+     QColor(0x85, 0x99, 0x00), QColor(0xb5, 0x89, 0x00),
+     QColor(0x2a, 0xa1, 0x98), QColor(0x58, 0x6e, 0x75),
+     QColor(0x2a, 0xa1, 0x98), QColor(0xcb, 0x4b, 0x16),
+     QColor(0x93, 0xa1, 0xa1), QColor(0x07, 0x36, 0x42),
+     QColor(0x58, 0x6e, 0x75), QColor(0x07, 0x3d, 0x4a),
+     QColor(0x27, 0x46, 0x52), QColor(0xee, 0xed, 0xd5)},
+};
+static_assert(sizeof(kEditorSkins) / sizeof(kEditorSkins[0]) ==
+              int(editor::Editor_Theme::SOLARIZED) + 1, "skin order");
+
+// The skin for the ACTIVE editor theme (Editor_Theme order = table order).
+static const Editor_Skin& skin_for(editor::Editor_Theme theme) {
+    return kEditorSkins[int(theme)];
+}
+
+// plan7: gutter width = digits of the last line number (+1 spare slot).
+// The old fixed "000" slot clipped files over 999 lines.
+static QString gutter_digits(QsciScintilla* edit) {
+    int digits = QString::number(qMax(1, edit->lines())).size() + 1;
+    return QString("0").repeated(digits);
+}
+
+void Editor::set_find_bar_theme() {
+    if (!find_bar_) return;
+    const Editor_Skin& es = skin_for(theme_);
+    find_bar_->setStyleSheet(
+        QString("QWidget#findBar { background: %1; border: 1px solid %2;"
+                " border-radius: 6px; }"
+                "QLineEdit { background: transparent; border: none; color: %3;"
+                " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
+                "QLabel { color: %4; font-size: 8pt; }"
+                "QPushButton { background: rgba(255,255,255,0.06); border: none;"
+                " border-radius: 4px; color: %3; padding: 2px 8px; }"
+                "QPushButton:hover { background: rgba(255,255,255,0.12); }")
+            .arg(es.margin_bg.name(), es.selection_bg.darker(140).name(),
+                 es.text.name(), es.comment.name()));
+    // plan7: the tab row IS editor chrome — same skin, one hairline accent
+    // under the selected tab. Scoped to the QTabBar (a stylesheet on the
+    // QTabWidget would repolish the Scintilla viewport); proved innocent
+    // in the plan7 bisect (the white paper was the skin-table order bug).
+    // plan7: the tab row IS editor chrome — same skin, one hairline accent
+    // under the selected tab. Scoped to the QTabBar (a stylesheet on the
+    // QTabWidget would repolish the Scintilla viewport); proved innocent
+    // in the plan7 bisect (the white paper was the skin-table order bug).
+    // Plan 03 §2: NO `color:` in the ::tab rules — the text color belongs
+    // to setTabTextColor (stylesheet color would override it and make the
+    // dirty-amber dot impossible). Selected state: amber underline + tinted
+    // pill; inactive tabs stay muted (see sync_tab_colors).
+    tabBar()->setStyleSheet(
+        QString("QTabBar { qproperty-drawBase: 0; background: transparent; }"
+                "QTabBar::tab { background: transparent;"
+                " padding: 4px 10px; border: none;"
+                " border-bottom: 2px solid transparent;"
+                " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
+                "QTabBar::tab:hover { background: rgba(255,255,255,0.04); }"
+                "QTabBar::tab:selected {"
+                " background: rgba(232,168,87,0.10);"
+                " border-bottom: 2px solid %1; }")
+            .arg(theme::safelight()));
+    sync_tab_colors();
+}
+
+// Re-applies per-tab text colors: muted for inactive tabs, full text color
+// for the active one, amber when dirty (color + the "•" glyph pair). Runs
+// on skin change and on tab/mode state changes. setTabTextColor only works
+// because the stylesheet above no longer claims the text color.
+void Editor::sync_tab_colors() {
+    const Editor_Skin& es = skin_for(theme_);
+    for (int i = 0; i < count(); ++i) {
+        if (i >= (int)open_docs_.size()) break;
+        const bool active = i == currentIndex();
+        tabBar()->setTabTextColor(i, open_docs_[size_t(i)].dirty
+                                         ? theme::safelight()
+                                         : (active ? es.text : es.comment));
+    }
+}
+
+void Editor::update_split_btn_theme() {
+    if (!split_btn_) return;
+    const Editor_Skin& es = skin_for(theme_);
+    split_btn_->setStyleSheet(
+        QString("QPushButton#splitBtn { background: rgba(255,255,255,0.06);"
+                " border: none; border-radius: 4px; color: %1; font-size: 9pt; }"
+                "QPushButton#splitBtn:hover { background: rgba(255,255,255,0.14);"
+                " color: %2; }")
+            .arg(es.comment.name(), es.text.name()));
+}
+
 Editor::Editor(QWidget* parent) : QTabWidget(parent) {
     setTabsClosable(true);
     setMovable(true);
     setDocumentMode(true);
+    // Plan 03 P2 follow-up: full file name — no eliding; overflow scrolls
+    // via the built-in tab scroll buttons. Explicit ElideNone: QTabBar's
+    // default (ElideRight) would truncate long names otherwise.
+    setElideMode(Qt::ElideNone);
     connect(this, &QTabWidget::currentChanged, this, &Editor::on_tab_changed);
     connect(this, &QTabWidget::tabCloseRequested, this, [this](int index) {
         if (index < 0 || index >= (int)open_docs_.size()) return;
-        if (open_docs_[size_t(index)].dirty) return; // unsaved work is never destroyed
         QWidget* w = open_docs_[size_t(index)].widget;
         removeTab(index);
         open_docs_.erase(open_docs_.begin() + index);
@@ -76,7 +214,8 @@ Editor::Editor(QWidget* parent) : QTabWidget(parent) {
     auto* es_label = new QLabel(
         i18n::tr("pick a file in the explorer to start editing"),
         empty_state_);
-    es_label->setStyleSheet("color: #828894; font-size: 10pt; background: transparent;");
+    es_label->setStyleSheet(QString("color: %1; font-size: 10pt; background: transparent;")
+                                .arg(skin_for(theme_).text.name()));
     es_label->setAlignment(Qt::AlignCenter);
     es_layout->addWidget(es_label);
     update_empty_state();
@@ -84,15 +223,7 @@ Editor::Editor(QWidget* parent) : QTabWidget(parent) {
     // only own the tab-row strip, which reads as chrome, not overlay).
     find_bar_ = new QWidget(this);
     find_bar_->setObjectName("findBar");
-    find_bar_->setStyleSheet(
-        "QWidget#findBar { background: #1e2026; border: 1px solid #3a3d45;"
-        " border-radius: 6px; }"
-        "QLineEdit { background: transparent; border: none; color: #dfe0e6;"
-        " font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
-        "QLabel { color: #8c9099; font-size: 8pt; }"
-        "QPushButton { background: rgba(255,255,255,0.06); border: none;"
-        " border-radius: 4px; color: #dfe0e6; padding: 2px 8px; }"
-        "QPushButton:hover { background: rgba(255,255,255,0.12); }");
+    set_find_bar_theme();
     auto* find_layout = new QHBoxLayout(find_bar_);
     find_layout->setContentsMargins(8, 4, 8, 4);
     find_layout->setSpacing(6);
@@ -144,11 +275,7 @@ Editor::Editor(QWidget* parent) : QTabWidget(parent) {
     split_btn_->setAccessibleName(i18n::tr("split editor"));
     split_btn_->setFocusPolicy(Qt::NoFocus);
     split_btn_->setFixedSize(26, 22);
-    split_btn_->setStyleSheet(
-        "QPushButton#splitBtn { background: rgba(255,255,255,0.06);"
-        " border: none; border-radius: 4px; color: #8c9099; font-size: 9pt; }"
-        "QPushButton#splitBtn:hover { background: rgba(255,255,255,0.14);"
-        " color: #DEE0E6; }");
+    update_split_btn_theme();
     connect(split_btn_, &QPushButton::clicked, this, &Editor::split_current);
 }
 
@@ -222,60 +349,9 @@ public:
     }
 };
 
-// One skin per theme, applied to the widget + its lexer. Every Scintilla
-// style gets an explicit color: styles left untouched fall back to the
-// lexer's built-in dark-on-white defaults (the "punctuation turned black"
-// bug). DARK = Darkroom tokens; MONOKAI/SOLARIZED/LIGHT are the standard
-// schemes.
+
 static void apply_skin(QsciScintilla* edit, Editor_Theme theme, const QFont& code_face) {
-    struct Skin {
-        QColor paper, text, keyword, type, number, comment, string,
-               preproc, operator_, margin_bg, margin_fg, caret_line,
-               selection_bg, selection_fg;
-    };
-    Skin s;
-    switch (theme) {
-    case Editor_Theme::MONOKAI:
-        s = {QColor(0x27, 0x28, 0x22), QColor(0xf8, 0xf8, 0xf2),
-             QColor(0xf9, 0x26, 0x72), QColor(0xa6, 0xe2, 0x2e),
-             QColor(0xae, 0x81, 0xff), QColor(0x75, 0x71, 0x5e),
-             QColor(0xe6, 0xdb, 0x74), QColor(0xfd, 0x97, 0x1f),
-             QColor(0xf8, 0xf8, 0xf2), QColor(0x1e, 0x1f, 0x1a),
-             QColor(0x75, 0x71, 0x5e), QColor(0x32, 0x33, 0x2b),
-             QColor(0x49, 0x48, 0x34), QColor(0xf8, 0xf8, 0xf2)};
-        break;
-    case Editor_Theme::SOLARIZED:
-        s = {QColor(0x00, 0x2b, 0x36), QColor(0x93, 0xa1, 0xa1),
-             QColor(0x85, 0x99, 0x00), QColor(0xb5, 0x89, 0x00),
-             QColor(0x2a, 0xa1, 0x98), QColor(0x58, 0x6e, 0x75),
-             QColor(0x2a, 0xa1, 0x98), QColor(0xcb, 0x4b, 0x16),
-             QColor(0x93, 0xa1, 0xa1), QColor(0x07, 0x36, 0x42),
-             QColor(0x58, 0x6e, 0x75), QColor(0x07, 0x3d, 0x4a),
-             QColor(0x27, 0x46, 0x52), QColor(0xee, 0xed, 0xd5)};
-        break;
-    case Editor_Theme::LIGHT:
-        s = {QColor(0xff, 0xff, 0xff), QColor(0x1f, 0x20, 0x24),
-             QColor(0x1c, 0x46, 0x9c), QColor(0x78, 0x35, 0x96),
-             QColor(0x9c, 0x42, 0x2e), QColor(0x6f, 0x74, 0x7e),
-             QColor(0x1d, 0x6b, 0x33), QColor(0x9a, 0x5b, 0x0a),
-             QColor(0x2c, 0x30, 0x3a), QColor(0xf2, 0xf3, 0xf5),
-             QColor(0x8c, 0x90, 0x99), QColor(0xff, 0xf3, 0xd6),
-             QColor(0xd8, 0xe2, 0xf4), QColor(0x1f, 0x20, 0x24)};
-        break;
-    default: // DARK = Darkroom: quiet proof text, one accent per token class.
-        s = {QColor(0x13, 0x14, 0x18), QColor(0xd7, 0xda, 0xe2),
-             QColor(0xe8, 0xa8, 0x57),          // keywords: Safelight amber
-             QColor(0x9e, 0xc2, 0xf2),          // slang types: soft blue
-             QColor(0xf2, 0x8c, 0x7a),          // numbers: muted rose
-             QColor(0x78, 0x7d, 0x88),          // comments: Fog Gray
-             QColor(0xa9, 0xd4, 0x9e),          // strings: soft green
-             QColor(0xc9, 0x9e, 0xf2),          // preprocessor: soft violet
-             QColor(0x8c, 0x90, 0x99),          // operators: mid gray
-             QColor(0x1a, 0x1b, 0x20), QColor(0x75, 0x7a, 0x85),
-             QColor(0xff, 0xff, 0xff, 0x0d), QColor(0x3a, 0x2c, 0x18),
-             QColor(0xde, 0xe0, 0xe6)};
-        break;
-    }
+    const Editor_Skin& s = skin_for(theme);
     QColor paper = s.paper;
     QColor margin_bg = s.margin_bg; margin_bg.setAlpha(140);
     // Caret line: NO background band (user wants the row visually unchanged).
@@ -328,6 +404,34 @@ static void apply_skin(QsciScintilla* edit, Editor_Theme theme, const QFont& cod
     edit->setMarginsBackgroundColor(margin_bg);
     edit->setMarginsForegroundColor(s.margin_fg);
     edit->setCaretForegroundColor(s.text);
+    // Living caret (delight): a block caret in the theme accent that
+    // breathes via a 90ms alpha pulse instead of the stock hard blink.
+    // SC_CARETSTYLE_BLOCK = 2; CARETPERIOD 0 disables the stock blink so
+    // the pulse owns the rhythm. Reduced motion: steady bar, no timer.
+    if (qEnvironmentVariableIsSet("GIS_REDUCED_MOTION")) {
+        edit->SendScintilla(QsciScintillaBase::SCI_SETCARETSTYLE, 1ul);
+    } else {
+        edit->SendScintilla(QsciScintillaBase::SCI_SETCARETSTYLE, 2ul); // block
+        edit->SendScintilla(QsciScintillaBase::SCI_SETCARETWIDTH, 3ul);
+        edit->SendScintilla(QsciScintillaBase::SCI_SETCARETPERIOD, 0ul);
+        auto* pulse = new QTimer(edit);
+        pulse->setInterval(90);
+        const QColor caret_accent(0xE8, 0xA8, 0x57);
+        QPointer<QsciScintilla> guard(edit);
+        auto* phase = new double(0.0); // owned by the connection context
+        QObject::connect(pulse, &QTimer::timeout, edit, [guard, caret_accent, phase]() {
+            if (!guard) return;
+            *phase += 0.18;
+            if (*phase >= 1.0) *phase = 0.0;
+            const double wave =
+                0.35 + 0.55 * (0.5 - 0.5 * cos(*phase * 2.0 * M_PI));
+            QColor c = caret_accent;
+            c.setAlphaF(wave);
+            guard->SendScintilla(QsciScintillaBase::SCI_SETCARETFORE,
+                                 static_cast<unsigned long>(c.rgba()));
+        });
+        pulse->start();
+    }
     edit->setCaretLineVisible(true);
     edit->setCaretLineBackgroundColor(QColor(0, 0, 0, 0)); // no band: row unchanged
     edit->SendScintilla(QsciScintillaBase::SCI_SETCARETLINEBACKALPHA, 0ul);
@@ -348,7 +452,7 @@ static void apply_skin(QsciScintilla* edit, Editor_Theme theme, const QFont& cod
     edit->setIndentationGuidesBackgroundColor(margin_bg);
     edit->setIndentationGuidesForegroundColor(s.caret_line);
     edit->setMatchedBraceBackgroundColor(caret_line);
-    edit->setMatchedBraceForegroundColor(QColor(0xe8, 0xa8, 0x57));
+    edit->setMatchedBraceForegroundColor(theme::safelight_rgb());
 }
 
 void Editor::load_named(const QString& rel) {
@@ -377,10 +481,7 @@ void Editor::load_named(const QString& rel) {
     edit->setLexer(lexer);
     edit->setText(text);
     edit->setMarginLineNumbers(1, true);
-    // Fixed tiny gap (zoom-independent): 3 zero glyphs pad the numbers from
-    // the code; the lexer font grows, the margin keeps this base width.
-    edit->setMarginWidth(1, "000");
-    edit->setUtf8(true);
+    edit->setMarginWidth(1, gutter_digits(edit)); // plan7: fits the file
     edit->setFont(editor_font());
     edit->setTabWidth(4);
     // No wrap; kill the phantom horizontal scroll: Scintilla defaults
@@ -395,7 +496,13 @@ void Editor::load_named(const QString& rel) {
     // screen (editor convention the user asked for). ENDATLASTLINE 0 adds
     // a screenful of empty scroll below the text.
     edit->SendScintilla(QsciScintillaBase::SCI_SETENDATLASTLINE, 0ul);
-    edit->setAutoCompletionSource(QsciScintilla::AcsDocument); // words already typed in this file
+    // Plan 04 Task B: ONE autocomplete mechanism — the slangd popup
+    // (showUserList, 130 ms debounce, cap 60). QScintilla's own
+    // AcsDocument popup tears down and recreates a native NSWindow on
+    // EVERY keystroke (~24 ms of synchronous SkyLight work each, measured
+    // with sample(1)); that was the typing stutter. slangd coverage makes
+    // the word-list popup redundant.
+    edit->setAutoCompletionSource(QsciScintilla::AcsNone);
     edit->setAutoCompletionThreshold(2);
     apply_skin(edit, theme_, editor_font());
     // Caret affordance: brighter LINE NUMBER on the caret row (the band is
@@ -405,8 +512,14 @@ void Editor::load_named(const QString& rel) {
     constexpr long kNumStyleBase = 256;
     edit->SendScintilla(2537, 1ul, kNumStyleBase);
     edit->SendScintilla(QsciScintillaBase::SCI_SETCARETLINEVISIBLEALWAYS, 1ul);
+    const QColor caret_num = skin_for(theme_).selection_fg; // bright caret-row number
+    const quint32 caret_bgr = caret_num.alpha() == 255
+                                  ? quint32(caret_num.red()) |
+                                        (quint32(caret_num.green()) << 16) |
+                                        (quint32(caret_num.blue()) << 8)
+                                  : 0x00e6e0deul;
     QObject::connect(edit, &QsciScintillaBase::SCN_UPDATEUI, edit,
-                     [edit, base = kNumStyleBase] {
+                     [edit, base = kNumStyleBase, caret_bgr] {
         // SCI_MARGINSETSTYLEFORE = 2538 (missing from this QScintilla's enum).
         auto paint = [edit, base](int ln, quint32 rgb) {
             if (ln < 0) return;
@@ -423,7 +536,7 @@ void Editor::load_named(const QString& rel) {
         int line = int(edit->SendScintilla(QsciScintillaBase::SCI_LINEFROMPOSITION,
                                            long(edit->SendScintilla(
                                                QsciScintillaBase::SCI_GETCURRENTPOS))));
-        paint(line, 0x00e6e0de); // BGR quint32 of #DEE0E6: bright caret-row number
+        paint(line, caret_bgr); // BGR quint32 of the skin's bright number color
     });
     // Cmd+click goto-def + Cmd-hover underline: my filter on the viewport
     // runs before Qsci's own (install order = reverse run order), so the
@@ -438,7 +551,7 @@ void Editor::load_named(const QString& rel) {
     // Link underline style: PlainIndicator = single straight line, Safelight
     // amber (state, per the Safelight Rule). Index 9; 8 = diagnostics.
     edit->indicatorDefine(QsciScintilla::PlainIndicator, 9);
-    edit->setIndicatorForegroundColor(QColor(0xe8, 0xa8, 0x57), 9);
+    edit->setIndicatorForegroundColor(theme::safelight_rgb(), 9);
     edit->setIndicatorDrawUnder(true, 9);
     // Hover docs: dwell 500 ms over an identifier -> textDocument/hover.
     // Over a diagnostic squiggle the dwell shows the DIAGNOSTIC message
@@ -472,30 +585,40 @@ void Editor::load_named(const QString& rel) {
     });
     connect(edit, &QsciScintilla::modificationChanged, this,
             [this, edit](bool) { on_modified(indexOf(edit)); });
-    // Completion on identifier/'.' typing: ask slangd (the 280 ms didChange
-    // debounce syncs text separately; see on_modified).
-    connect(edit, &QsciScintilla::textChanged, this, [this, edit, path] {
+    // Completion on identifier/'.' typing: ask slangd, but DEBOUNCED. The
+    // old per-keystroke request fired 5 slangd calls for "float"; every
+    // reply carries the module's whole symbol table and the main thread
+    // parsed/filters it 5x — a visible typing delay. One 130 ms trailing
+    // timer per editor: one request per typing burst. (The 280 ms
+    // didChange debounce syncs text separately; see on_modified.
+    // Completion on the pre-sync text is fine: the server merges.)
+    auto* completion_timer = new QTimer(edit);
+    completion_timer->setSingleShot(true);
+    completion_timer->setInterval(130);
+    connect(completion_timer, &QTimer::timeout, edit, [this, edit, path] {
+        if (!open_docs_.empty() && doc_for_widget(edit) == nullptr) return;
         int line = 0, col = 0;
         edit->getCursorPosition(&line, &col);
         QString l = edit->text(line);
         if (col <= 0 || col > l.size()) return;
         QChar c = l[col - 1];
         if (!(c.isLetterOrNumber() || c == '_' || c == '.')) return;
+        perf_log("completion-send", -1.0); // temp instrumentation
         QString uri = "file://" + QFileInfo(path).absoluteFilePath();
-        // NO did_change here: on_modified's 280 ms debounce already syncs the
-        // server. A full-text didChange per keystroke (plus the didClose/
-        // didOpen reset pair every sync) made slangd reparse mid-typing —
-        // the "small delay on every key" bug. Completion on the pre-sync
-        // text is fine (the server merges the next sync).
         lsp_completion(uri, line, col);
     });
+    connect(edit, &QsciScintilla::textChanged, edit,
+            [completion_timer] { completion_timer->start(); });
 
     doc.widget = edit;
     open_docs_.push_back(doc);
     addTab(edit, rel.section('/', -1));
+    // Long names elide in the tab; the FULL path lives in the tooltip
+    // (Plan 03 §2: no information loss when the label truncates).
+    tabBar()->setTabToolTip(count() - 1, rel);
     setCurrentIndex(int(open_docs_.size()) - 1);
+    sync_tab_colors();
     update_empty_state();
-
     // did-open for the LSP.
     QString uri = "file://" + QFileInfo(path).absoluteFilePath();
     lsp_did_open(uri, text);
@@ -665,6 +788,8 @@ void Editor::set_theme(Editor_Theme theme) {
     theme_ = theme;
     for (Open_Doc& doc : open_docs_)
         if (doc.widget) apply_skin(doc.widget, theme, editor_font());
+    set_find_bar_theme();     // chrome follows the same skin table
+    update_split_btn_theme();
 }
 
 // Active code face: JetBrains Mono, or Sergamon when the pixel option is on.
@@ -681,7 +806,10 @@ void Editor::apply_font() {
         doc.widget->setFont(f);
         if (auto* lex = dynamic_cast<Slang_Lexer*>(doc.widget->lexer()))
             lex->setFont(f);
-        doc.widget->setMarginWidth(1, "000"); // constant tiny gap, zoom-independent
+        // Proportional gutter: recompute the width from the real line
+        // count (plan7; the fixed "000" slot clipped 5-digit files).
+        doc.widget->setMarginWidth(1, gutter_digits(doc.widget));
+        doc.widget->setMarginWidth(0, 8); // spacer lane (see load_named)
     }
 }
 
@@ -776,9 +904,13 @@ int Editor::save_all() {
             continue; // keep dirty: a partial write must not lose the doc
         }
         doc.dirty = false;
+        ++saved;
+        const int idx = int(&doc - open_docs_.data());
+        setTabText(idx, doc.rel.section('/', -1)); // drop the "•" glyph
         // did-save for the LSP.
         lsp_did_save("file://" + QFileInfo(doc.path).absoluteFilePath());
     }
+    sync_tab_colors(); // saved tabs return to their normal text color
     status_ = saved > 0 ? QString("saved %1 file(s)").arg(saved) : status_;
     if (saved > 0) emit status_changed(status_);
     return saved;
@@ -786,6 +918,8 @@ int Editor::save_all() {
 
 void Editor::on_tab_changed(int index) {
     if (index < 0 || index >= (int)open_docs_.size()) return;
+    sync_tab_colors(); // active/inactive text colors follow the switch
+    emit tab_activated(open_docs_[size_t(index)].rel);
     lsp_did_open("file://" + QFileInfo(open_docs_[size_t(index)].path).absoluteFilePath(),
                  open_docs_[size_t(index)].widget->text());
 }
@@ -796,6 +930,9 @@ void Editor::on_modified(int index) {
     doc.dirty = doc.widget->isModified();
     QString label = doc.rel.section('/', -1) + (doc.dirty ? " •" : "");
     setTabText(index, label);
+    // Dirty state pairs color + glyph (never color-only). Amber only while
+    // dirty; the active tab keeps its full-text color otherwise.
+    sync_tab_colors();
     // Debounced did-change for the LSP (slangd re-parses on content change;
     // the 18-frame debounce lands as a 280 ms timer at 60 fps).
     QMap<QString, QTimer*>& timers = lsp_timers_; // rel -> debounce timer
@@ -921,8 +1058,8 @@ void Editor::lsp_did_open(const QString& uri, const QString& text) {
 }
 
 void Editor::lsp_did_change(const QString& uri, const QString& text) {
+    const qint64 t0 = perf_clock()->nsecsElapsed(); // TEMP-PROF
     int v = lsp_versions_[uri] + 1;
-    lsp_versions_[uri] = v;
     if (v > 2) { // after the first sync, reset the server's compilation
         QString close_json = QJsonDocument(QJsonObject{
             {"textDocument", QJsonObject{{"uri", uri}}}})
@@ -939,6 +1076,7 @@ void Editor::lsp_did_change(const QString& uri, const QString& text) {
         {"contentChanges", QJsonArray{QJsonObject{{"text", text}}}}})
                        .toJson(QJsonDocument::Compact);
     send_lsp_notify("textDocument/didChange", json);
+    perf_log("didchange-json-ms", double(perf_clock()->nsecsElapsed() - t0) / 1e6);
 }
 
 void Editor::lsp_did_save(const QString& uri) {
@@ -948,12 +1086,14 @@ void Editor::lsp_did_save(const QString& uri) {
 }
 
 void Editor::lsp_completion(const QString& uri, int line, int col) {
+    const qint64 t0w = perf_clock()->nsecsElapsed(); // TEMP-PROF
     QString json = QJsonDocument(QJsonObject{
         {"textDocument", QJsonObject{{"uri", uri}}},
         {"position", QJsonObject{{"line", line}, {"character", col}}}})
                        .toJson(QJsonDocument::Compact);
     lsp_pending_[lsp_next_id_] = "completion";
     send_lsp(lsp_next_id_++, "textDocument/completion", json);
+    perf_log("lsp-write-ms", double(perf_clock()->nsecsElapsed() - t0w) / 1e6);
 }
 
 void Editor::lsp_hover(const QString& uri, int line, int col) {
@@ -1166,6 +1306,7 @@ void Editor::handle_lsp_message(const QByteArray& payload) {
             }
         }
     } else if (method == "completion") {
+        const qint64 t0c = perf_clock()->nsecsElapsed(); // TEMP-PROF
         // Result: CompletionItem[] or CompletionList{items}. Filter by the word
         // typed before the caret, since Scintilla's user list does not.
         QJsonValue r = obj["result"];
@@ -1179,17 +1320,29 @@ void Editor::handle_lsp_message(const QByteArray& payload) {
         while (s > 0 && (before[s - 1].isLetterOrNumber() || before[s - 1] == '_')) --s;
         QString prefix = before.mid(s);
         QStringList shown;
+        // Cap the scan AND the list: slangd returns the module's entire
+        // symbol table; filtering 10k labels per reply on the main thread
+        // was the other half of the typing delay. 60 rows is plenty for a
+        // popup (Scintilla's list scrolls).
+        constexpr int kMaxCompletions = 60;
         for (const QJsonValue& v : items) {
             QString label = v.toObject()["label"].toString();
             if (label.startsWith(prefix) && label != prefix) shown << label;
+            if (shown.size() >= kMaxCompletions) break;
         }
-        shown.removeDuplicates();
-        shown.sort();
+        if (shown.size() < kMaxCompletions) {
+            shown.removeDuplicates();
+            shown.sort();
+        }
         if (!shown.isEmpty()) ed->showUserList(1, shown);
+        perf_log("popup-shown", -1.0); // temp instrumentation
+        perf_log("completion-handle-ms", double(perf_clock()->nsecsElapsed() - t0c) / 1e6);
     }
 }
 
 void Editor::on_lsp_ready_read() {
+    const qint64 t0r = perf_clock()->nsecsElapsed(); // TEMP-PROF
+    const qint64 bytes_in = lsp_->bytesAvailable(); // TEMP-PROF
     lsp_buffer_ += lsp_->readAll();
     while (true) {
         int header_end = lsp_buffer_.indexOf("\r\n\r\n");
@@ -1208,6 +1361,8 @@ void Editor::on_lsp_ready_read() {
         lsp_buffer_.remove(0, header_end + 4 + content_length);
         handle_lsp_message(payload);
     }
+    perf_log("lsp-read-ms", double(perf_clock()->nsecsElapsed() - t0r) / 1e6);
+    perf_log("lsp-read-kb", double(bytes_in) / 1024.0);
 }
 
 void Editor::apply_diagnostics(const std::vector<Diagnostic>& diags) {
@@ -1223,7 +1378,7 @@ void Editor::apply_diagnostics(const std::vector<Diagnostic>& diags) {
         // token range (whole line when slangd gives no length). No margin
         // dots, no tab badges — the underline IS the signal.
         doc.widget->indicatorDefine(QsciScintilla::PlainIndicator, kUnderline);
-        doc.widget->setIndicatorForegroundColor(QColor(0xf2, 0x6b, 0x5c), kUnderline);
+        doc.widget->setIndicatorForegroundColor(theme::error_rgb(), kUnderline);
         doc.widget->setIndicatorDrawUnder(true, kUnderline);
         // fillIndicatorRange paints the CURRENT indicator: the Cmd-hover
         // handler leaves it at 9 (amber link) on some docs, which swallowed
@@ -1310,10 +1465,9 @@ QWidget* Editor::editor_dock_host() {
 }
 
 void Editor::split_current() {
-    // Split = code | SHADER PREVIEW. The old code|code read-only clone is
-    // gone (it covered the tabs and rendered with a stale font); the
-    // host owns the preview: the SDL child window shrinks to the right
-    // half while the split is on (Shell::split_toggled -> host).
+    // Split toggle (floating button): cycles the SHELL's preview state.
+    // The button only flips SPLIT <-> FLOAT; FULL is a topbar/F3 choice.
+    // The shell owns the state; the host reshapes the SDL window per tick.
     split_on_ = !split_on_;
     reposition_split_button(); // flip to the free bottom corner
     emit split_toggled(split_on_);

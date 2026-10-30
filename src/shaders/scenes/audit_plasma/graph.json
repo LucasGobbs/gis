@@ -1,0 +1,30 @@
+{
+    "links": [
+        {
+            "from": "gfx:scenes/audit_plasma/audit_plasma:frame",
+            "to": "show2d:frame"
+        }
+    ],
+    "nodes": [
+        {
+            "key": "params",
+            "kind": "params",
+            "x": 0,
+            "y": 40
+        },
+        {
+            "key": "gfx:scenes/audit_plasma/audit_plasma",
+            "kind": "graphics",
+            "x": 180,
+            "y": 40
+        },
+        {
+            "key": "show2d",
+            "kind": "output",
+            "x": 420,
+            "y": 40
+        }
+    ],
+    "scene": "audit_plasma",
+    "version": 1
+}

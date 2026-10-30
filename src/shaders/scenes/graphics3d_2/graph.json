@@ -1,0 +1,48 @@
+{
+    "links": [
+        {
+            "from": "gfx:scenes/graphics3d_2/graphics3d_2:frame",
+            "to": "show2d:frame"
+        }
+    ],
+    "nodes": [
+        {
+            "key": "params",
+            "kind": "params",
+            "x": 0,
+            "y": 0
+        },
+        {
+            "key": "gfx:scenes/graphics3d_2/graphics3d_2",
+            "kind": "graphics",
+            "x": 235.8163299560547,
+            "y": -84.6564712524414
+        },
+        {
+            "key": "show2d",
+            "kind": "output",
+            "x": 420,
+            "y": 40
+        },
+        {
+            "key": "params",
+            "kind": "params",
+            "x": 0,
+            "y": 0
+        },
+        {
+            "key": "gfx:scenes/graphics3d_2/graphics3d_2",
+            "kind": "graphics",
+            "x": 235.8163299560547,
+            "y": -84.6564712524414
+        },
+        {
+            "key": "show2d",
+            "kind": "output",
+            "x": 420,
+            "y": 40
+        }
+    ],
+    "scene": "graphics3d_2",
+    "version": 1
+}

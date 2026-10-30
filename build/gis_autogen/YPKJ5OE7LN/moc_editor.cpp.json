@@ -1,0 +1,137 @@
+{
+    "classes": [
+        {
+            "className": "Editor",
+            "lineNumber": 47,
+            "object": true,
+            "qualifiedClassName": "editor::Editor",
+            "signals": [
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "name": "status",
+                            "type": "QString"
+                        }
+                    ],
+                    "index": 0,
+                    "lineNumber": 100,
+                    "name": "status_changed",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "name": "diags",
+                            "type": "std::vector<editor::Diagnostic>"
+                        }
+                    ],
+                    "index": 1,
+                    "lineNumber": 101,
+                    "name": "diagnostics_ready",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "name": "pt",
+                            "type": "int"
+                        }
+                    ],
+                    "index": 2,
+                    "lineNumber": 102,
+                    "name": "font_changed",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "name": "on",
+                            "type": "bool"
+                        }
+                    ],
+                    "index": 3,
+                    "lineNumber": 103,
+                    "name": "split_toggled",
+                    "returnType": "void"
+                },
+                {
+                    "access": "public",
+                    "arguments": [
+                        {
+                            "name": "rel",
+                            "type": "QString"
+                        }
+                    ],
+                    "index": 4,
+                    "lineNumber": 105,
+                    "name": "tab_activated",
+                    "returnType": "void"
+                }
+            ],
+            "slots": [
+                {
+                    "access": "private",
+                    "arguments": [
+                        {
+                            "name": "index",
+                            "type": "int"
+                        }
+                    ],
+                    "index": 5,
+                    "lineNumber": 108,
+                    "name": "on_tab_changed",
+                    "returnType": "void"
+                },
+                {
+                    "access": "private",
+                    "arguments": [
+                        {
+                            "name": "index",
+                            "type": "int"
+                        }
+                    ],
+                    "index": 6,
+                    "lineNumber": 109,
+                    "name": "on_modified",
+                    "returnType": "void"
+                },
+                {
+                    "access": "private",
+                    "index": 7,
+                    "lineNumber": 110,
+                    "name": "on_lsp_ready_read",
+                    "returnType": "void"
+                },
+                {
+                    "access": "private",
+                    "arguments": [
+                        {
+                            "name": "exit_code",
+                            "type": "int"
+                        },
+                        {
+                            "name": "status",
+                            "type": "int"
+                        }
+                    ],
+                    "index": 8,
+                    "lineNumber": 111,
+                    "name": "on_lsp_finished",
+                    "returnType": "void"
+                }
+            ],
+            "superClasses": [
+                {
+                    "access": "public",
+                    "name": "QTabWidget"
+                }
+            ]
+        }
+    ],
+    "inputFile": "editor.hpp",
+    "outputRevision": 69
+}
