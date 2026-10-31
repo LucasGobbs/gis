@@ -1,7 +1,0 @@
-<RCC>
-  <qresource prefix="/fonts">
-    <file alias="JetBrainsMono-Regular.ttf">/Users/gobbi/Desktop/code/projects/gis/vendor/fonts/JetBrainsMono-Regular.ttf</file>
-    <file alias="Sergamon-Regular.ttf">/Users/gobbi/Desktop/code/projects/gis/vendor/fonts/Sergamon-Regular.ttf</file>
-  </qresource>
-</RCC>
-

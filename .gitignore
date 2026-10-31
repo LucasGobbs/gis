@@ -23,3 +23,6 @@ legacy/vendor
 legacy/src/generated
 # Local author docs (design system, product notes, paper corpus)
 artefacts/
+
+# CMake default build dir (legacy, tracked by mistake before)
+/build/

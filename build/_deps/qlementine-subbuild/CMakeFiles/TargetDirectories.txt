@@ -1,3 +1,0 @@
-/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-subbuild/CMakeFiles/qlementine-populate.dir
-/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-subbuild/CMakeFiles/edit_cache.dir
-/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-subbuild/CMakeFiles/rebuild_cache.dir

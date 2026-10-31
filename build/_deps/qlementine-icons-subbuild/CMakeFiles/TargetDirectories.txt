@@ -1,3 +1,0 @@
-/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/CMakeFiles/qlementine-icons-populate.dir
-/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/CMakeFiles/edit_cache.dir
-/Users/gobbi/Desktop/code/projects/gis/build/_deps/qlementine-icons-subbuild/CMakeFiles/rebuild_cache.dir

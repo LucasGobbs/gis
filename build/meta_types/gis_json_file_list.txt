@@ -1,4 +1,0 @@
-/Users/gobbi/Desktop/code/projects/gis/build/gis_autogen/include/../YPKJ5OE7LN/moc_editor.cpp.json
-/Users/gobbi/Desktop/code/projects/gis/build/gis_autogen/include/../YPKJ5OE7LN/moc_graph_editor.cpp.json
-/Users/gobbi/Desktop/code/projects/gis/build/gis_autogen/include/../YPKJ5OE7LN/moc_learn.cpp.json
-/Users/gobbi/Desktop/code/projects/gis/build/gis_autogen/include/../YPKJ5OE7LN/moc_shell.cpp.json
