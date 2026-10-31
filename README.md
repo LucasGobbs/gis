@@ -1,8 +1,8 @@
-# gis
+# GIS - Gobbi Interactive Shaders (WIP)
 
-**Write a shader. Save. Watch it change.**
+## About
 
-gis is a desktop playground for real-time GPU shaders. Scenes are plain [Slang](https://shader-slang.org/) files. Save one and the pipeline hot-swaps on the next frame, with no windowing code, buffers or boilerplate in between.
+GIS is a desktop playground for real-time GPU shaders. Scenes are plain [Slang](https://shader-slang.org/) files. Save one and the pipeline hot-swaps on the next frame, with no windowing code, buffers or boilerplate in between.
 
 ![status](https://img.shields.io/badge/status-research%20prototype-orange)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23150234.svg)](https://doi.org/10.5281/zenodo.23150234)
@@ -11,7 +11,7 @@ gis is a desktop playground for real-time GPU shaders. Scenes are plain [Slang](
 
 Three lines added to the Stanford dragon's fragment shader, one line to use them, one save. A second save turns the glow from pink to cyan. Recordings: [24 s](repository_assets/dragon_live_coding_short.mp4) · [66 s](repository_assets/dragon_live_coding.mp4). More in the [gallery](GALLERY.md).
 
-## Type it, see it
+## Usage
 
 The code goes in, the picture follows. Here is the edit at 4x speed.
 
@@ -25,7 +25,7 @@ And the moment of the save, pink first, then cyan.
 
 <img src="repository_assets/d09_rim_result_split.png" alt="The dragon with its pink rim light" width="900">
 
-## Turn the knobs
+## Tags in shaders generates UI at Runtime
 
 Add a `[UiSlider]` or `[UiColor]` field to a params struct and a control appears. Pick a color and the render follows.
 
